@@ -1,6 +1,9 @@
-# Tested target: Python 3.11 with an NVIDIA CUDA-capable GPU.
-# Install the matching PyTorch/torchvision CUDA build first. The validated local
-# environment uses torch 2.5.1+cu121 and torchvision 0.20.1+cu121.
+# Canonical FigDebate environment: Python 3.11 and an NVIDIA CUDA-capable GPU.
+# Tested on Windows with an RTX 4060 Laptop GPU. The CUDA 12.1 wheels also
+# support compatible Linux systems with a sufficiently recent NVIDIA driver.
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
 accelerate==1.14.0
 bitsandbytes==0.50.0
 datasets==5.0.1

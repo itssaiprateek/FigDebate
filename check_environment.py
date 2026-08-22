@@ -1,18 +1,42 @@
 """Fail-fast local readiness check for the FigDebate runtime."""
 
 import importlib
+from importlib import metadata
 import os
 import platform
 import sys
 
 
-REQUIRED_MODULES = (
-    "torch", "transformers", "accelerate", "bitsandbytes", "datasets",
-    "pandas", "PIL", "sentencepiece",
-)
-OPTIONAL_MODULES = ("sklearn",)
+REQUIRED_MODULES = {
+    "torch": "torch",
+    "torchvision": "torchvision",
+    "transformers": "transformers",
+    "accelerate": "accelerate",
+    "bitsandbytes": "bitsandbytes",
+    "datasets": "datasets",
+    "huggingface_hub": "huggingface-hub",
+    "pandas": "pandas",
+    "PIL": "pillow",
+    "safetensors": "safetensors",
+    "sklearn": "scikit-learn",
+    "sentencepiece": "sentencepiece",
+}
+EXPECTED_VERSIONS = {
+    "torch": "2.5.1+cu121",
+    "torchvision": "0.20.1+cu121",
+    "transformers": "5.15.0",
+    "accelerate": "1.14.0",
+    "bitsandbytes": "0.50.0",
+    "datasets": "5.0.1",
+    "huggingface-hub": "1.27.0",
+    "pandas": "3.0.5",
+    "pillow": "12.2.0",
+    "safetensors": "0.8.0",
+    "scikit-learn": "1.9.0",
+    "sentencepiece": "0.2.2",
+}
 REQUIRED_DATA = (
-    "dataset/data/processed/dev_split.pkl",
+    "dataset/data/processed/vflute_train_dev50.pkl",
     "dataset/data/processed/vflute_val.pkl",
     "dataset/data/processed/vflute_test.pkl",
 )
@@ -27,29 +51,25 @@ def main():
     if sys.version_info[:2] != (3, 11):
         failures.append("Python 3.11 is required.")
 
-    for module_name in REQUIRED_MODULES:
+    for module_name, distribution_name in REQUIRED_MODULES.items():
         try:
             module = importlib.import_module(module_name)
         except Exception as error:
             print(f"[FAIL] {module_name}: {error}")
             failures.append(f"Missing or unusable module: {module_name}")
         else:
-            version = getattr(module, "__version__", "available")
-            print(f"[OK]   {module_name}: {version}")
-
-    for module_name in OPTIONAL_MODULES:
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:
-            print(
-                f"[INFO] {module_name}: optional; internal evaluation "
-                "fallback will be used"
-            )
-        else:
-            print(
-                f"[OK]   {module_name}: "
-                f"{getattr(module, '__version__', 'available')}"
-            )
+            version = metadata.version(distribution_name)
+            expected = EXPECTED_VERSIONS[distribution_name]
+            if version != expected:
+                print(
+                    f"[FAIL] {distribution_name}: {version} "
+                    f"(expected {expected})"
+                )
+                failures.append(
+                    f"Version mismatch: {distribution_name}=={expected} required."
+                )
+            else:
+                print(f"[OK]   {distribution_name}: {version}")
 
     try:
         import torch

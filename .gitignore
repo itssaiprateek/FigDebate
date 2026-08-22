@@ -1,10 +1,15 @@
-@'
 .venv/
-.venv311/
+.venv*/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.vscode/
+.coverage
+htmlcov/
+
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/extensions.json
 .idea/
 
 outputs/
@@ -21,4 +26,3 @@ dataset/data/processed/*.pkl
 
 .env
 *.env
-'@ | Set-Content .gitignore

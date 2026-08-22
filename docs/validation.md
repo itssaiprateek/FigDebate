@@ -1,16 +1,12 @@
 # FigDebate Final Validation
 
-## 1. Repair The Local Runtime
+## 1. Create The Canonical Environment
 
-The existing `.venv311` references a Python 3.11 installation that is no
-longer present. Install Python 3.11, then create a clean environment without
-overwriting historical folders:
+Install Python 3.11, then create the project-local environment:
 
 ```powershell
-py -3.11 -m venv .venv_final
-.\.venv_final\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements-cu121.txt
+py -3.11 setup_environment.py
+.\.venv\Scripts\activate
 python check_environment.py
 ```
 
@@ -24,7 +20,7 @@ GPU with torch `2.5.1+cu121`.
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Expected result: `Ran 101 tests` followed by `OK` before any model run.
+Expected result: all discovered tests finish with `OK` before any model run.
 
 ## 3. Run A Three-Sample Smoke Test
 

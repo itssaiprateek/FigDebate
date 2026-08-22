@@ -1,17 +1,17 @@
 import time
 
-from agents.agent1 import VisualGroundingAgent
-from agents.agent2 import ClaimExtractionAgent
+from agents.visual_grounding import VisualGroundingAgent
+from agents.claim_extraction import ClaimExtractionAgent
 from arbiter.arbiter import Arbiter
-from comparators.comparator_v2 import compare
+from comparators.evidence_comparator import compare
 from engine.debate import DebateEngine
 from engine.evidence_ledger import attach_evidence_audit, build_evidence_ledger
 from engine.evidence_verifier import AtomicEvidenceVerifier, merge_verified_evidence
 from engine.gpu_manager import GPUManager
 from engine.relation_schema import attach_claim_relation
 from engine.review_board import attach_final_review
-from models.mistral_loader import MistralModel
-from models.model_loader import LlavaModel
+from models.language_model import MistralModel
+from models.vision_model import LlavaModel
 
 
 class StagewiseRunner:

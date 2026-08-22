@@ -1,6 +1,6 @@
 import unittest
 
-from models.nli_loader import NliVerifier
+from models.nli_model import NliVerifier
 
 
 class NliContractTests(unittest.TestCase):

@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "FigDebate: prepare environment",
+      "type": "shell",
+      "command": "python3.11",
+      "args": [
+        "${workspaceFolder}/setup_environment.py"
+      ],
+      "windows": {
+        "command": "py",
+        "args": [
+          "-3.11",
+          "${workspaceFolder}/setup_environment.py"
+        ]
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

@@ -3,7 +3,7 @@
 from copy import deepcopy
 import time
 
-from models.nli_loader import NliVerifier
+from models.nli_model import NliVerifier
 
 
 class AtomicEvidenceVerifier:

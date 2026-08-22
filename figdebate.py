@@ -2,9 +2,8 @@ class FigDebate:
     """
     Public phase-neutral API for the FigDebate system.
 
-    The implementation currently wraps the most complete existing engine:
-    Agent 1, Agent 2, Comparator V2, Arbiter, optional Debate, and Feedback.
-    Historical phase-named modules remain in place for reproducibility.
+    The API wraps the canonical engine: visual grounding, claim extraction,
+    evidence comparison, arbitration, selective debate, and feedback memory.
     """
 
     def __init__(self):

@@ -238,18 +238,19 @@ def file_checksum(path):
 def pipeline_source_checksum():
     project_root = os.path.dirname(os.path.abspath(__file__))
     paths = (
-        "agents/agent1.py", "agents/agent2.py", "arbiter/arbiter.py",
-        "comparators/comparator_v2.py", "engine/batch_runner.py",
+        "agents/visual_grounding.py", "agents/claim_extraction.py",
+        "arbiter/arbiter.py", "comparators/evidence_comparator.py",
+        "engine/batch_runner.py",
         "engine/debate.py", "engine/evidence_ledger.py",
-        "engine/evidence_verifier.py", "models/nli_loader.py",
+        "engine/evidence_verifier.py", "models/nli_model.py",
         "engine/claim_contract.py", "engine/relation_schema.py",
         "engine/region_verifier.py", "engine/review_board.py",
         "engine/sampling.py", "engine/run_integrity.py",
         "engine/feedback_loop.py", "evaluation/build_feedback_memory.py",
         "evaluation/audit_evidence_provenance.py",
         "evaluation/evaluate_predictions.py", "evaluation/metrics_core.py",
-        "models/model_loader.py", "models/mistral_loader.py",
-        "utils/parser.py", "utils/claim_parser.py",
+        "models/vision_model.py", "models/language_model.py",
+        "utils/visual_parser.py", "utils/claim_parser.py",
         "utils/arbiter_parser.py", "utils/decision_scoring.py",
         "run_figdebate.py",
     )
@@ -952,7 +953,7 @@ def main():
             "gold_direction_stored": False,
         },
         "feedback_minimum_case_similarity": FeedbackLoop.MIN_CASE_SIMILARITY,
-        "comparator": "comparator_v2", "python_version": sys.version,
+        "comparator": "evidence_comparator", "python_version": sys.version,
         "platform": platform.platform(),
         "runtime_environment": runtime_environment(),
         "timestamp": datetime.now().isoformat(timespec="seconds"),

@@ -2,7 +2,7 @@ import unittest
 import os
 import tempfile
 
-from comparators.comparator_v2 import compare
+from comparators.evidence_comparator import compare
 from engine.claim_contract import attach_claim_contract, audit_claim_contract
 from engine.evidence_ledger import (
     add_visual_reinspection_evidence,
@@ -17,7 +17,7 @@ from utils.decision_scoring import (
     evidence_adjusted_confidence,
     position_balanced_relation_scores,
 )
-from utils.parser import parse_list, parse_visual_response
+from utils.visual_parser import parse_list, parse_visual_response
 
 
 class PureParserTests(unittest.TestCase):

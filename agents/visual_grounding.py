@@ -4,7 +4,7 @@ try:
     import torch
 except ImportError:
     torch = None
-from utils.parser import parse_visual_response
+from utils.visual_parser import parse_visual_response
 
 
 class VisualGroundingAgent:

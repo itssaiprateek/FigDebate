@@ -1,14 +1,14 @@
 import unittest
 
-from agents.agent1 import VisualGroundingAgent
-from agents.agent2 import ClaimExtractionAgent
-from comparators.comparator_v2 import compare
+from agents.visual_grounding import VisualGroundingAgent
+from agents.claim_extraction import ClaimExtractionAgent
+from comparators.evidence_comparator import compare
 from engine.claim_contract import attach_claim_contract
 from engine.debate import DebateEngine
 from engine.evidence_ledger import add_visual_reinspection_evidence
 from engine.relation_schema import attach_claim_relation, build_claim_relation
 from engine.review_board import review_revision
-from utils.parser import parse_visual_response
+from utils.visual_parser import parse_visual_response
 
 
 class VisualGroundingRegressionTests(unittest.TestCase):

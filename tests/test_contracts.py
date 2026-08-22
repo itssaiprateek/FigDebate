@@ -3,11 +3,11 @@ import os
 import tempfile
 from PIL import Image
 
-from comparators.comparator_v2 import compare
+from comparators.evidence_comparator import compare
 from engine.claim_contract import attach_claim_contract
 from engine.relation_schema import attach_claim_relation
-from agents.agent2 import ClaimExtractionAgent
-from agents.agent1 import VisualGroundingAgent
+from agents.claim_extraction import ClaimExtractionAgent
+from agents.visual_grounding import VisualGroundingAgent
 from arbiter.arbiter import Arbiter
 from engine.debate import DebateEngine
 from engine.evidence_ledger import (
@@ -19,7 +19,7 @@ from engine.evidence_verifier import AtomicEvidenceVerifier, merge_verified_evid
 from engine.feedback_loop import FeedbackLoop
 from utils.arbiter_parser import parse_arbiter_response
 from utils.claim_parser import parse_claim_response
-from utils.parser import parse_list, parse_visual_response
+from utils.visual_parser import parse_list, parse_visual_response
 from utils.decision_scoring import (
     evidence_adjusted_confidence,
     position_balanced_relation_scores,

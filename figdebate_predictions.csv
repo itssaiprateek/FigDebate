@@ -1,2 +1,0 @@
-sample,id,phenomenon,ground_truth,prediction,round1_confidence,round2_confidence,debate_triggered,debate_rounds,forced_label,correct
-0,vflute_train_2760,metaphor,ENTAILS,ENTAILS,0.9,,False,0,False,True

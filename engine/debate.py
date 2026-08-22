@@ -1,14 +1,14 @@
-from models.model_loader import LlavaModel
-from models.mistral_loader import MistralModel
+from models.vision_model import LlavaModel
+from models.language_model import MistralModel
 from copy import deepcopy
 import time
 import re
 
-from agents.agent1 import VisualGroundingAgent
-from agents.agent2 import ClaimExtractionAgent
+from agents.visual_grounding import VisualGroundingAgent
+from agents.claim_extraction import ClaimExtractionAgent
 
 from arbiter.arbiter import Arbiter
-from comparators.comparator_v2 import compare
+from comparators.evidence_comparator import compare
 
 from engine.feedback_loop import FeedbackLoop
 from engine.evidence_verifier import AtomicEvidenceVerifier, merge_verified_evidence
