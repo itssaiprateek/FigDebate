@@ -1,0 +1,92 @@
+{
+  "project": "FigDebate",
+  "created": "2026-04-21T09:11:36.049482",
+  "seed": 42,
+  "base": "/kaggle/working/figdebate",
+  "target_phenomena": [
+    "humor",
+    "metaphor",
+    "sarcasm"
+  ],
+  "development_split": {
+    "public_name": "vflute_train_dev50",
+    "stored_file": "dev_split.pkl",
+    "source_split": "vflute_train",
+    "samples": 50,
+    "purpose": "development and error analysis only; never final evaluation"
+  },
+  "image_storage": "JPEG_bytes_q85",
+  "strict_run_mode": {
+    "resume_if_exists": true,
+    "fail_fast": true,
+    "checkpoint_every_split": true,
+    "no_pip_install": true
+  },
+  "locked_label_mapping": {
+    "0": "ENTAILS",
+    "1": "CONTRADICTS",
+    "rationale": "sarcasm as semantic incongruity => contradiction"
+  },
+  "datasets": {
+    "vflute": {
+      "hf_id": "ColumbiaNLP/V-FLUTE",
+      "splits": [
+        "train",
+        "validation",
+        "test"
+      ],
+      "columns": [
+        "image",
+        "claim",
+        "label",
+        "explanation",
+        "phenomenon",
+        "source_dataset"
+      ],
+      "paper": "Saakyan et al., NAACL 2025",
+      "arxiv": "https://arxiv.org/abs/2405.01474"
+    },
+    "mmsd2": {
+      "hf_id": "coderchen01/MMSD2.0",
+      "config": "mmsd-v2",
+      "splits": [
+        "train",
+        "validation",
+        "test"
+      ],
+      "caps": {
+        "train": 2000,
+        "validation": 500,
+        "test": 500
+      },
+      "paper": "Qin et al., ACL Findings 2023",
+      "arxiv": "https://arxiv.org/abs/2307.07135"
+    },
+    "capcon": {
+      "hf_id": "jmhessel/newyorker_caption_contest",
+      "config": "explanation",
+      "splits": [
+        "train",
+        "validation",
+        "test"
+      ],
+      "max_per_class": {
+        "train": 300,
+        "validation": 60,
+        "test": 60
+      },
+      "paper": "Hessel et al., ACL 2023 Best Paper",
+      "arxiv": "https://arxiv.org/abs/2209.06293"
+    }
+  },
+  "citations": {
+    "vflute": "https://arxiv.org/abs/2405.01474",
+    "mmsd2": "https://arxiv.org/abs/2307.07135",
+    "capcon": "https://arxiv.org/abs/2209.06293",
+    "debate": "https://arxiv.org/abs/2305.14325",
+    "reconcile": "https://arxiv.org/abs/2309.13007",
+    "self_refine": "https://arxiv.org/abs/2303.17651",
+    "llava": "https://arxiv.org/abs/2310.03744",
+    "bertscore": "https://arxiv.org/abs/1904.09675"
+  }
+}

@@ -1,0 +1,13 @@
+# Tested target: Python 3.11 with an NVIDIA CUDA-capable GPU.
+# Install the matching PyTorch/torchvision CUDA build first. The validated local
+# environment uses torch 2.5.1+cu121 and torchvision 0.20.1+cu121.
+accelerate==1.14.0
+bitsandbytes==0.50.0
+datasets==5.0.1
+huggingface-hub==1.27.0
+pandas==3.0.5
+pillow==12.2.0
+safetensors==0.8.0
+scikit-learn==1.9.0
+sentencepiece==0.2.2
+transformers==5.15.0

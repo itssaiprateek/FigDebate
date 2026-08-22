@@ -1,0 +1,11 @@
+{
+  "vflute": "ColumbiaNLP/V-FLUTE",
+  "mmsd2": {
+    "id": "coderchen01/MMSD2.0",
+    "config": "mmsd-v2"
+  },
+  "capcon": {
+    "id": "jmhessel/newyorker_caption_contest",
+    "config": "explanation"
+  }
+}

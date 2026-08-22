@@ -1,0 +1,402 @@
+[
+  {
+    "id": "vflute_train_2760",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "The economy recovered relatively easily.",
+    "label": "ENTAILS",
+    "explanation": "The image shows a smiling man in a suit holding a stack of dollars and sailing across the ocean, indicating a prosperous individual. The initially downward then upward stock market arrow in the background suggests a recovering economy. Therefore, this image entails that the economy has recovered easily, as the claim suggests."
+  },
+  {
+    "id": "vflute_train_1841",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "forecast for pittsburgh looks terrible ! not looking forward to being home !",
+    "label": "ENTAILS",
+    "explanation": "The image is a screenshot showing the weather forecast for Pittsburgh, with a mix of cloudy, sunny, and several days of rain predicted. The implication is that the weather is not entirely favorable and might not align with the writer's enthusiasm about returning home."
+  },
+  {
+    "id": "vflute_train_3351",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Products one dislikes disappear quickly, while products one loves last a long time.",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows two pump bottles, one white labeled \"PRODUCT YOU HATE AND YOU'RE TRYING TO USE IT ALL UP QUICKLY TO THROW IT AWAY\" with a subtitle \"LASTS FOR MONTHS,\" and one red labeled \"PRODUCT YOU LOVE AND YOU'RE TRYING TO RATION SO THAT IT LASTS A LONG TIME\" with a subtitle \"GONE IN A WEEK.\" This visual representation humorously exemplifies a claim by contrasting how a disliked product seems to endure annoyingly long, whereas a favored product seems to be used up much faster despite efforts to make it last."
+  },
+  {
+    "id": "vflute_train_40",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "disappointed cuz $226 ain't enough to cop the new #lebrons with all my #profit ... sigh",
+    "label": "ENTAILS",
+    "explanation": "The image displays a stock market chart with a price level highlighted at $226. The implication is that the amount earned is insufficient to purchase the desired item, indicating a sense of dissatisfaction with the profit made."
+  },
+  {
+    "id": "vflute_train_4547",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "3rd kit release .. nice to see bringing some original designs emoji_156",
+    "label": "CONTRADICTS",
+    "explanation": "The image displays a football club's third kit, which is a dark-colored jersey with a subtle geometric pattern and contrasting accents. This directly supports the claim that the release of the third kit is disappointing because it lacks original designs and does not meet the expectations of originality that fans have had."
+  },
+  {
+    "id": "vflute_train_4255",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Bubble wrap that doesn't pop when squeezed is more appealing than bubble wrap that does.",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a screenshot of a news headline from The Huffington Post stating \"New Bubble Wrap Will No Longer Pop When You Squeeze It,\" with an image of bubble wrap below the text. Underneath this screenshot is an image of Thomas the Tank Engine with a caption saying, \"Thomas had never seen such bullshit before,\" implying strong disbelief or frustration. This juxtaposition suggests that the idea of non-popping bubble wrap is ridiculous or undesirable, which represents the claim that bubble wrap which does not pop when squeezed is less appealing than bubble wrap that does."
+  },
+  {
+    "id": "vflute_train_1312",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "it's frustrating how markets go north for no reason and we're stuck with dumb strategies to keep it that way ! #markets #nifty #sensex",
+    "label": "ENTAILS",
+    "explanation": "The image shows a newspaper article highlighting a new way for investors to pledge their portfolios to access margin funding. The implication is that this is a questionable method employed to maintain positive market trends."
+  },
+  {
+    "id": "vflute_train_3255",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Welcome to orientation.",
+    "label": "ENTAILS",
+    "explanation": "This is a play on words. \"Orientation\" is a common part of company on-boarding, meaning to introduce new employees to the company. But here, the orientation meeting of this company is a literal rotational orientation: the room is tilted, and needs to be re-oriented to be horizontal."
+  },
+  {
+    "id": "vflute_train_554",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "home was prison",
+    "label": "CONTRADICTS",
+    "explanation": "The image depicts an actual prison cell with barred doors, a bed, and minimal furnishings, typical of a correctional facility. The metaphor \"home was prison\" contradicts the image because the image is of a literal prison cell, not a metaphorical representation of a home. A home is usually considered a place of comfort and domesticity, quite different from the stark, restrictive environment shown in the photo."
+  },
+  {
+    "id": "vflute_train_566",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "just gross and misogynistic to offer free beer to women without shirts . seriously not cool #disappointed #gross #misogynistic",
+    "label": "ENTAILS",
+    "explanation": "The image shows a person wearing a green T-shirt with a sexist message, which offers women free beer for not wearing a shirt. This message is being criticized for being devoid of class, misogynistic, and offensive."
+  },
+  {
+    "id": "vflute_train_2075",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Can you please pass the cow?",
+    "label": "ENTAILS",
+    "explanation": "When drinking coffee or tea, people often add cream, and may ask others to pass it if it's on the other side of a table. But here, the mugs are huge, so instead of asking for a small cup of cream, they are asking for the entire cow, which is the appropriately-sized cream dispenser for these huge drinks."
+  },
+  {
+    "id": "vflute_train_3332",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Contemporary generation, when older, will accurately remember website features like those on YouTube.",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows an elderly woman with a walking aid accompanied by a younger woman. Text overlays indicate the elderly woman saying \"I swear YouTube had a chat feature,\" while the younger woman responds with a dismissive \"sure grandma lets get you to bed.\" The meme humorously suggests that recalling a non-existent feature (such as YouTube having a chat feature) is an indication of confusion or a lapse in reality that modern generation will demonstrate when older."
+  },
+  {
+    "id": "vflute_train_3560",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "The dollar has been increased by inflation.",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a person dragging a dollar bill through the mud, indicating that it has been devalued and ruined. This contradicts the claim that the dollar has been increased by inflation, as inflation typically results in an increase in the value of currency."
+  },
+  {
+    "id": "vflute_train_4111",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "thank you  for packing my fe  special edition  with the kind of care its title demands",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a damaged corner of a product's packaging, causing author's disappointment with the company's careless packing of the FE special edition, emphasizing that it deserved better care given its title demands."
+  },
+  {
+    "id": "vflute_train_368",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "There was an abundance of quality spooky memes in October.",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a disappointed-looking skeleton character with text that reads \"When the Spooktober is ending and you've been excited for spooky memes but you've only seen few and some of them weren't even that good.\" Crucially, the text states that there has been a lower quantity and quality of spooky memes than was anticipated for the month of October, which is also referred to as \"Spooktober\" in internet culture for its association with Halloween."
+  },
+  {
+    "id": "vflute_train_3490",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "got a terrible view from my room despite having platinum status . so much for the perks ,  ,  ,",
+    "label": "ENTAILS",
+    "explanation": "The image shows a view from a hotel room that overlooks a cluttered area filled with discarded mattresses and debris, which is disappointing despite the guest's high loyalty status with the hotel."
+  },
+  {
+    "id": "vflute_train_1264",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Seeing your game go viral years after it flopped, as happened with Among Us during the pandemic, would be an overwhelmingly incredible experience.",
+    "label": "ENTAILS",
+    "explanation": "The image shows three men with exaggerated expressions of shock and excitement, looking upwards, presumably at something incredible happening. The caption references the creators of the game Among Us, stating they are watching their game become a sensation two years after its release. Importantly, the image humorously implies that the delayed success of their game would elicit such a strong, overjoyed reaction, akin to what's depicted in the image."
+  },
+  {
+    "id": "vflute_train_1790",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "But times are hard, and silver bullets are expensive",
+    "label": "ENTAILS",
+    "explanation": "The image displays a group of silver bullets shining like diamonds. The claim that silver bullets are expensive is an entailment of the image, as diamonds are known to metaphorically represent high price and scarcity of commodities."
+  },
+  {
+    "id": "vflute_train_657",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Fine\u2014next time you slay the dragon and I'll cook.",
+    "label": "ENTAILS",
+    "explanation": "We expect that slaying a dragon is harder than cooking, but actually, the knight seems to have an easier time, as evidenced by the extremely messy kitchen and disheveled looking cook; this inversion of expectation is funny."
+  },
+  {
+    "id": "vflute_train_1943",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "He felt an intense anger",
+    "label": "ENTAILS",
+    "explanation": "The image shows a person with an angry expression being engulfed by a wave, evoking a metaphor of feeling a wave of anger, highlighting the intensity of the emotion."
+  },
+  {
+    "id": "vflute_train_4392",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "this week keeps getting better .  my neighbor thinks my lovely but  yrs older friend is my daughter . do i look that tired ? #nofilter",
+    "label": "CONTRADICTS",
+    "explanation": "The image is a close-up of a woman's face looking tired or concerned. The author's week is deteriorating as her neighbor mistakenly assumes her older friend is her offspring, possibly due to her exhausted appearance."
+  },
+  {
+    "id": "vflute_train_872",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "nothing better than #design of convention centers #patternsrus #imdizzy #hateit #baddesign #allthethings",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a hallway in a convention center with a highly patterned carpet and walls, which the person dislikes as it causes them to feel dizzy."
+  },
+  {
+    "id": "vflute_train_3078",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "People from other countries frequently praise America for its healthcare system.",
+    "label": "CONTRADICTS",
+    "explanation": "The image features Megamind, a character with a distinctive appearance, looking into the camera. The text overlays create a scenario where an American makes fun of another country, and in response, someone from that country retorts with the question \"NO HEALTHCARE?\" This implies that Americans might be criticized for their healthcare system, turning the tables in a playful manner. The meme entwines the idea of national stereotypes and a humorous retort, aligning with a claim about occasional mockeries and their perceived responses."
+  },
+  {
+    "id": "vflute_train_2240",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "dreading having between and physical copies of new album #songsofexperience ...",
+    "label": "ENTAILS",
+    "explanation": "The image is a screenshot from the Ticketmaster website announcing that every ticket purchased for an event includes a copy of U2's album \"Songs of Experience,\" which aligns with the author's sentiment of dreading having to receive physical copies of the new album."
+  },
+  {
+    "id": "vflute_train_2850",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Flash's bike is considered a non-useful accessory for a super hero.",
+    "label": "ENTAILS",
+    "explanation": "The image shows text that reads \"If you ever feel useless just think about Flash's bike,\" above a toy model of a red and yellow motorcycle, presumably designed for the superhero character Flash. Crucially, Flash is known for his super-speed, making the use of a vehicle redundant and humorously impractical for someone who can move faster than any motorcycle. The meme implies that the bike serves no purpose for a hero who doesn't require transportation aid, thus making it a non-useful accessory for the superhero."
+  },
+  {
+    "id": "vflute_train_1028",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "so glad i upgraded to the 10mbs package from 5mbs  #slowspeed #internet why o  why .... must fix .",
+    "label": "CONTRADICTS",
+    "explanation": "The image displays the results of an internet speed test, showing download and upload speeds much lower than expected, which is a source of frustration for the user who has upgraded their internet plan to achieve higher speeds."
+  },
+  {
+    "id": "vflute_train_2893",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "YouTube is overwhelmed with too many ads and lacks sufficient quality content.",
+    "label": "ENTAILS",
+    "explanation": "The image depicts a mock press conference with a person in front of microphones and a banner with YouTube logos. A speech bubble from the person reads, \"Videos are too controversial, only ads can be watched.\" This suggests a future scenario where YouTube prioritizes ads over actual video content due to controversies, which humorously implies the platform is saturated with advertisements and potentially lacking in quality video content."
+  },
+  {
+    "id": "vflute_train_379",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "The two men are openly visiting and photographing the Leaning Tower of Pisa without any intention to smuggle it.",
+    "label": "CONTRADICTS",
+    "explanation": "A claim is humorously conveyed through an image where two men are playfully portrayed as trying to smuggle the Leaning Tower of Pisa by aligning it with the opening of their bags. The visual elements of one man bending over with an open bag, aligning with the tower, and the other reaching toward the tower imply a comical attempt to fit the iconic structure into their bags. The caption \"The Pisa Tower now on display in the British Museum\" adds a humorous touch, suggesting that the tower has been successfully smuggled and is now part of a museum collection. The image humorously plays on the idea of attempting to transport a large and recognizable landmark in a clandestine manner."
+  },
+  {
+    "id": "vflute_train_1940",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Kanye is not responsible for causing his own problems; external factors or groups are to blame.",
+    "label": "CONTRADICTS",
+    "explanation": "The image is a cartoon meme split into four panels. In the first panel, a character labeled \"Kanye West\" is seen riding a bicycle. In the second panel, the character places a stick into the front wheel spokes, a metaphor for him being responsible for his own fall. The subsequent panels show the character crashing and blaming an unrelated group for his fall."
+  },
+  {
+    "id": "vflute_train_1584",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "their relationship is a house on fire",
+    "label": "CONTRADICTS",
+    "explanation": "The image depicts a happy couple sitting closely together, making a heart shape with their hands, which implies a loving and affectionate relationship. The metaphor \"their relationship is a house on fire\" suggests a relationship in turmoil or distress. Since the image displays contentment and intimacy, this contradicts the metaphor of a relationship being in a destructive or chaotic state."
+  },
+  {
+    "id": "vflute_train_1597",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "i can t believe how close to the add my sandwich looks .  what the hell is this ?",
+    "label": "CONTRADICTS",
+    "explanation": "The image is a comparison between an advertisement for a steak and cheese sandwich, which appears full and appetizing, and the actual sandwich received by the customer, which looks disappointingly plain and scarce in fillings, leading to the customer's dissatisfaction."
+  },
+  {
+    "id": "vflute_train_3717",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "You are not listening to me.",
+    "label": "ENTAILS",
+    "explanation": "The image shows a person next to a brick wall which has a speech bubble on top, suggesting the person is talking to a brick wall, which is a metaphor for feeling like the person is not listening to you."
+  },
+  {
+    "id": "vflute_train_2199",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "The questions asked by police officers after pulling over speeders are practical, as drivers will often honestly admit to breaking the law.",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a two-panel meme with a police officer asking a driver, \"Sir, do you have any idea how fast you were going?\" In the second panel, the officer is looking at a radar gun and says, \"Because this thing is out of battery.\" The meme suggests that the officer is unable to determine the vehicle's speed due to a radar gun malfunction, and is humorously implying that he is asking the driver to self-incriminate, which drivers are unlikely to do. This embodies a claim that the questions posed by officers can be seen as ridiculous since they rely on the driver to admit to speeding, something they have little incentive to do."
+  },
+  {
+    "id": "vflute_train_2595",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "not all nazis are on the left, just like not all humans are defined as male just 'cause \"man\" is in the word \"human\". #logic #realitycheck emoji_156",
+    "label": "ENTAILS",
+    "explanation": "The image displays a tweet from Dinesh D'Souza that reads, \"The term Nazi is a compression of the terms 'National' and 'Socialist' (Sozialismus)--hence all Nazis are by definition on the Left.\" The logic behind this statement is flawed because it suggests that including one concept in a word defines its entire meaning, similar to erroneously asserting that the presence of the word 'man' in 'human' means all humans are male."
+  },
+  {
+    "id": "vflute_train_1406",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "this isn t dangerous . going to teach my players to tackle like this at practice first thing tomorrow morning .",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a soccer player being tackled aggressively by an opponent, indicating that such a move is actually risky and wouldn't be recommended for teaching during practice."
+  },
+  {
+    "id": "vflute_train_4555",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Introverts are open to conversation when the topic is of interest to them.",
+    "label": "ENTAILS",
+    "explanation": "The image shows a frog peering alertly and attentively out of water with just its eyes visible above the surface. This is paired with the caption \"introverts when someone discusses a topic that interests them.\" The picture and caption combination suggest that introverts, who are often perceived as reserved or reclusive (like a submerged frog), become visibly engaged and attentive (like the frog's eyes peeking out) when the conversation turns to something they are passionate about. This imagery represents a claim that introverts are open to conversation when the topic is of interest to them."
+  },
+  {
+    "id": "vflute_train_4536",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "His heart within him is fully rotten.",
+    "label": "CONTRADICTS",
+    "explanation": "The image portrays a man with a heart with wings flapping inside his chest, which typically symbolizes love, hope, and positivity. However, the claim states that his heart is fully rotten, implying negativity and decay. This contradiction shows that the claim does not align with the message conveyed by the image."
+  },
+  {
+    "id": "vflute_train_4",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "so frustrated with my upgrade to the 10mbs package from 5mbs  #slowspeed #internet why o why .... must fix .",
+    "label": "ENTAILS",
+    "explanation": "The image displays the results of an internet speed test, showing download and upload speeds much lower than expected, which is a source of frustration for the user who has upgraded their internet plan to achieve higher speeds."
+  },
+  {
+    "id": "vflute_train_4430",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "thank you  for selling a new fridge on august 11th with 3/4 of the freon missing and a defective compressor",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a consumer product registration form for a refrigerator, highlighting the product and model information. The author is clearly frustrated with the vendor for selling a fridge that had a substantial amount of Freon missing and came with a faulty compressor."
+  },
+  {
+    "id": "vflute_train_2173",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "with both Obama and Trump having major shootings in their first year, it's clear gun control isn't working. #skeptical #guncontrol",
+    "label": "ENTAILS",
+    "explanation": "The image presents a list of major shootings with fatalities that occurred in the first year of Obama's presidency, suggesting skepticism towards the effectiveness of gun control measures."
+  },
+  {
+    "id": "vflute_train_3781",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "There is a sense of frustration over people being critiqued harshly for semantics on Twitter.",
+    "label": "ENTAILS",
+    "explanation": "The image depicts a scene resembling a historical crucifixion with animated characters, and one character is tied to a pole. Another character, appearing as an authority figure, proclaims to onlookers, \"Oh you better BELIEVE that's a crucifixion!\" The text above reads, \"Twitter users when someone misgenders an oxygen atom,\" mockingly suggesting that Twitter users are quick to overreact or escalate minor issues, such as an incorrect reference to something that cannot have a gender, akin to the extreme reaction of crucifixion for a transgression. This illustrates the claim of frustration directed at Twitter users for harshly critiquing others over seemingly trivial semantic details."
+  },
+  {
+    "id": "vflute_train_1487",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "Geez, it's twenty-five to life already.",
+    "label": "ENTAILS",
+    "explanation": "People often lose track of time at social gatherings with friends, which is depicted by the person checking his watch in the living room scene. The time he sees on his watch explains the prison: instead of seeing a usual time like \"five\", he humorously sees that the criminal sentence \"twenty-five to life\" has passed."
+  },
+  {
+    "id": "vflute_train_1595",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "heart sank",
+    "label": "ENTAILS",
+    "explanation": "The image displays a person with an expression of distress, his face contorted in agony and his hand clenched to his forehead. The metaphor \"heart sank\" entails the image because the person's expression and body language suggest he is experiencing a profound feeling of disappointment or despair, which is consistent with the emotional state described by the metaphor."
+  },
+  {
+    "id": "vflute_train_4201",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "struggling with studying for a test cuz my #sdit keeps sitting on my notes lol #collegelife #working4thegpa",
+    "label": "ENTAILS",
+    "explanation": "The image shows a dog lying on top of someone's study materials, making it difficult for the person to use their notes."
+  },
+  {
+    "id": "vflute_train_1551",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "You've found that your body is extremely fragile.",
+    "label": "CONTRADICTS",
+    "explanation": "The image depicts a person with steel armor surrounding their body, which suggests that their body is well-protected and not fragile."
+  },
+  {
+    "id": "vflute_train_1713",
+    "source": "vflute",
+    "phenomenon": "sarcasm",
+    "caption": "mike fisher retires from pro hockey . this must be a devastating day . simply an awful existence awaits him now . prayers up ...",
+    "label": "CONTRADICTS",
+    "explanation": "The image depicts a group of cheerful people dancing in the street, suggesting that there's still a joyful and fulfilling life ahead for someone who has recently retired from professional sports."
+  },
+  {
+    "id": "vflute_train_3485",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "He lived in a state of eternal happiness.",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a man in a coffin, expressing terror and gripping the sides, which suggests that he lived in a state of deep terror. This contradicts the claim that he lived in a state of eternal happiness."
+  },
+  {
+    "id": "vflute_train_4315",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "The faculty meeting was calm and relaxing",
+    "label": "CONTRADICTS",
+    "explanation": "The image shows a dark and somber atmosphere with a person seemingly distressed or defeated, contradicting the claim that the faculty meeting was calm and relaxing."
+  },
+  {
+    "id": "vflute_train_1540",
+    "source": "vflute",
+    "phenomenon": "humor",
+    "caption": "A black hole will absorb anything that crosses its event horizon.",
+    "label": "ENTAILS",
+    "explanation": "The image shows a meme with a man labeled \"Black hole\" turning his head away from a woman labeled \"Anything in front of it,\" ostensibly to look at another unseen entity off-screen, mimicking the behavior of the \"Distracted Boyfriend\" meme. The humorous implication here is that the black hole would similarly be drawn to anything that crosses its path, just as the man in the meme is drawn to look away from his current interest. This visual metaphor represents a claim that a black hole will absorb anything that crosses its event horizon."
+  },
+  {
+    "id": "vflute_train_1340",
+    "source": "vflute",
+    "phenomenon": "metaphor",
+    "caption": "cute teddy bear",
+    "label": "CONTRADICTS",
+    "explanation": "The image depicts a man with a beard wearing a jacket. The metaphor \"cute teddy bear\" contradicts the image as the subject is an adult human, not a plush toy, and the metaphor typically denotes something soft and inanimate, which opposes the nature of a living person."
+  }
+]
