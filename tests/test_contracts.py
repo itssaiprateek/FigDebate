@@ -541,7 +541,7 @@ class DebateContractTests(unittest.TestCase):
         decision = {"_final_decision_valid": True, "label": "ENTAILS", "confidence": 0.1}
         self.assertFalse(engine.should_debate(decision, {"recommendation": "UNCERTAIN"}))
 
-    def test_uncorroborated_structured_relation_routes_to_level_two(self):
+    def test_uncorroborated_structured_relation_starts_with_level_one(self):
         assessment = DebateEngine.debate_assessment(
             {"label": "ENTAILS", "_final_decision_valid": True},
             {
@@ -552,7 +552,7 @@ class DebateContractTests(unittest.TestCase):
             },
         )
         self.assertTrue(assessment["trigger"])
-        self.assertEqual(assessment["level"], 2)
+        self.assertEqual(assessment["level"], 1)
         self.assertIn("uncorroborated_structured_relation", assessment["signals"])
 
     def test_memory_warning_can_raise_a_relation_case_to_level_one(self):

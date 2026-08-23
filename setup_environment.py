@@ -37,6 +37,27 @@ def run(command: list[str]) -> None:
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
 
+def pin_environment_locally() -> None:
+    """Prevent OneDrive Files On-Demand from offloading virtualenv files."""
+    if sys.platform != "win32" or not ENV_DIR.exists():
+        return
+    if "onedrive" not in str(PROJECT_ROOT).lower():
+        return
+    completed = subprocess.run(
+        ["attrib", "+P", "-U", str(ENV_DIR), "/S", "/D"],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Could not mark .venv as Always Available on this device. "
+            "Move the repository outside OneDrive or disable Files On-Demand "
+            "for .venv before continuing."
+        )
+
+
 def environment_is_usable() -> bool:
     python = environment_python()
     if not python.exists():
@@ -163,6 +184,7 @@ def main() -> int:
     if not environment_is_usable():
         print(f"Creating {ENV_DIR}")
         venv.EnvBuilder(with_pip=True).create(ENV_DIR)
+    pin_environment_locally()
 
     python = str(environment_python())
     run([python, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
@@ -181,6 +203,8 @@ def main() -> int:
             "-p",
             "test_*.py",
         ])
+
+    pin_environment_locally()
 
     write_environment_state()
 

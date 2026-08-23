@@ -24,7 +24,7 @@ VISION_MODEL_ID = "llava-hf/llava-1.5-7b-hf"
 VISION_MODEL_REVISION = "b234b804b114d9e37bb655e11cbbb5f5e971b7a9"
 LANGUAGE_MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.2"
 LANGUAGE_MODEL_REVISION = "63a8b081895390a26e140280378bc85ec8bce07a"
-EVIDENCE_LEDGER_VERSION = "9.0"
+EVIDENCE_LEDGER_VERSION = "10.0"
 
 
 FIELDNAMES = [
@@ -45,6 +45,9 @@ FIELDNAMES = [
     "debate_proposed_decision_method",
     "debate_review_status", "debate_trigger_reason",
     "debate_level", "debate_need_score", "debate_need_signals",
+    "debate_grounding_recovery_attempted", "debate_grounding_recovery_success",
+    "debate_grounding_recovery_evidence_success",
+    "debate_structured_recovery_proposal", "debate_grounding_recovery_seconds",
     "agent1_critique_stance", "agent1_critique_recommendation",
     "agent1_critique_reason",
     "agent1_critique_method", "agent1_critique_format_valid",
@@ -81,6 +84,7 @@ FIELDNAMES = [
     "agent1_visual_metaphor_count", "agent1_schema_complete",
     "agent1_schema_format_valid", "agent1_factual_grounding_present",
     "agent1_ocr_usable", "agent1_relation_binding_present",
+    "agent1_entity_state_binding_count", "agent1_entity_state_bindings",
     "agent1_schema_issues", "agent1_targeted_recovery_attempted",
     "agent1_targeted_recovery_success", "agent1_targeted_recovery_reason",
     "agent1_targeted_recovery_seconds",
@@ -92,7 +96,15 @@ FIELDNAMES = [
     "claim_relation_predicate", "claim_relation_resolved",
     "claim_contract_valid", "claim_contract_proposition_preserved",
     "claim_contract_entity_frame_preserved", "claim_contract_warnings",
+    "claim_literal_contract_valid", "claim_pragmatic_contract_valid",
+    "claim_interpretation_route_valid", "claim_pragmatic_activated",
+    "claim_interpretation_status", "claim_reversal_status",
+    "claim_figurative_cue_anchored", "claim_reversal_cue_anchored",
+    "claim_selected_proposition", "claim_literal_proposition",
+    "claim_pragmatic_proposition",
     "structured_relation_candidate_count",
+    "decision_packet_profile", "decision_packet_support_count",
+    "decision_packet_conflict_count", "decision_packet_anchor_count",
     "review_board_status", "review_board_binary_valid",
     "review_board_directionally_grounded", "review_board_source_grounded",
     "review_board_confidence_cap_applied",
@@ -106,6 +118,7 @@ FIELDNAMES = [
     "feedback_agent2_memory_before", "feedback_agent1_memory_after",
     "feedback_agent2_memory_after", "feedback_arbiter_memory_before",
     "feedback_arbiter_memory_after", "feedback_target_agent",
+    "feedback_matched_target_agents", "feedback_matched_failure_mechanisms",
     "feedback_matched_rule_ids", "feedback_matched_rule_count",
     "feedback_available_rule_count",
     "feedback_matched_rule_scores", "feedback_baseline_prediction",
@@ -240,8 +253,9 @@ def pipeline_source_checksum():
     paths = (
         "agents/visual_grounding.py", "agents/claim_extraction.py",
         "arbiter/arbiter.py", "comparators/evidence_comparator.py",
-        "engine/batch_runner.py",
+        "engine/batch_runner.py", "engine/decision_packet.py",
         "engine/debate.py", "engine/evidence_ledger.py",
+        "engine/evidence_binding.py",
         "engine/evidence_verifier.py", "models/nli_model.py",
         "engine/claim_contract.py", "engine/relation_schema.py",
         "engine/region_verifier.py", "engine/review_board.py",
@@ -348,6 +362,31 @@ def build_record(index, raw, result, elapsed):
     targeted_verification = decision.get(
         "_targeted_region_verification", {}
     ) or {}
+    decision_packet = (
+        decision.get("_decision_packet")
+        or primary.get("_decision_packet")
+        or {}
+    )
+    packet_support = decision_packet.get("support_evidence", []) or []
+    packet_conflict = decision_packet.get("conflict_evidence", []) or []
+    has_packet_support = any(
+        item.get("decision_grade", False) for item in packet_support
+    )
+    has_packet_conflict = any(
+        item.get("decision_grade", False) for item in packet_conflict
+    )
+    if has_packet_support and has_packet_conflict:
+        packet_profile = "MIXED_DIRECTIONAL_EVIDENCE"
+    elif has_packet_support:
+        packet_profile = "SUPPORT_ONLY"
+    elif has_packet_conflict:
+        packet_profile = "CONFLICT_ONLY"
+    else:
+        packet_profile = "NO_DIRECTIONAL_EVIDENCE"
+    recovered_visual = debate.get("recovered_visual_output", {}) or {}
+    debate_level = int(
+        debate.get("level", result.get("debate_level", 0)) or 0
+    )
     debate_visual_evidence = [
         item for item in ledger
         if item.get("source") == "debate_visual_reinspection"
@@ -398,6 +437,22 @@ def build_record(index, raw, result, elapsed):
         ),
         "debate_need_signals": text_list(
             debate.get("need_signals", result.get("debate_need_signals", []))
+        ),
+        "debate_grounding_recovery_attempted": bool(
+            result.get("debate_triggered", False) and debate_level >= 2
+        ),
+        "debate_grounding_recovery_success": bool(
+            recovered_visual.get("_targeted_recovery_success", False)
+        ),
+        "debate_grounding_recovery_evidence_success": bool(
+            recovered_visual.get("_targeted_recovery_evidence_success", False)
+        ),
+        "debate_structured_recovery_proposal": (
+            agent1_critique.get("review_method")
+            == "structured_recovery_binding"
+        ),
+        "debate_grounding_recovery_seconds": debate.get(
+            "grounding_recovery_seconds", 0.0
         ),
         "agent1_critique_stance": agent1_critique.get("stance", ""),
         "agent1_critique_recommendation": agent1_critique.get(
@@ -517,6 +572,13 @@ def build_record(index, raw, result, elapsed):
         "agent1_relation_binding_present": visual.get(
             "relation_binding_present", False
         ),
+        "agent1_entity_state_binding_count": visual.get(
+            "entity_state_binding_count",
+            len(visual.get("entity_state_bindings", []) or []),
+        ),
+        "agent1_entity_state_bindings": json.dumps(
+            visual.get("entity_state_bindings", []) or [], ensure_ascii=True
+        ),
         "agent1_schema_issues": text_list(visual.get("schema_issues")),
         "agent1_targeted_recovery_attempted": visual.get(
             "_targeted_recovery_attempted", False
@@ -559,8 +621,47 @@ def build_record(index, raw, result, elapsed):
             "entity_frame_preserved", False
         ),
         "claim_contract_warnings": text_list(claim_contract.get("warnings")),
+        "claim_literal_contract_valid": claim_contract.get(
+            "literal_contract_valid", False
+        ),
+        "claim_pragmatic_contract_valid": claim_contract.get(
+            "pragmatic_contract_valid", False
+        ),
+        "claim_interpretation_route_valid": claim_contract.get(
+            "interpretation_route_valid", False
+        ),
+        "claim_pragmatic_activated": claim_contract.get(
+            "pragmatic_interpretation_activated", False
+        ),
+        "claim_interpretation_status": claim_contract.get(
+            "interpretation_status", "unresolved"
+        ),
+        "claim_reversal_status": claim_contract.get(
+            "reversal_status", "unclear"
+        ),
+        "claim_figurative_cue_anchored": claim_contract.get(
+            "figurative_cue_anchored", False
+        ),
+        "claim_reversal_cue_anchored": claim_contract.get(
+            "reversal_cue_anchored", False
+        ),
+        "claim_selected_proposition": claim_contract.get(
+            "selected_proposition", ""
+        ),
+        "claim_literal_proposition": claim_contract.get(
+            "literal_proposition", ""
+        ),
+        "claim_pragmatic_proposition": claim_contract.get(
+            "pragmatic_proposition", ""
+        ),
         "structured_relation_candidate_count": len(
             comparison.get("structured_relation_candidates", []) or []
+        ),
+        "decision_packet_profile": packet_profile,
+        "decision_packet_support_count": len(packet_support),
+        "decision_packet_conflict_count": len(packet_conflict),
+        "decision_packet_anchor_count": len(
+            decision_packet.get("grounded_anchors", []) or []
         ),
         "review_board_status": review_board.get("status"),
         "review_board_binary_valid": review_board.get("binary_valid", False),
@@ -608,6 +709,12 @@ def build_record(index, raw, result, elapsed):
         "feedback_agent2_memory_after": feedback.get("agent2_memory_size_after", 0),
         "feedback_arbiter_memory_after": feedback.get("arbiter_memory_size_after", 0),
         "feedback_target_agent": feedback.get("feedback_target_agent"),
+        "feedback_matched_target_agents": text_list(
+            feedback.get("matched_target_agents", [])
+        ),
+        "feedback_matched_failure_mechanisms": text_list(
+            feedback.get("matched_failure_mechanisms", [])
+        ),
         "feedback_matched_rule_ids": text_list(matched_rule_ids),
         "feedback_matched_rule_count": len(matched_rule_ids),
         "feedback_available_rule_count": feedback.get("available_rule_count", 0),
@@ -873,6 +980,18 @@ def write_feedback_decision_logs(run_dir, records):
 
 def main():
     args = parse_args()
+
+    # Validate the complete runtime before loading large models or creating a
+    # partial run. This catches stale OneDrive package metadata and incompatible
+    # Torch/Transformers installations at the start of every inference command.
+    from check_environment import main as check_environment
+
+    if check_environment() != 0:
+        raise RuntimeError(
+            "FigDebate environment validation failed. Rebuild .venv with "
+            "setup_environment.py before running inference."
+        )
+
     set_reproducibility(args.seed)
     if args.feedback_mode == "verified" and not args.verified_feedback_file:
         raise ValueError("Verified feedback mode requires --verified-feedback-file.")

@@ -7,10 +7,13 @@ torchvision==0.20.1+cu121
 accelerate==1.14.0
 bitsandbytes==0.50.0
 datasets==5.0.1
-huggingface-hub==1.27.0
+huggingface-hub==0.26.2
 pandas==3.0.5
 pillow==12.2.0
 safetensors==0.8.0
 scikit-learn==1.9.0
 sentencepiece==0.2.2
-transformers==5.15.0
+# Transformers 5.x imports PyTorch FSDP2 APIs that are unavailable in the
+# validated torch 2.5.1 runtime. Version 4.46.3 provides the LLaVA 1.5 and
+# Mistral APIs used by FigDebate and belongs to the same torch release era.
+transformers==4.46.3

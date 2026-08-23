@@ -40,11 +40,20 @@ Before choosing the type, check:
 Return exactly these concise sections:
 Figurative Type: sarcasm, metaphor, humor, or literal
 Linguistic Cue: short quoted phrase or cue
-Polarity Reversal: yes, no, or unclear, followed by a short reason
+Interpretation Status: literal_only, caption_figurative, requires_image, or unclear
+Polarity Reversal: yes, no, requires_image, or unclear
+Reversal Cue: short quoted cue that licenses reversal, or None
 Literal Meaning: one sentence
 Underlying Message: one sentence
-Caption Proposition: one declarative sentence preserving the caption's key
-entities, numbers, comparison, and polarity
+Literal Proposition: one declarative sentence preserving the caption's exact
+entities, numbers, comparison, negation, and surface polarity
+Pragmatic Proposition: the caption's intended claim when the caption itself
+licenses it; otherwise repeat Literal Proposition
+Caption Proposition: repeat Pragmatic Proposition only for a licensed
+caption_figurative reading; otherwise repeat Literal Proposition
+Literal Polarity: positive, negative, neutral, mixed, or unclear
+Pragmatic Polarity: positive, negative, neutral, mixed, or unclear
+Evaluation Target: entity receiving the praise, blame, or judgment, or None
 Claim Subject: the entity or group whose state is asserted
 Claim Predicate: the main state, action, quality, or relation
 Claim Object: the object or target of the predicate, or None
@@ -66,6 +75,9 @@ Confidence: one decimal from 0 to 1
 """
     FIGURATIVE_TYPES = ("sarcasm", "metaphor", "humor", "literal")
     CLAIM_FRAME_FIELDS = (
+        "literal_proposition", "pragmatic_proposition",
+        "interpretation_status", "polarity_reversal", "reversal_cue",
+        "literal_polarity", "pragmatic_polarity", "evaluation_target",
         "caption_proposition", "claim_subject", "claim_predicate",
         "claim_object", "claim_source", "claim_target",
         "asserted_property", "relation_family", "expected_visual_state",
@@ -260,12 +272,24 @@ Answer with one lowercase word: sarcasm, metaphor, humor, or literal.
 
     def _retry_structured_claim(self, caption):
         prompt = f"""
-Repair only the structured claim for this caption. Preserve every explicit
-entity, number, negation, comparison, and polarity. Use None when a source,
-object, or target is absent. Relation Family must be exactly one of:
+Repair only the literal/pragmatic claim contract for this caption. Do not use
+an unseen image. Preserve every explicit entity, number, negation, comparison,
+and surface polarity in Literal Proposition. Activate a pragmatic proposition
+only when a quoted caption cue licenses it; otherwise use literal_only or
+requires_image and repeat the literal proposition. Use None when a source,
+object, target, evaluation target, or reversal cue is absent. Relation Family
+must be exactly one of:
 trajectory, pace, outcome, sentiment, safety, trust, association, quantity,
 or other. Return exactly these headings and no commentary:
 
+Literal Proposition:
+Pragmatic Proposition:
+Interpretation Status:
+Polarity Reversal:
+Reversal Cue:
+Literal Polarity:
+Pragmatic Polarity:
+Evaluation Target:
 Caption Proposition:
 Claim Subject:
 Claim Predicate:
@@ -289,7 +313,7 @@ Caption: {caption}
         with torch.inference_mode():
             output = self.model.generate(
                 **inputs,
-                max_new_tokens=180,
+                max_new_tokens=260,
                 do_sample=False,
                 repetition_penalty=1.05,
                 no_repeat_ngram_size=6,
@@ -326,7 +350,19 @@ Caption: {caption}
 
         figurative_type_raw = parsed.get("figurative_type", "")
         background_knowledge = parsed.get("background_knowledge", "")
-        caption_proposition = parsed.get("caption_proposition", "")
+        literal_proposition = (
+            parsed.get("literal_proposition", "")
+            or parsed.get("caption_proposition", "")
+            or parsed.get("literal_meaning", "")
+        )
+        pragmatic_proposition = (
+            parsed.get("pragmatic_proposition", "")
+            or parsed.get("underlying_message", "")
+            or literal_proposition
+        )
+        caption_proposition = (
+            parsed.get("caption_proposition", "") or literal_proposition
+        )
         explicit_claims = parsed.get("explicit_claims", []) or []
         if caption_proposition and not explicit_claims:
             explicit_claims = [caption_proposition]
@@ -336,6 +372,21 @@ Caption: {caption}
                 figurative_type_raw
             )
         )
+        interpretation_status = str(
+            parsed.get("interpretation_status", "") or ""
+        ).strip().lower().replace(" ", "_")
+        if interpretation_status not in {
+            "literal_only", "caption_figurative", "requires_image", "unclear"
+        }:
+            cue = str(parsed.get("linguistic_cue", "") or "").strip().lower()
+            if figurative_type == "literal":
+                interpretation_status = "literal_only"
+            elif figurative_type in {"sarcasm", "metaphor", "humor"} and cue not in {
+                "", "none", "n/a", "unknown", "unclear"
+            }:
+                interpretation_status = "caption_figurative"
+            else:
+                interpretation_status = "requires_image"
         relation_family_raw = parsed.get("relation_family", "")
         relation_family = normalize_relation_family(
             relation_family_raw,
@@ -350,9 +401,16 @@ Caption: {caption}
             "intended_meaning": parsed.get("underlying_message", ""),
             "linguistic_cue": parsed.get("linguistic_cue", ""),
             "polarity_reversal": parsed.get("polarity_reversal", ""),
+            "reversal_cue": parsed.get("reversal_cue", ""),
             "background_knowledge": background_knowledge or "Not specified",
             "non_literal_expressions": parsed.get("non_literal_expressions", []) or [],
             "caption_proposition": caption_proposition,
+            "literal_proposition": literal_proposition,
+            "pragmatic_proposition": pragmatic_proposition,
+            "interpretation_status": interpretation_status,
+            "literal_polarity": parsed.get("literal_polarity", ""),
+            "pragmatic_polarity": parsed.get("pragmatic_polarity", ""),
+            "evaluation_target": parsed.get("evaluation_target", ""),
             "claim_subject": parsed.get("claim_subject", ""),
             "claim_predicate": parsed.get("claim_predicate", ""),
             "claim_object": parsed.get("claim_object", ""),
@@ -439,7 +497,7 @@ Caption:
 
             output = self.model.generate(
                 **inputs,
-                max_new_tokens=300,
+                max_new_tokens=360,
                 do_sample=False,
                 repetition_penalty=1.08,
                 no_repeat_ngram_size=8,

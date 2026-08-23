@@ -206,8 +206,14 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     "update_applied": False,
                     "candidate_recorded": False,
                     "failure_type": None,
-                    "feedback_target_agent": (
-                        "arbiter" if base_context.get("matched_rule_ids") else None
+                    "feedback_target_agent": base_context.get(
+                        "matched_target_agents", []
+                    ),
+                    "matched_target_agents": base_context.get(
+                        "matched_target_agents", []
+                    ),
+                    "matched_failure_mechanisms": base_context.get(
+                        "matched_failure_mechanisms", []
                     ),
                     "agent1_memory_size_after": base_context.get(
                         "agent1_memory_size_before", 0
@@ -397,17 +403,43 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     }
                     if self.feedback_mode == "verified":
                         loop = self.debate.feedback_loop
-                        matched_rules = loop.matching_rules("arbiter", feedback_case)
-                        matched_rule_ids = loop.matching_rule_ids(
-                            "arbiter", feedback_case
-                        )
-                        matched_rule_scores = loop.matching_rule_scores(
-                            "arbiter", feedback_case
-                        )
+                        matched_rules = []
+                        matched_rule_scores = {}
+                        matched_rule_agents = {}
+                        for feedback_agent in sorted(loop.VALID_AGENTS):
+                            for item in loop.matching_rules(
+                                feedback_agent, feedback_case
+                            ):
+                                matched = dict(item)
+                                matched["_target_agent"] = feedback_agent
+                                matched_rules.append(matched)
+                                memory_id = (
+                                    item.get("memory_id")
+                                    or item.get("failure_type")
+                                )
+                                matched_rule_scores[memory_id] = item.get(
+                                    "_match_score", 0.0
+                                )
+                                matched_rule_agents[memory_id] = feedback_agent
+                        matched_rules = sorted(
+                            matched_rules,
+                            key=lambda item: (
+                                -item.get("_match_score", 0.0),
+                                item.get("memory_id", ""),
+                            ),
+                        )[:3]
+                        matched_rule_ids = [
+                            item.get("memory_id") or item.get("failure_type")
+                            for item in matched_rules
+                        ]
                         if matched_rules:
                             comparison = dict(comparison)
                             comparison["feedback_warning"] = {
                                 "memory_ids": matched_rule_ids,
+                                "target_agents": {
+                                    memory_id: matched_rule_agents.get(memory_id)
+                                    for memory_id in matched_rule_ids
+                                },
                                 "failure_patterns": sorted({
                                     item.get(
                                         "failure_mechanism",
@@ -462,6 +494,18 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                         "memory_active": bool(matched_rule_ids),
                         "matched_rule_ids": matched_rule_ids,
                         "matched_rule_scores": matched_rule_scores,
+                        "matched_target_agents": sorted({
+                            item.get("_target_agent")
+                            for item in matched_rules
+                            if item.get("_target_agent")
+                        }),
+                        "matched_failure_mechanisms": sorted({
+                            item.get(
+                                "failure_mechanism",
+                                item.get("failure_type", "reviewed_error"),
+                            )
+                            for item in matched_rules
+                        }),
                         "feedback_revision_accepted": feedback_revision_accepted,
                         "feedback_revision_reason": feedback_revision_reason,
                         "feedback_candidate_label": (

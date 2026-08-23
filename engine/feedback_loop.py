@@ -10,7 +10,7 @@ import os
 import re
 from datetime import datetime
 
-from engine.evidence_ledger import RELATION_FOR_LABEL, evidence_ids
+from engine.evidence_ledger import evidence_ids
 from engine.review_board import review_revision
 
 
@@ -39,6 +39,18 @@ class FeedbackLoop:
             "When the caption itself has no clear figurative device, mark it "
             "literal instead of guessing a phenomenon that may exist only in the image."
         ),
+        "visual_schema_incomplete": (
+            "Reacquire a complete caption-blind visual record before reasoning; "
+            "do not compensate for missing observations with caption assumptions."
+        ),
+        "entity_state_binding_missing": (
+            "Bind each relevant visible entity to its observed state, text, and "
+            "image region before comparing it with the caption relation."
+        ),
+        "claim_contract_unresolved": (
+            "Repair the literal and pragmatic claim contract before directional "
+            "reasoning; preserve entities, negation, polarity, and the opposing states."
+        ),
     }
     RULE_CONDITIONS = {
         "missed_grounded_support": {
@@ -62,6 +74,16 @@ class FeedbackLoop:
         "caption_analysis_unresolved": {
             "figurative_type": "unknown",
         },
+        "visual_schema_incomplete": {
+            "visual_schema_complete": False,
+        },
+        "entity_state_binding_missing": {
+            "relation_binding_required": True,
+            "relation_binding_observed": False,
+        },
+        "claim_contract_unresolved": {
+            "claim_contract_valid": False,
+        },
     }
 
     STOPWORDS = {
@@ -70,8 +92,8 @@ class FeedbackLoop:
         "its", "of", "on", "or", "she", "that", "the", "their", "them",
         "they", "this", "to", "was", "were", "with", "you", "your",
     }
-    MIN_CASE_SIMILARITY = 0.72
-    MEMORY_SCHEMA_VERSION = 2
+    MIN_CASE_SIMILARITY = 0.65
+    MEMORY_SCHEMA_VERSION = 3
 
     def __init__(self, max_examples=100, log_file="step4_feedback_log.json"):
         self.max_examples = max_examples
@@ -205,6 +227,26 @@ class FeedbackLoop:
             "claim_contract_valid": bool(
                 claim_contract.get("safe_for_directional_reasoning", False)
             ),
+            "claim_warning_types": sorted(
+                str(item) for item in claim_contract.get("warnings", []) or []
+                if str(item).strip()
+            ),
+            "interpretation_status": claim_contract.get(
+                "interpretation_status", "legacy"
+            ),
+            "relation_resolved": bool(claim_relation.get("resolved", False)),
+            "visual_schema_complete": bool(
+                visual.get("schema_complete", False)
+            ),
+            "ocr_usable": bool(visual.get("ocr_usable", False)),
+            "relation_binding_required": bool(
+                comparison.get("relation_binding_required", False)
+            ),
+            "relation_binding_observed": bool(
+                comparison.get("relation_binding_observed", False)
+            ),
+            "has_support": bool(comparison.get("supporting_evidence")),
+            "has_conflict": bool(comparison.get("contradicting_evidence")),
         }
 
     @staticmethod
@@ -225,6 +267,15 @@ class FeedbackLoop:
             "caption_analysis_unresolved": (
                 "Is the caption itself figurative, or is the figurative mechanism only visual?"
             ),
+            "visual_schema_incomplete": (
+                "Which caption-blind visual fields must be reacquired before reasoning?"
+            ),
+            "entity_state_binding_missing": (
+                "Which visible entity owns each observed state, text phrase, and region?"
+            ),
+            "claim_contract_unresolved": (
+                "Which literal or pragmatic claim field failed preservation or polarity validation?"
+            ),
         }.get(failure_type, "What current-sample evidence would prevent repeating this reasoning error?")
 
     def add_verified_case(
@@ -234,31 +285,33 @@ class FeedbackLoop:
         failure_type,
         advice,
         metadata=None,
+        target_agent=None,
     ):
         if ground_truth not in {"ENTAILS", "CONTRADICTS"}:
             return False
         metadata = metadata or {}
+        target_agent = target_agent or "arbiter"
+        if target_agent not in self.VALID_AGENTS:
+            raise ValueError(f"Unknown feedback agent: {target_agent}")
+        memory = self._memory_for(target_agent)
         memory_id = str(
             metadata.get("sample_id")
             or metadata.get("id")
-            or f"case_{len(self.arbiter_memory) + 1}"
+            or f"case_{len(memory) + 1}"
         )
         signature = self.build_case_signature(context)
-        if (
-            signature.get("relation_family") == "unresolved"
-            or not signature.get("claim_contract_valid", False)
-        ):
-            return False
         pattern_key = "|".join(map(str, (
             failure_type,
+            target_agent,
             signature.get("relation_family"),
-            signature.get("claim_polarity"),
             signature.get("evidence_status"),
-            signature.get("figurative_type"),
-            " ".join(signature.get("tokens", [])[:8]),
+            signature.get("interpretation_status"),
+            signature.get("claim_contract_valid"),
+            signature.get("relation_binding_required"),
+            signature.get("relation_binding_observed"),
         )))
         existing = next(
-            (item for item in self.arbiter_memory if item.get("pattern_key") == pattern_key),
+            (item for item in memory if item.get("pattern_key") == pattern_key),
             None,
         )
         if existing:
@@ -266,8 +319,16 @@ class FeedbackLoop:
             if memory_id not in source_ids:
                 source_ids.append(memory_id)
             return False
+        application_conditions = self.RULE_CONDITIONS.get(
+            failure_type,
+            {"comparison_status": signature.get("evidence_status")},
+        )
+        if not self._conditions_apply(application_conditions, context):
+            application_conditions = {
+                "comparison_status": signature.get("evidence_status")
+            }
         item = {
-            "agent": "arbiter",
+            "agent": target_agent,
             "schema_version": self.MEMORY_SCHEMA_VERSION,
             "memory_type": "procedural_case",
             "memory_id": memory_id,
@@ -278,12 +339,7 @@ class FeedbackLoop:
             "signature": signature,
             "pattern_key": pattern_key,
             "diagnostic_question": self._diagnostic_for_failure(failure_type),
-            "application_conditions": {
-                "relation_family": signature.get("relation_family"),
-                "evidence_status": signature.get("evidence_status"),
-                "figurative_type": signature.get("figurative_type"),
-                "claim_contract_valid": True,
-            },
+            "application_conditions": application_conditions,
             "exclusion_conditions": [
                 "Do not copy source-sample visual facts.",
                 "Do not change a label without current-image evidence.",
@@ -298,9 +354,9 @@ class FeedbackLoop:
             },
             "metadata": metadata,
         }
-        self.arbiter_memory.append(item)
-        if len(self.arbiter_memory) > self.max_examples:
-            self.arbiter_memory.pop(0)
+        memory.append(item)
+        if len(memory) > self.max_examples:
+            memory.pop(0)
         self.save_log(
             "verified_case_memory",
             metadata,
@@ -308,6 +364,7 @@ class FeedbackLoop:
                 "memory_id": memory_id,
                 "failure_type": failure_type,
                 "memory_type": "procedural_case",
+                "target_agent": target_agent,
                 "signature": item["signature"],
             },
         )
@@ -337,8 +394,11 @@ class FeedbackLoop:
                         "verified_relation", "source_evidence_ids"
                     }
                 }
+                target_agent = loaded.get("agent", "arbiter")
+                if target_agent not in self.VALID_AGENTS:
+                    target_agent = "arbiter"
                 loaded.update({
-                    "agent": "arbiter",
+                    "agent": target_agent,
                     "schema_version": self.MEMORY_SCHEMA_VERSION,
                     "memory_type": "procedural_case",
                     "failure_mechanism": loaded.get(
@@ -365,11 +425,12 @@ class FeedbackLoop:
                     key: value for key, value in loaded["signature"].items()
                     if key != "initial_label"
                 }
+                target_memory = self._memory_for(target_agent)
                 if not any(
                     stored.get("memory_id") == loaded["memory_id"]
-                    for stored in self.arbiter_memory
+                    for stored in target_memory
                 ):
-                    self.arbiter_memory.append(loaded)
+                    target_memory.append(loaded)
                 continue
             self.add_verified_example(
                 item.get("agent"),
@@ -380,12 +441,14 @@ class FeedbackLoop:
             )
 
     @staticmethod
-    def _rule_applies(item, context):
+    def _conditions_apply(conditions, context):
         context = context or {}
         comparison = context.get("comparison", {}) or {}
         decision = context.get("decision", {}) or {}
         language = context.get("language_output", {}) or {}
-        conditions = item.get("conditions", {}) or {}
+        visual = context.get("visual_output", {}) or {}
+        claim_contract = language.get("claim_contract", {}) or {}
+        conditions = conditions or {}
         if not conditions:
             return False
         if conditions.get("comparison_status") and comparison.get(
@@ -400,6 +463,22 @@ class FeedbackLoop:
             language.get("figurative_type", "")
         ).lower() != conditions["figurative_type"]:
             return False
+        if "visual_schema_complete" in conditions and bool(
+            visual.get("schema_complete", False)
+        ) != bool(conditions["visual_schema_complete"]):
+            return False
+        if "claim_contract_valid" in conditions and bool(
+            claim_contract.get("safe_for_directional_reasoning", False)
+        ) != bool(conditions["claim_contract_valid"]):
+            return False
+        if "relation_binding_required" in conditions and bool(
+            comparison.get("relation_binding_required", False)
+        ) != bool(conditions["relation_binding_required"]):
+            return False
+        if "relation_binding_observed" in conditions and bool(
+            comparison.get("relation_binding_observed", False)
+        ) != bool(conditions["relation_binding_observed"]):
+            return False
         support = bool(comparison.get("supporting_evidence"))
         conflict = bool(comparison.get("contradicting_evidence"))
         if conditions.get("requires_support") and not support:
@@ -413,44 +492,53 @@ class FeedbackLoop:
         return True
 
     @classmethod
+    def _rule_applies(cls, item, context):
+        return cls._conditions_apply(item.get("conditions", {}) or {}, context)
+
+    @classmethod
     def _case_similarity(cls, item, context):
         current = cls.build_case_signature(context)
         stored = item.get("signature", {}) or {}
+        conditions = item.get("application_conditions", {}) or {}
+        if conditions and not cls._conditions_apply(conditions, context):
+            return 0.0
         current_family = current.get("relation_family", "unresolved")
         stored_family = stored.get("relation_family", "unresolved")
-        if (
-            current_family == "unresolved"
-            or stored_family == "unresolved"
-            or current_family != stored_family
-            or not current.get("claim_contract_valid", False)
-        ):
-            return 0.0
         current_type = current.get("figurative_type")
         stored_type = stored.get("figurative_type")
-        if (
-            current_type and stored_type
-            and current_type not in {"unknown", "literal"}
-            and stored_type not in {"unknown", "literal"}
-            and current_type != stored_type
-        ):
-            return 0.0
-        current_tokens = set(current.get("tokens", []))
-        stored_tokens = set(stored.get("tokens", []))
-        union = current_tokens | stored_tokens
-        token_score = len(current_tokens & stored_tokens) / len(union) if union else 0.0
-        if token_score < 0.15:
-            return 0.0
-        score = 0.35 * token_score
-        if current_type == stored_type:
-            score += 0.15
-        if current.get("evidence_status") == stored.get("evidence_status"):
-            score += 0.15
-        score += 0.25
-        current_polarity = current.get("claim_polarity", "unresolved")
-        stored_polarity = stored.get("claim_polarity", "unresolved")
-        if current_polarity != "unresolved" and current_polarity == stored_polarity:
-            score += 0.10
-        return round(score, 6)
+        discriminators = [
+            bool(current_type) and current_type == stored_type,
+            current.get("evidence_status") == stored.get("evidence_status"),
+            current.get("claim_polarity") not in {None, "", "unresolved"}
+            and current.get("claim_polarity") == stored.get("claim_polarity"),
+            current.get("interpretation_status") not in {
+                None, "", "legacy", "unclear"
+            }
+            and current.get("interpretation_status")
+            == stored.get("interpretation_status"),
+        ]
+        mechanism = item.get(
+            "failure_mechanism", item.get("failure_type", "")
+        )
+        if mechanism == "claim_contract_unresolved":
+            shared_warnings = set(current.get("claim_warning_types", [])) & set(
+                stored.get("claim_warning_types", [])
+            )
+            if not shared_warnings or sum(discriminators) < 1:
+                return 0.0
+            score = 0.65 + 0.05 * min(len(shared_warnings), 2)
+        else:
+            # Relation family is a reasoning mechanism, not a topic word.
+            # Requiring it prevents a pace error from routing an unrelated
+            # sentiment or safety case while still generalizing across nouns.
+            if (
+                current_family in {None, "", "unresolved"}
+                or current_family != stored_family
+                or sum(discriminators) < 2
+            ):
+                return 0.0
+            score = 0.65 + 0.05 * min(sum(discriminators), 3)
+        return round(min(score, 1.0), 6)
 
     def matching_rules(self, agent, context, max_rules=2):
         matches = []
@@ -548,7 +636,12 @@ class FeedbackLoop:
     ):
         """Update reliability after a held-out batch, never during inference."""
         updates = []
-        for item in self.arbiter_memory:
+        all_memories = [
+            item
+            for agent in sorted(self.VALID_AGENTS)
+            for item in self._memory_for(agent)
+        ]
+        for item in all_memories:
             if item.get("memory_id") not in set(memory_ids or []):
                 continue
             reliability = item.setdefault("reliability", {})
@@ -571,6 +664,7 @@ class FeedbackLoop:
             )
             updates.append({
                 "memory_id": item.get("memory_id"),
+                "agent": item.get("agent"),
                 **reliability,
             })
         return updates
@@ -586,6 +680,19 @@ class FeedbackLoop:
             return None
 
         status = comparison.get("required_evidence_status")
+        claim_contract = language_output.get("claim_contract", {}) or {}
+        if not claim_contract.get("safe_for_directional_reasoning", False):
+            failure_type = "claim_contract_unresolved"
+            return "agent2", failure_type, self.CALIBRATED_RULES[failure_type]
+        if not comparison.get("visual_schema_complete", True):
+            failure_type = "visual_schema_incomplete"
+            return "agent1", failure_type, self.CALIBRATED_RULES[failure_type]
+        if (
+            comparison.get("relation_binding_required", False)
+            and not comparison.get("relation_binding_observed", False)
+        ):
+            failure_type = "entity_state_binding_missing"
+            return "agent1", failure_type, self.CALIBRATED_RULES[failure_type]
         if prediction == "CONTRADICTS" and status == "SUPPORTED":
             failure_type = "missed_grounded_support"
             return "arbiter", failure_type, self.CALIBRATED_RULES[failure_type]
@@ -737,11 +844,17 @@ class FeedbackLoop:
             # predictions are audit events, not errors to memorize.
             return event
 
-        relation = RELATION_FOR_LABEL.get(ground_truth)
-        case_failure_type = (
-            "missed_grounded_support" if relation == "SUPPORT"
-            else "missed_grounded_conflict"
+        calibration = self.calibration_rule(
+            language_output,
+            comparison,
+            decision,
+            ground_truth,
+            phenomenon,
         )
+        if calibration is None:
+            event["failure_type"] = "unverified_memory_candidate"
+            return event
+        target_agent, case_failure_type, advice = calibration
         case_context = {
             "visual_output": visual_output,
             "language_output": language_output,
@@ -753,13 +866,14 @@ class FeedbackLoop:
             case_context,
             ground_truth,
             case_failure_type,
-            self.CALIBRATED_RULES[case_failure_type],
+            advice,
             metadata,
+            target_agent=target_agent,
         )
         if case_applied:
             event.update({
                 "update_applied": True,
-                "target_agent": "arbiter",
+                "target_agent": target_agent,
                 "failure_type": case_failure_type,
                 "agent1_memory_size": len(self.agent1_memory),
                 "agent2_memory_size": len(self.agent2_memory),

@@ -224,9 +224,9 @@ def evaluate_predictions(input_path, output_dir=None):
     comparator_df = pd.DataFrame([metric_row(group, "comparator_evidence_status", name) for name, group in df.groupby("comparator_evidence_status", dropna=False)]) if "comparator_evidence_status" in df else pd.DataFrame()
     runtime_df = runtime_profile(df)
     errors = df[df["ground_truth"] != df["prediction"]].copy()
-    error_columns = ("sample", "id", "phenomenon", "ground_truth", "prediction", "final_confidence", "semantic_entails_score", "semantic_contradicts_score", "semantic_neutral_score", "semantic_verifier_model", "decision_method", "comparator_evidence_status", "comparator_recommendation", "debate_triggered", "debate_trigger_reason", "debate_revision_accepted", "agent1_critique_method", "agent1_critique_observed_entity", "agent1_critique_observed_state", "agent1_critique_claim_relation", "agent1_region_pairs", "agent2_critique_format_valid", "claim_retry_attempted", "claim_retry_success", "feedback_mode", "feedback_memory_active", "figurative_type_predicted", "agent1_visible_text", "agent1_symbolic_tone", "agent1_schema_complete", "agent1_schema_issues", "agent1_targeted_recovery_attempted", "agent1_targeted_recovery_success", "arbiter_evidence_assessment", "final_reason")
+    error_columns = ("sample", "id", "phenomenon", "ground_truth", "prediction", "final_confidence", "semantic_entails_score", "semantic_contradicts_score", "semantic_neutral_score", "semantic_verifier_model", "decision_method", "comparator_evidence_status", "comparator_recommendation", "decision_packet_profile", "debate_triggered", "debate_trigger_reason", "debate_level", "debate_revision_accepted", "debate_grounding_recovery_evidence_success", "agent1_critique_method", "agent1_critique_observed_entity", "agent1_critique_observed_state", "agent1_critique_claim_relation", "agent1_region_pairs", "agent2_critique_format_valid", "claim_retry_attempted", "claim_retry_success", "claim_interpretation_status", "claim_pragmatic_activated", "claim_contract_valid", "feedback_mode", "feedback_memory_active", "feedback_matched_target_agents", "feedback_matched_failure_mechanisms", "figurative_type_predicted", "agent1_visible_text", "agent1_symbolic_tone", "agent1_schema_complete", "agent1_entity_state_binding_count", "agent1_schema_issues", "agent1_targeted_recovery_attempted", "agent1_targeted_recovery_success", "arbiter_evidence_assessment", "final_reason")
     errors = errors[[name for name in error_columns if name in errors]].copy()
-    grounding_columns = ("sample", "id", "phenomenon", "agent1_visible_text", "agent1_visible_text_count", "agent1_visual_fact_count", "agent1_visual_relation_count", "agent1_symbolic_tone", "agent1_visual_metaphor_count", "agent1_schema_complete", "agent1_schema_format_valid", "agent1_factual_grounding_present", "agent1_ocr_usable", "agent1_relation_binding_present", "agent1_schema_issues", "agent1_schema_retry_attempted", "agent1_schema_retry_success", "agent1_targeted_recovery_attempted", "agent1_targeted_recovery_success", "agent1_targeted_recovery_reason", "agent1_targeted_recovery_seconds", "agent1_visual_confidence", "agent1_seconds", "agent2_linguistic_cue", "agent2_polarity_reversal", "agent2_caption_proposition", "claim_retry_attempted", "claim_retry_success", "claim_retry_seconds", "agent2_language_confidence", "agent2_seconds", "arbiter_evidence_assessment")
+    grounding_columns = ("sample", "id", "phenomenon", "agent1_visible_text", "agent1_visible_text_count", "agent1_visual_fact_count", "agent1_visual_relation_count", "agent1_entity_state_binding_count", "agent1_entity_state_bindings", "agent1_symbolic_tone", "agent1_visual_metaphor_count", "agent1_schema_complete", "agent1_schema_format_valid", "agent1_factual_grounding_present", "agent1_ocr_usable", "agent1_relation_binding_present", "agent1_schema_issues", "agent1_schema_retry_attempted", "agent1_schema_retry_success", "agent1_targeted_recovery_attempted", "agent1_targeted_recovery_success", "agent1_targeted_recovery_reason", "agent1_targeted_recovery_seconds", "agent1_visual_confidence", "agent1_seconds", "agent2_linguistic_cue", "agent2_polarity_reversal", "agent2_caption_proposition", "claim_retry_attempted", "claim_retry_success", "claim_retry_seconds", "agent2_language_confidence", "agent2_seconds", "arbiter_evidence_assessment")
     grounding_df = df[[name for name in grounding_columns if name in df]].copy()
     evidence_columns = (
         "sample", "id", "phenomenon", "ground_truth", "prediction",
@@ -249,6 +249,8 @@ def evaluate_predictions(input_path, output_dir=None):
         "targeted_region_verification_method",
         "targeted_region_verification_decision_grade",
         "targeted_region_verification_reason",
+        "decision_packet_profile", "decision_packet_support_count",
+        "decision_packet_conflict_count", "decision_packet_anchor_count",
     )
     evidence_df = df[[name for name in evidence_columns if name in df]].copy()
     feedback_columns = (
@@ -257,12 +259,35 @@ def evaluate_predictions(input_path, output_dir=None):
         "feedback_memory_active", "feedback_matched_rule_count",
         "feedback_matched_rule_ids", "feedback_candidate_recorded",
         "feedback_update_applied", "feedback_failure_type", "feedback_target_agent",
+        "feedback_matched_target_agents", "feedback_matched_failure_mechanisms",
         "feedback_matched_rule_scores", "feedback_baseline_prediction",
         "feedback_candidate_prediction", "feedback_post_review_prediction",
         "feedback_revision_accepted", "feedback_revision_reason",
         "feedback_decision_changed", "feedback_review_seconds",
     )
     feedback_df = df[[name for name in feedback_columns if name in df]].copy()
+    claim_columns = (
+        "sample", "id", "phenomenon", "ground_truth", "prediction", "correct",
+        "figurative_type_predicted", "claim_interpretation_status",
+        "claim_reversal_status", "claim_literal_contract_valid",
+        "claim_pragmatic_contract_valid", "claim_interpretation_route_valid",
+        "claim_pragmatic_activated", "claim_figurative_cue_anchored",
+        "claim_reversal_cue_anchored", "claim_contract_valid",
+        "claim_contract_proposition_preserved",
+        "claim_contract_entity_frame_preserved", "claim_relation_resolved",
+        "claim_selected_proposition", "claim_literal_proposition",
+        "claim_pragmatic_proposition", "claim_contract_warnings",
+    )
+    claim_df = df[[name for name in claim_columns if name in df]].copy()
+    packet_columns = (
+        "sample", "id", "phenomenon", "ground_truth", "prediction", "correct",
+        "decision_packet_profile", "decision_packet_support_count",
+        "decision_packet_conflict_count", "decision_packet_anchor_count",
+        "comparator_evidence_status", "final_evidence_valid",
+        "review_board_directionally_grounded", "debate_triggered",
+        "debate_revision_accepted",
+    )
+    packet_df = df[[name for name in packet_columns if name in df]].copy()
     feedback_active = as_bool(df["feedback_memory_active"]) if "feedback_memory_active" in df else pd.Series(False, index=df.index)
     feedback_performance = {
         "memory_inactive": metric_row(df[~feedback_active], "group", "memory_inactive"),
@@ -344,6 +369,14 @@ def evaluate_predictions(input_path, output_dir=None):
     targeted_nli_accepted_mask = df["decision_method"].fillna("").eq("targeted_region_verifier") if "decision_method" in df else pd.Series(False, index=df.index)
     targeted_nli_attempt_mask = df["debate_proposed_decision_method"].fillna("").eq("targeted_region_verifier") if "debate_proposed_decision_method" in df else targeted_nli_accepted_mask
     grounding_schema = as_bool(df["agent1_schema_complete"]) if "agent1_schema_complete" in df else pd.Series(False, index=df.index)
+    binding_required_mask = as_bool(df["comparator_relation_binding_required"]) if "comparator_relation_binding_required" in df else pd.Series(False, index=df.index)
+    binding_observed_mask = as_bool(df["comparator_relation_binding_observed"]) if "comparator_relation_binding_observed" in df else pd.Series(False, index=df.index)
+    level2_mask = debate_mask & numeric(df["debate_level"]).ge(2) if "debate_level" in df else pd.Series(False, index=df.index)
+    recovery_attempt_mask = as_bool(df["debate_grounding_recovery_attempted"]) if "debate_grounding_recovery_attempted" in df else level2_mask
+    recovery_success_mask = as_bool(df["debate_grounding_recovery_success"]) if "debate_grounding_recovery_success" in df else pd.Series(False, index=df.index)
+    recovery_evidence_mask = as_bool(df["debate_grounding_recovery_evidence_success"]) if "debate_grounding_recovery_evidence_success" in df else pd.Series(False, index=df.index)
+    structured_recovery_mask = as_bool(df["debate_structured_recovery_proposal"]) if "debate_structured_recovery_proposal" in df else pd.Series(False, index=df.index)
+    pragmatic_contract_mask = df["claim_interpretation_status"].fillna("").eq("caption_figurative") if "claim_interpretation_status" in df else pd.Series(False, index=df.index)
     metrics = {
         "samples": total, "valid_prediction_count": int(len(valid)), "invalid_prediction_count": int(len(invalid)), "invalid_prediction_rate": float(len(invalid) / total),
         "accuracy": accuracy, "balanced_accuracy": balanced_accuracy, "macro_f1": macro_f1, "per_label": per_label,
@@ -360,6 +393,15 @@ def evaluate_predictions(input_path, output_dir=None):
         "claim_relations": {
             "resolved_rate": float(as_bool(df["claim_relation_resolved"]).mean()) if "claim_relation_resolved" in df else None,
             "contract_valid_rate": float(as_bool(df["claim_contract_valid"]).mean()) if "claim_contract_valid" in df else None,
+            "literal_contract_valid_rate": float(as_bool(df["claim_literal_contract_valid"]).mean()) if "claim_literal_contract_valid" in df else None,
+            "pragmatic_contract_case_count": int(pragmatic_contract_mask.sum()),
+            "pragmatic_contract_valid_rate": float(as_bool(df.loc[pragmatic_contract_mask, "claim_pragmatic_contract_valid"]).mean()) if "claim_pragmatic_contract_valid" in df and pragmatic_contract_mask.any() else None,
+            "interpretation_route_valid_rate": float(as_bool(df["claim_interpretation_route_valid"]).mean()) if "claim_interpretation_route_valid" in df else None,
+            "pragmatic_activation_rate": float(as_bool(df["claim_pragmatic_activated"]).mean()) if "claim_pragmatic_activated" in df else None,
+            "figurative_cue_anchor_rate": float(as_bool(df["claim_figurative_cue_anchored"]).mean()) if "claim_figurative_cue_anchored" in df else None,
+            "reversal_cue_anchor_rate": float(as_bool(df["claim_reversal_cue_anchored"]).mean()) if "claim_reversal_cue_anchored" in df else None,
+            "interpretation_status_distribution": distribution(df["claim_interpretation_status"]) if "claim_interpretation_status" in df else {},
+            "reversal_status_distribution": distribution(df["claim_reversal_status"]) if "claim_reversal_status" in df else {},
             "proposition_preserved_rate": float(as_bool(df["claim_contract_proposition_preserved"]).mean()) if "claim_contract_proposition_preserved" in df else None,
             "entity_frame_preserved_rate": float(as_bool(df["claim_contract_entity_frame_preserved"]).mean()) if "claim_contract_entity_frame_preserved" in df else None,
             "contract_warning_distribution": distribution(df.loc[df["claim_contract_warnings"].fillna("").ne(""), "claim_contract_warnings"]) if "claim_contract_warnings" in df else {},
@@ -383,7 +425,21 @@ def evaluate_predictions(input_path, output_dir=None):
             "review_board_directionally_grounded_rate": float(as_bool(df["review_board_directionally_grounded"]).mean()) if "review_board_directionally_grounded" in df else None,
             "review_board_confidence_cap_rate": float(as_bool(df["review_board_confidence_cap_applied"]).mean()) if "review_board_confidence_cap_applied" in df else None,
         },
-        "comparator": {"evidence_status_distribution": distribution(df["comparator_evidence_status"]) if "comparator_evidence_status" in df else {}, "recommendation_distribution": distribution(df["comparator_recommendation"]) if "comparator_recommendation" in df else {}, "relation_binding_required_count": int(as_bool(df["comparator_relation_binding_required"]).sum()) if "comparator_relation_binding_required" in df else 0, "relation_binding_observed_count": int(as_bool(df["comparator_relation_binding_observed"]).sum()) if "comparator_relation_binding_observed" in df else 0, "text_surface_without_ocr_count": int(as_bool(df["comparator_text_surface_without_ocr"]).sum()) if "comparator_text_surface_without_ocr" in df else 0, "symbolic_object_candidate_count": int(as_bool(df["comparator_has_symbolic_object_candidate"]).sum()) if "comparator_has_symbolic_object_candidate" in df else 0},
+        "comparator": {
+            "evidence_status_distribution": distribution(df["comparator_evidence_status"]) if "comparator_evidence_status" in df else {},
+            "recommendation_distribution": distribution(df["comparator_recommendation"]) if "comparator_recommendation" in df else {},
+            "relation_binding_required_count": int(binding_required_mask.sum()),
+            "relation_binding_observed_count": int(binding_observed_mask.sum()),
+            "required_binding_resolution_rate": float(binding_observed_mask[binding_required_mask].mean()) if binding_required_mask.any() else None,
+            "text_surface_without_ocr_count": int(as_bool(df["comparator_text_surface_without_ocr"]).sum()) if "comparator_text_surface_without_ocr" in df else 0,
+            "symbolic_object_candidate_count": int(as_bool(df["comparator_has_symbolic_object_candidate"]).sum()) if "comparator_has_symbolic_object_candidate" in df else 0,
+        },
+        "decision_packet": {
+            "profile_distribution": distribution(df["decision_packet_profile"]) if "decision_packet_profile" in df else {},
+            "directional_packet_rate": float(df["decision_packet_profile"].isin(("SUPPORT_ONLY", "CONFLICT_ONLY", "MIXED_DIRECTIONAL_EVIDENCE")).mean()) if "decision_packet_profile" in df else None,
+            "mean_support_items": float(numeric(df["decision_packet_support_count"]).mean()) if "decision_packet_support_count" in df else None,
+            "mean_conflict_items": float(numeric(df["decision_packet_conflict_count"]).mean()) if "decision_packet_conflict_count" in df else None,
+        },
         "semantic_scoring": {
             "mean_entails_probability": float(semantic_entails.mean()) if semantic_entails.notna().any() else None,
             "mean_contradicts_probability": float(semantic_conflicts.mean()) if semantic_conflicts.notna().any() else None,
@@ -396,6 +452,8 @@ def evaluate_predictions(input_path, output_dir=None):
             "factual_grounding_rate": float(as_bool(df["agent1_factual_grounding_present"]).mean()) if "agent1_factual_grounding_present" in df else None,
             "ocr_usable_rate": float(as_bool(df["agent1_ocr_usable"]).mean()) if "agent1_ocr_usable" in df else None,
             "relation_binding_rate": float(as_bool(df["agent1_relation_binding_present"]).mean()) if "agent1_relation_binding_present" in df else None,
+            "entity_state_binding_coverage_rate": float((numeric(df["agent1_entity_state_binding_count"]) > 0).mean()) if "agent1_entity_state_binding_count" in df else None,
+            "mean_entity_state_bindings": float(numeric(df["agent1_entity_state_binding_count"]).mean()) if "agent1_entity_state_binding_count" in df else None,
             "schema_retry_rate": float(as_bool(df["agent1_schema_retry_attempted"]).mean()) if "agent1_schema_retry_attempted" in df else None,
             "schema_retry_success_rate": float(as_bool(df.loc[as_bool(df["agent1_schema_retry_attempted"]), "agent1_schema_retry_success"]).mean()) if "agent1_schema_retry_attempted" in df and as_bool(df["agent1_schema_retry_attempted"]).any() else None,
             "targeted_recovery_attempt_count": int(as_bool(df["agent1_targeted_recovery_attempted"]).sum()) if "agent1_targeted_recovery_attempted" in df else 0,
@@ -421,12 +479,44 @@ def evaluate_predictions(input_path, output_dir=None):
         "run_timing": run_timing,
     }
 
+    metrics["debate"].update({
+        "level1_count": int((debate_mask & ~level2_mask).sum()),
+        "level2_count": int(level2_mask.sum()),
+        "grounding_recovery_attempt_count": int(recovery_attempt_mask.sum()),
+        "grounding_recovery_success_rate": float(
+            recovery_success_mask[recovery_attempt_mask].mean()
+        ) if "debate_grounding_recovery_success" in df and recovery_attempt_mask.any() else None,
+        "grounding_recovery_evidence_yield": float(
+            recovery_evidence_mask[recovery_attempt_mask].mean()
+        ) if "debate_grounding_recovery_evidence_success" in df and recovery_attempt_mask.any() else None,
+        "structured_recovery_proposal_count": int(structured_recovery_mask.sum()),
+        "level1_mean_seconds": float(
+            numeric(df.loc[debate_mask & ~level2_mask, "debate_seconds"]).mean()
+        ) if "debate_seconds" in df and (debate_mask & ~level2_mask).any() else None,
+        "level2_mean_seconds": float(
+            numeric(df.loc[level2_mask, "debate_seconds"]).mean()
+        ) if "debate_seconds" in df and level2_mask.any() else None,
+    })
+    metrics["feedback"].update({
+        "matched_target_agent_distribution": distribution(
+            df.loc[as_bool(df["feedback_memory_active"]), "feedback_matched_target_agents"]
+        ) if "feedback_matched_target_agents" in df and "feedback_memory_active" in df else {},
+        "matched_mechanism_distribution": distribution(
+            df.loc[as_bool(df["feedback_memory_active"]), "feedback_matched_failure_mechanisms"]
+        ) if "feedback_matched_failure_mechanisms" in df and "feedback_memory_active" in df else {},
+        "calibration_target_agent_distribution": distribution(
+            df.loc[as_bool(df["feedback_update_applied"]), "feedback_target_agent"]
+        ) if "feedback_update_applied" in df and "feedback_target_agent" in df else {},
+    })
+
     pd.DataFrame(cm, index=LABELS, columns=LABELS).rename_axis("ground_truth").to_csv(os.path.join(output_dir, "confusion_matrix.csv"))
     phenomenon_df.to_csv(os.path.join(output_dir, "phenomenon_breakdown.csv"), index=False)
     decision_method_df.to_csv(os.path.join(output_dir, "decision_method_breakdown.csv"), index=False)
     comparator_df.to_csv(os.path.join(output_dir, "comparator_analysis.csv"), index=False)
     debated.to_csv(os.path.join(output_dir, "debate_analysis.csv"), index=False)
     feedback_df.to_csv(os.path.join(output_dir, "feedback_analysis.csv"), index=False)
+    claim_df.to_csv(os.path.join(output_dir, "claim_contract_analysis.csv"), index=False)
+    packet_df.to_csv(os.path.join(output_dir, "decision_packet_analysis.csv"), index=False)
     confidence_df.to_csv(os.path.join(output_dir, "confidence_analysis.csv"), index=False)
     explanation_df.to_csv(os.path.join(output_dir, "explanation_analysis.csv"), index=False)
     runtime_df.to_csv(os.path.join(output_dir, "runtime_profile.csv"), index=False)
@@ -480,6 +570,8 @@ def evaluate_predictions(input_path, output_dir=None):
             f"Agent 1 Factual Grounding Rate: {metrics['grounding']['factual_grounding_rate']}\n"
             f"Agent 1 OCR Usable Rate: {metrics['grounding']['ocr_usable_rate']}\n"
             f"Agent 1 Relation Binding Rate: {metrics['grounding']['relation_binding_rate']}\n"
+            f"Agent 1 Entity-State Binding Coverage: {metrics['grounding']['entity_state_binding_coverage_rate']}\n"
+            f"Mean Entity-State Bindings: {metrics['grounding']['mean_entity_state_bindings']}\n"
             f"Agent 1 Targeted Recovery Attempts: {metrics['grounding']['targeted_recovery_attempt_count']}\n"
             f"Agent 1 Targeted Recovery Success Rate: {metrics['grounding']['targeted_recovery_success_rate']}\n\n"
         )
@@ -507,6 +599,13 @@ def evaluate_predictions(input_path, output_dir=None):
         handle.write(
             f"Structured Claim Relation Resolved Rate: {metrics['claim_relations']['resolved_rate']}\n"
             f"Immutable Claim Contract Valid Rate: {metrics['claim_relations']['contract_valid_rate']}\n"
+            f"Literal Claim Contract Valid Rate: {metrics['claim_relations']['literal_contract_valid_rate']}\n"
+            f"Pragmatic Claim Contract Cases: {metrics['claim_relations']['pragmatic_contract_case_count']}\n"
+            f"Pragmatic Claim Contract Valid Rate: {metrics['claim_relations']['pragmatic_contract_valid_rate']}\n"
+            f"Interpretation Route Valid Rate: {metrics['claim_relations']['interpretation_route_valid_rate']}\n"
+            f"Pragmatic Interpretation Activation Rate: {metrics['claim_relations']['pragmatic_activation_rate']}\n"
+            f"Interpretation Status Distribution: {metrics['claim_relations']['interpretation_status_distribution']}\n"
+            f"Reversal Status Distribution: {metrics['claim_relations']['reversal_status_distribution']}\n"
             f"Claim Proposition Preserved Rate: {metrics['claim_relations']['proposition_preserved_rate']}\n"
             f"Claim Entity Frame Preserved Rate: {metrics['claim_relations']['entity_frame_preserved_rate']}\n"
             f"Structured Claim Retry Rate: {metrics['claim_relations']['retry_rate']}\n"
@@ -533,12 +632,20 @@ def evaluate_predictions(input_path, output_dir=None):
             f"{metrics['evidence_provenance']['final_status_distribution']}\n\n"
         )
         handle.write(
+            "Decision Packet Profile Distribution: "
+            f"{metrics['decision_packet']['profile_distribution']}\n"
+            "Directional Decision Packet Rate: "
+            f"{metrics['decision_packet']['directional_packet_rate']}\n"
+            "Required Entity-State Binding Resolution Rate: "
+            f"{metrics['comparator']['required_binding_resolution_rate']}\n\n"
+        )
+        handle.write(
             "Generic NLI Decision Promotions: "
             f"{metrics['evidence_provenance']['atomic_verified_count']}/"
             f"{metrics['evidence_provenance']['atomic_candidate_count']} "
             f"({metrics['evidence_provenance']['atomic_verification_rate']})\n\n"
         )
-        handle.write(f"Debate Trigger Count: {metrics['debate']['trigger_count']}\nDebate Trigger Rate: {metrics['debate']['trigger_rate']:.4f}\nDebate Level Distribution: {metrics['debate']['level_distribution']}\nDebate Mean Need Score: {metrics['debate']['mean_need_score']}\nDebate Revision Acceptance Rate: {metrics['debate']['revision_acceptance_rate']}\nAgent 1 Critique Format Valid Rate: {metrics['debate']['visual_critique_format_valid_rate']}\nAgent 1 Critique Retry Count: {metrics['debate']['visual_critique_retry_count']}\nAgent 1 Critique Retry Success Rate: {metrics['debate']['visual_critique_retry_success_rate']}\nVisual Evidence Consensus Proposals: {metrics['debate']['visual_evidence_consensus_count']}\nAgent 2 Critique Format Valid Rate: {metrics['debate']['linguistic_critique_format_valid_rate']}\nDebate Review Status Distribution: {metrics['debate']['review_status_distribution']}\nDebate Correction Rate: {correction_rate:.4f}\nDebate Harm Rate: {harm_rate:.4f}\n")
+        handle.write(f"Debate Trigger Count: {metrics['debate']['trigger_count']}\nDebate Trigger Rate: {metrics['debate']['trigger_rate']:.4f}\nDebate Level Distribution: {metrics['debate']['level_distribution']}\nLevel 1 Debate Count: {metrics['debate']['level1_count']}\nLevel 2 Debate Count: {metrics['debate']['level2_count']}\nDebate Mean Need Score: {metrics['debate']['mean_need_score']}\nDebate Revision Acceptance Rate: {metrics['debate']['revision_acceptance_rate']}\nAgent 1 Critique Format Valid Rate: {metrics['debate']['visual_critique_format_valid_rate']}\nAgent 1 Critique Retry Count: {metrics['debate']['visual_critique_retry_count']}\nAgent 1 Critique Retry Success Rate: {metrics['debate']['visual_critique_retry_success_rate']}\nGrounding Recovery Attempts: {metrics['debate']['grounding_recovery_attempt_count']}\nGrounding Recovery Success Rate: {metrics['debate']['grounding_recovery_success_rate']}\nGrounding Recovery Evidence Yield: {metrics['debate']['grounding_recovery_evidence_yield']}\nStructured Recovery Proposals: {metrics['debate']['structured_recovery_proposal_count']}\nLevel 1 Mean Seconds: {metrics['debate']['level1_mean_seconds']}\nLevel 2 Mean Seconds: {metrics['debate']['level2_mean_seconds']}\nVisual Evidence Consensus Proposals: {metrics['debate']['visual_evidence_consensus_count']}\nAgent 2 Critique Format Valid Rate: {metrics['debate']['linguistic_critique_format_valid_rate']}\nDebate Review Status Distribution: {metrics['debate']['review_status_distribution']}\nDebate Correction Rate: {correction_rate:.4f}\nDebate Harm Rate: {harm_rate:.4f}\n")
         handle.write(f"Debate Corrections: {debate_corrections}\nDebate Harms: {debate_harms}\nDebate Net Correct Decisions: {debate_net_gain}\n")
         handle.write(
             "Decision-Grade Visual Reinspection Evidence: "
@@ -547,8 +654,8 @@ def evaluate_predictions(input_path, output_dir=None):
             f"{metrics['debate']['visual_reinspection_evidence_case_count']} cases\n"
         )
         handle.write(f"Region OCR Reviews: {metrics['debate']['region_ocr_review_count']}\nTargeted Region Verifier Attempts: {metrics['debate']['targeted_region_verifier_attempt_count']}\nTargeted Region Verifier Accepted: {metrics['debate']['targeted_region_verifier_accepted_count']}\nTargeted Region Proposal Accuracy: {metrics['debate']['targeted_region_verifier_proposal_accuracy']}\nTargeted Region Accepted Accuracy: {metrics['debate']['targeted_region_verifier_accuracy']}\n")
-        handle.write(f"Feedback Role Distribution: {metrics['feedback']['role_distribution']}\nFeedback Matched Samples: {metrics['feedback']['memory_active_samples']}\nFeedback Match Rate: {metrics['feedback']['memory_match_rate']}\nFeedback Matched Rule Distribution: {metrics['feedback']['matched_rule_distribution']}\nFeedback Revision Acceptances: {metrics['feedback']['revision_acceptance_count']}\nFeedback Corrections: {metrics['feedback']['correction_count']}\nFeedback Harms: {metrics['feedback']['harm_count']}\nFeedback Net Correct Decisions: {metrics['feedback']['net_correct_decisions']}\nFeedback Candidates: {metrics['feedback']['candidate_count']}\nFeedback Updates: {metrics['feedback']['update_count']}\n\n")
-        handle.write("Paper artifacts: confusion_matrix.csv, phenomenon_breakdown.csv, decision_method_breakdown.csv, comparator_analysis.csv, debate_analysis.csv, debate_log.csv, debate_log.jsonl, feedback_analysis.csv, feedback_decision_log.csv, feedback_decision_log.jsonl, evidence_provenance_analysis.csv, confidence_analysis.csv, explanation_analysis.csv, runtime_profile.csv, agent_grounding_analysis.csv, error_analysis.csv.\n")
+        handle.write(f"Feedback Role Distribution: {metrics['feedback']['role_distribution']}\nFeedback Matched Samples: {metrics['feedback']['memory_active_samples']}\nFeedback Match Rate: {metrics['feedback']['memory_match_rate']}\nFeedback Matched Rule Distribution: {metrics['feedback']['matched_rule_distribution']}\nFeedback Matched Target-Agent Distribution: {metrics['feedback']['matched_target_agent_distribution']}\nFeedback Matched Mechanism Distribution: {metrics['feedback']['matched_mechanism_distribution']}\nFeedback Calibration Target Distribution: {metrics['feedback']['calibration_target_agent_distribution']}\nFeedback Revision Acceptances: {metrics['feedback']['revision_acceptance_count']}\nFeedback Corrections: {metrics['feedback']['correction_count']}\nFeedback Harms: {metrics['feedback']['harm_count']}\nFeedback Net Correct Decisions: {metrics['feedback']['net_correct_decisions']}\nFeedback Candidates: {metrics['feedback']['candidate_count']}\nFeedback Updates: {metrics['feedback']['update_count']}\n\n")
+        handle.write("Paper artifacts: confusion_matrix.csv, phenomenon_breakdown.csv, decision_method_breakdown.csv, comparator_analysis.csv, debate_analysis.csv, debate_log.csv, debate_log.jsonl, feedback_analysis.csv, feedback_decision_log.csv, feedback_decision_log.jsonl, claim_contract_analysis.csv, decision_packet_analysis.csv, evidence_provenance_analysis.csv, confidence_analysis.csv, explanation_analysis.csv, runtime_profile.csv, agent_grounding_analysis.csv, error_analysis.csv.\n")
     print(f"Saved metrics and paper artifacts to {output_dir}")
     return metrics
 

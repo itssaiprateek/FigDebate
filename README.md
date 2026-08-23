@@ -28,8 +28,9 @@ Quick verification
 Current reasoning flow
 ----------------------
 
-    image -> structured visual evidence
-    caption -> structured intended claim and relation
+    image -> caption-blind facts plus entity-state-region bindings
+    caption -> separate literal/pragmatic claims with licensed reversal cues
+    symmetric SUPPORT/CONFLICT hypotheses -> structured decision packet
     relation candidates -> generic NLI diagnostic routing (never visual proof)
     initial Arbiter -> debate-need score
     Level 1 -> independent decision-grade evidence deliberation
@@ -130,7 +131,7 @@ macro F1, debate corrections/harms, feedback corrections/harms, claim-contract
 validity, directional evidence coverage, calibration, explanation diagnostics,
 and stage/runtime profiles.
 
-Feedback files created before memory schema version 2 contain legacy
+Feedback files created before memory schema version 3 contain legacy
 gold-direction fields and must not be reused. Rebuild `calibrated_feedback.json`
 with the current runner before a verified run.
 

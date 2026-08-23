@@ -4,11 +4,7 @@ import argparse
 import json
 import os
 
-from engine.evidence_ledger import (
-    RELATION_FOR_LABEL,
-    attach_evidence_audit,
-    build_evidence_ledger,
-)
+from engine.evidence_ledger import attach_evidence_audit, build_evidence_ledger
 from engine.feedback_loop import FeedbackLoop
 
 
@@ -45,12 +41,6 @@ def build_memory(records_path, output_path):
             ledger = trace.get("evidence_ledger") or build_evidence_ledger(
                 visual, language, comparison
             )
-            relation = RELATION_FOR_LABEL.get(record.get("ground_truth"))
-            failure_type = (
-                "missed_grounded_support"
-                if relation == "SUPPORT"
-                else "missed_grounded_conflict"
-            )
             decision = attach_evidence_audit(
                 trace.get("final_decision", {}), ledger
             )
@@ -61,16 +51,28 @@ def build_memory(records_path, output_path):
                 "decision": decision,
                 "evidence_ledger": ledger,
             }
+            calibration = loop.calibration_rule(
+                language,
+                comparison,
+                decision,
+                record.get("ground_truth"),
+                record.get("phenomenon"),
+            )
+            if calibration is None:
+                skipped_contract_or_duplicate += 1
+                continue
+            target_agent, failure_type, advice = calibration
             if loop.add_verified_case(
                 context,
                 record.get("ground_truth"),
                 failure_type,
-                loop.CALIBRATED_RULES[failure_type],
+                advice,
                 {
                     "sample_id": record.get("id"),
                     "source_run": run_dir,
                     "source": "development_error_with_verified_evidence",
                 },
+                target_agent=target_agent,
             ):
                 created += 1
             else:

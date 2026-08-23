@@ -24,11 +24,11 @@ REQUIRED_MODULES = {
 EXPECTED_VERSIONS = {
     "torch": "2.5.1+cu121",
     "torchvision": "0.20.1+cu121",
-    "transformers": "5.15.0",
+    "transformers": "4.46.3",
     "accelerate": "1.14.0",
     "bitsandbytes": "0.50.0",
     "datasets": "5.0.1",
-    "huggingface-hub": "1.27.0",
+    "huggingface-hub": "0.26.2",
     "pandas": "3.0.5",
     "pillow": "12.2.0",
     "safetensors": "0.8.0",
@@ -51,6 +51,26 @@ def main():
     if sys.version_info[:2] != (3, 11):
         failures.append("Python 3.11 is required.")
 
+    broken_metadata = []
+    for distribution in metadata.distributions():
+        try:
+            distribution.metadata["Name"]
+            distribution.entry_points
+        except Exception as error:
+            broken_metadata.append(
+                (str(getattr(distribution, "_path", "unknown")), str(error))
+            )
+    if broken_metadata:
+        print("[FAIL] Installed-package metadata integrity")
+        for path, error in broken_metadata:
+            print(f"       {path}: {error}")
+        failures.append(
+            "Unreadable package metadata was found. Virtual environments "
+            "inside cloud-synced folders must remain fully local."
+        )
+    else:
+        print("[OK]   Installed-package metadata integrity")
+
     for module_name, distribution_name in REQUIRED_MODULES.items():
         try:
             module = importlib.import_module(module_name)
@@ -70,6 +90,33 @@ def main():
                 )
             else:
                 print(f"[OK]   {distribution_name}: {version}")
+
+    # A top-level Transformers import does not load the model implementation.
+    # Exercise every API used by the two model loaders so incompatible
+    # Torch/Transformers combinations fail here rather than during inference.
+    try:
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoProcessor,
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            LlavaForConditionalGeneration,
+        )
+
+        _ = (
+            AutoModelForCausalLM,
+            AutoProcessor,
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            LlavaForConditionalGeneration,
+        )
+        print("[OK]   FigDebate Transformers model APIs")
+    except Exception as error:
+        print(f"[FAIL] FigDebate Transformers model APIs: {error}")
+        failures.append(
+            "The installed Torch/Transformers combination cannot load the "
+            "FigDebate model APIs. Rebuild .venv from requirements.txt."
+        )
 
     try:
         import torch

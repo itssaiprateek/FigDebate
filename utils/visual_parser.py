@@ -12,6 +12,7 @@ HEADINGS = [
     "Possible Visual Metaphors",
     "Visual Facts",
     "Visual Relations",
+    "Entity-State Bindings",
     "Uncertain Observations",
     "Confidence",
 ]
@@ -30,6 +31,8 @@ HEADING_ALIASES = {
     "Observed Facts": "Visual Facts",
     "Observed Relations": "Visual Relations",
     "Text Bindings": "Visual Relations",
+    "Entity State Bindings": "Entity-State Bindings",
+    "Entity-State Binding": "Entity-State Bindings",
     "Symbolic Element": "Symbolic Elements",
     "Possible Visual Metaphor": "Possible Visual Metaphors",
     "Possible Visual Metaph": "Possible Visual Metaphors",
@@ -194,6 +197,7 @@ def parse_visual_response(response):
         "possible_visual_metaphors": [],
         "visual_facts": [],
         "visual_relations": [],
+        "entity_state_bindings": [],
         "uncertain_observations": [],
         "confidence": None,
         "raw_output": response,
@@ -227,7 +231,7 @@ def parse_visual_response(response):
 
         if canonical_heading is None:
             continue
-        key = canonical_heading.lower().replace(" ", "_")
+        key = canonical_heading.lower().replace("-", "_").replace(" ", "_")
 
         if key == "confidence":
 
@@ -242,6 +246,7 @@ def parse_visual_response(response):
             "possible_visual_metaphors",
             "visual_facts",
             "visual_relations",
+            "entity_state_bindings",
             "uncertain_observations",
         }:
 

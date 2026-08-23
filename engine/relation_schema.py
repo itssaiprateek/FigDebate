@@ -88,6 +88,11 @@ STATE_STOPWORDS = {
     "person", "people", "object", "image", "scene", "visible", "appears",
 }
 ENTITY_STOPWORDS = STATE_STOPWORDS - {"person", "people", "object"}
+ENTITY_ALIASES = {
+    "man": "human", "men": "human", "woman": "human", "women": "human",
+    "person": "human", "people": "human", "someone": "human",
+    "item": "product", "items": "product", "products": "product",
+}
 
 
 def _normalize(value):
@@ -160,9 +165,17 @@ def _state_cues(value):
 
 def _entity_cues(value):
     return sorted({
-        token for token in _normalize(value).split()
+        ENTITY_ALIASES.get(token, token) for token in _normalize(value).split()
         if len(token) >= 3 and token not in ENTITY_STOPWORDS
     })
+
+
+def _entity_hits(value, cues):
+    observed = {
+        ENTITY_ALIASES.get(token, token)
+        for token in _normalize(value).split()
+    }
+    return sorted(set(cues) & observed)
 
 
 def build_claim_relation(caption, language_output):
@@ -175,12 +188,13 @@ def build_claim_relation(caption, language_output):
         or source_caption
         or ""
     ).strip()
-    intended_proposition = str(
-        language_output.get("intended_meaning") or proposition
-    ).strip()
     contract = language_output.get("claim_contract") or audit_claim_contract(
         source_caption, language_output
     )
+    intended_proposition = str(
+        contract.get("selected_proposition")
+        or proposition
+    ).strip()
     normalized = _normalize(intended_proposition)
     family, pole, cue = _first_family_pole(normalized)
     negated = bool(cue and _cue_is_negated(normalized, cue))
@@ -216,6 +230,17 @@ def build_claim_relation(caption, language_output):
     expected = [item for item in expected if item not in shared_cues]
     opposite = [item for item in opposite if item not in shared_cues]
     tokens = normalized.split()
+    declared_entity_cues = _entity_cues(" ".join(
+        str(language_output.get(key, ""))
+        for key in (
+            "claim_subject", "claim_object", "claim_source", "claim_target",
+            "evaluation_target",
+        )
+    ))
+    shared_state_entity_cues = sorted(
+        set(_entity_cues(expected_state)) & set(_entity_cues(opposite_state))
+    )
+    visual_entity_cues = sorted(set(declared_entity_cues) | set(shared_state_entity_cues))
     unresolved_reasons = list(contract.get("warnings", []) or [])
     if not family:
         unresolved_reasons.append("relation_family_unresolved")
@@ -249,6 +274,19 @@ def build_claim_relation(caption, language_output):
         "figurative_mechanism": str(language_output.get("figurative_type", "unknown")).lower(),
         "expected_visual_state": expected_state,
         "opposite_visual_state": opposite_state,
+        "visual_entity_cues": visual_entity_cues,
+        "support_hypothesis": {
+            "relation": "SUPPORT",
+            "entity_cues": visual_entity_cues,
+            "state": expected_state,
+            "state_cues": expected,
+        },
+        "conflict_hypothesis": {
+            "relation": "CONFLICT",
+            "entity_cues": visual_entity_cues,
+            "state": opposite_state,
+            "state_cues": opposite,
+        },
         "claim_contract": contract,
         "resolved": bool(
             family
@@ -278,15 +316,63 @@ def nominate_visual_relations(visual_output, claim_relation):
     ]
     expected = claim_relation.get("expected_visual_cues", [])
     opposite = claim_relation.get("opposite_visual_cues", [])
-    entity_cues = _entity_cues(" ".join(
-        str(claim_relation.get(key, ""))
-        for key in ("subject", "object", "source", "target")
-    ))
+    entity_cues = claim_relation.get("visual_entity_cues") or _entity_cues(
+        " ".join(
+            str(claim_relation.get(key, ""))
+            for key in ("subject", "object", "source", "target")
+        )
+    )
     nominations = []
     seen = set()
+
+    for binding in visual_output.get("entity_state_bindings", []) or []:
+        if not isinstance(binding, dict) or not binding.get("complete", False):
+            continue
+        entity = str(binding.get("entity", ""))
+        state = str(binding.get("state", ""))
+        normalized_state = _normalize(state)
+        entity_hits = _entity_hits(entity, entity_cues)
+        if entity_cues and not entity_hits:
+            continue
+        expected_hits = [
+            cue for cue in expected
+            if _contains(normalized_state, cue)
+            and not _cue_is_negated(normalized_state, cue)
+        ]
+        opposite_hits = [
+            cue for cue in opposite
+            if _contains(normalized_state, cue)
+            and not _cue_is_negated(normalized_state, cue)
+        ]
+        if expected_hits and not opposite_hits:
+            relation, hits = "SUPPORT", expected_hits
+        elif opposite_hits and not expected_hits:
+            relation, hits = "CONFLICT", opposite_hits
+        else:
+            continue
+        source_text = str(binding.get("source_text") or f"{entity} {state}")
+        key = (" ".join(_normalize(source_text).split()), relation)
+        if key in seen:
+            continue
+        seen.add(key)
+        nominations.append({
+            "text": source_text,
+            "observed_entity": entity,
+            "observed_state": state,
+            "image_region": str(binding.get("region", "unspecified")),
+            "proposed_relation": relation,
+            "relation_family": claim_relation.get("relation_family"),
+            "claim_polarity": claim_relation.get("polarity"),
+            "matched_cues": hits,
+            "matched_entities": entity_hits,
+            "binding_complete": True,
+            "grounded": bool(binding.get("grounded", False)),
+            "method": "symmetric_entity_state_binding",
+        })
+
     for fact in facts:
         normalized = _normalize(fact)
-        entity_hits = [cue for cue in entity_cues if _contains(normalized, cue)]
+        entity_hits = _entity_hits(normalized, entity_cues)
         if entity_cues and not entity_hits:
             continue
         expected_hits = [

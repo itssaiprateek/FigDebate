@@ -5,6 +5,7 @@ try:
 except ImportError:
     torch = None
 from utils.visual_parser import parse_visual_response
+from engine.evidence_binding import build_visual_bindings
 
 
 class VisualGroundingAgent:
@@ -25,7 +26,7 @@ class VisualGroundingAgent:
 Inspect only the image. You are not given a caption. Report visible facts and
 written text, never an entailment label or hidden interpretation.
 
-Return exactly these seven headings. Keep each value concise.
+Return exactly these eight headings. Keep each value concise.
 
 Literal Scene: one factual sentence describing the complete image
 Objects: important visible people and objects
@@ -35,6 +36,9 @@ Visual Facts: directly observed actions, appearances, and states
 Visual Relations: actual spatial or object-to-text bindings; write a complete
 observation such as "left bottle has text 'X'", never a template such as
 "Left/Right, Top/Bottom"
+Entity-State Bindings: one binding per line as "Entity: visible item | State:
+directly observed state | Region: image region"; write None only when no
+complete entity-state observation is visible
 Scene Type: two to five words
 Confidence: one decimal from 0 to 1
 
@@ -44,11 +48,12 @@ text belongs to each person, object, panel, or side. Mark uncertain OCR with
 """
 
     FACT_RECOVERY_PROMPT = """
-Inspect the complete image again. Return exactly these five lines:
+Inspect the complete image again. Return exactly these six headings:
 Literal Scene: one factual sentence
 Objects: visible people and important objects
 Visual Facts: directly observed actions, appearances, and states
 Visual Relations: complete spatial or object-to-object observations, or None
+Entity-State Bindings: Entity: item | State: observed state | Region: region
 Scene Type: two to five words
 Do not interpret symbolism and do not discuss a caption.
 """
@@ -121,7 +126,7 @@ describe clothing, people, or objects as text.
     def _format_heading_count(raw_response):
         return len(re.findall(
             r"^(?:Literal Scene|Objects|Visible Text|Visual Facts|"
-            r"Visual Relations|Scene Type|Confidence)\s*:",
+            r"Visual Relations|Entity-State Bindings|Scene Type|Confidence)\s*:",
             str(raw_response or ""),
             flags=re.IGNORECASE | re.MULTILINE,
         ))
@@ -132,7 +137,8 @@ describe clothing, people, or objects as text.
         list_fields = (
             "people", "objects", "actions", "visible_text",
             "symbolic_elements", "possible_visual_metaphors",
-            "visual_facts", "visual_relations", "uncertain_observations",
+            "visual_facts", "visual_relations", "entity_state_bindings",
+            "uncertain_observations",
         )
         for key in list_fields:
             combined = []
@@ -274,6 +280,10 @@ describe clothing, people, or objects as text.
         visible_text = unique(visible_text)
         visual_relations = unique(visual_relations)
         visual_facts = unique(visual_facts)
+        binding_input = dict(parsed)
+        binding_input["visual_facts"] = visual_facts
+        binding_input["visual_relations"] = visual_relations
+        entity_state_bindings = build_visual_bindings(binding_input)
 
         symbolic = parsed.get("symbolic_elements", []) or []
         metaphors = parsed.get("possible_visual_metaphors", []) or []
@@ -303,15 +313,7 @@ describe clothing, people, or objects as text.
             parsed.get("literal_scene")
             and (objects or visual_facts or visual_relations)
         )
-        relation_binding_present = any(
-            re.search(
-                r"\b(left|right|top|bottom|first|second|above|below|attached|"
-                r"labels?|reads?|says)\b",
-                str(item),
-                flags=re.IGNORECASE,
-            )
-            for item in visual_relations
-        )
+        relation_binding_present = bool(entity_state_bindings)
         schema_issues = []
         if not format_valid:
             schema_issues.append("structured_headings_incomplete")
@@ -336,6 +338,8 @@ describe clothing, people, or objects as text.
             "symbolic_tone": symbolic_tone,
             "visual_facts": visual_facts,
             "visual_relations": visual_relations,
+            "entity_state_bindings": entity_state_bindings,
+            "entity_state_binding_count": len(entity_state_bindings),
             "visible_text": visible_text,
             "visible_text_count": len(visible_text),
             "visual_fact_count": len(visual_facts),
@@ -517,6 +521,7 @@ Objects: relevant visible people and objects
 Visible Text: exact quoted text with its region or attached object, or None
 Visual Facts: directly observed states and actions
 Visual Relations: complete entity-to-state, object-to-text, panel, or spatial bindings
+Entity-State Bindings: Entity: item | State: observed state | Region: region
 Symbolic Elements: recognizable visible symbols and a tentative conventional association, or None
 Possible Visual Metaphors: visible transformation or juxtaposition only, or None
 Scene Type: two to five words

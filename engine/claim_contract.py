@@ -56,6 +56,11 @@ HUMAN_REFERENCE_TOKENS = {
 SOURCE_HUMAN_PRONOUNS = {
     "he", "her", "hers", "him", "his", "she", "their", "theirs", "they",
 }
+INTERPRETATION_STATUSES = {
+    "literal_only", "caption_figurative", "requires_image", "unclear",
+}
+REVERSAL_STATUSES = {"yes", "no", "requires_image", "unclear"}
+POLARITIES = {"positive", "negative", "neutral", "mixed", "unclear"}
 
 
 def _normalize(value):
@@ -106,13 +111,76 @@ def _has_human_coreference(source_value, entity_value):
     )
 
 
+def _normalize_enum(value, allowed, default):
+    normalized = _normalize(value).replace(" ", "_")
+    aliases = {
+        "caption_is_figurative": "caption_figurative",
+        "figurative": "caption_figurative",
+        "image_dependent": "requires_image",
+        "image_required": "requires_image",
+        "literal": "literal_only",
+    }
+    normalized = aliases.get(normalized, normalized)
+    for candidate in sorted(allowed, key=len, reverse=True):
+        if normalized == candidate or normalized.startswith(candidate + "_"):
+            return candidate
+    return normalized if normalized in allowed else default
+
+
+def _cue_is_anchored(caption, cue):
+    if _is_placeholder(cue):
+        return False
+    caption_normalized = _normalize(caption)
+    cue_normalized = _normalize(cue)
+    if cue_normalized and cue_normalized in caption_normalized:
+        return True
+    quoted_spans = re.findall(r"['\"]([^'\"]+)['\"]", str(cue or ""))
+    for quoted in quoted_spans:
+        quoted_normalized = _normalize(quoted)
+        if quoted_normalized and quoted_normalized in caption_normalized:
+            return True
+    cue_tokens = _tokens(cue) - ENTITY_STOPWORDS - {
+        "cue", "expression", "phrase", "quoted", "word", "wording",
+    }
+    caption_tokens = _tokens(caption)
+    return bool(cue_tokens) and cue_tokens.issubset(caption_tokens)
+
+
+def _opposite_polarities(left, right):
+    return {left, right} == {"positive", "negative"}
+
+
 def audit_claim_contract(caption, language_output):
     """Audit preservation without pretending to solve semantic equivalence."""
     language_output = language_output or {}
     source_caption = " ".join(str(caption or "").split())
-    proposition = " ".join(
+    legacy_contract = not any(
+        str(language_output.get(key) or "").strip()
+        for key in (
+            "literal_proposition", "pragmatic_proposition",
+            "interpretation_status", "literal_polarity",
+            "pragmatic_polarity", "reversal_cue",
+        )
+    )
+    supplied_proposition = " ".join(
         str(language_output.get("caption_proposition") or "").split()
     )
+    literal_proposition = " ".join(
+        str(
+            language_output.get("literal_proposition")
+            or supplied_proposition
+            or source_caption
+        ).split()
+    )
+    pragmatic_proposition = " ".join(
+        str(
+            language_output.get("pragmatic_proposition")
+            or language_output.get("intended_meaning")
+            or supplied_proposition
+            or literal_proposition
+        ).split()
+    )
+    proposition = literal_proposition
     source_numbers = _numbers(source_caption)
     proposition_numbers = _numbers(proposition)
     source_negations = _negations(source_caption)
@@ -192,9 +260,100 @@ def audit_claim_contract(caption, language_output):
         str(language_output.get("expected_visual_state") or "").strip()
         and str(language_output.get("opposite_visual_state") or "").strip()
     )
+
+    interpretation_status = _normalize_enum(
+        language_output.get("interpretation_status"),
+        INTERPRETATION_STATUSES,
+        "legacy" if legacy_contract else "unclear",
+    )
+    reversal_status = _normalize_enum(
+        language_output.get("polarity_reversal"),
+        REVERSAL_STATUSES,
+        "unclear",
+    )
+    literal_polarity = _normalize_enum(
+        language_output.get("literal_polarity"), POLARITIES, "unclear"
+    )
+    pragmatic_polarity = _normalize_enum(
+        language_output.get("pragmatic_polarity")
+        or language_output.get("caption_polarity"),
+        POLARITIES,
+        "unclear",
+    )
+    linguistic_cue = str(language_output.get("linguistic_cue") or "").strip()
+    reversal_cue = str(language_output.get("reversal_cue") or "").strip()
+    cue_anchored = _cue_is_anchored(source_caption, linguistic_cue)
+    reversal_cue_anchored = _cue_is_anchored(
+        source_caption, reversal_cue or linguistic_cue
+    )
+    figurative_type = _normalize(language_output.get("figurative_type"))
+
+    pragmatic_warnings = []
+    pragmatic_licensed = False
+    pragmatic_activated = False
+    if legacy_contract:
+        pragmatic_licensed = True
+        pragmatic_activated = True
+        selected_proposition = supplied_proposition or literal_proposition
+    elif interpretation_status == "caption_figurative":
+        if figurative_type not in {"sarcasm", "metaphor", "humor"}:
+            pragmatic_warnings.append("figurative_type_does_not_license_interpretation")
+        if not cue_anchored:
+            pragmatic_warnings.append("figurative_cue_not_anchored_in_caption")
+        if not pragmatic_proposition:
+            pragmatic_warnings.append("missing_pragmatic_proposition")
+        if reversal_status == "yes" and not reversal_cue_anchored:
+            pragmatic_warnings.append("reversal_cue_not_anchored_in_caption")
+        if (
+            reversal_status == "yes"
+            and literal_polarity in {"positive", "negative"}
+            and pragmatic_polarity in {"positive", "negative"}
+            and not _opposite_polarities(literal_polarity, pragmatic_polarity)
+        ):
+            pragmatic_warnings.append("declared_reversal_has_no_polarity_flip")
+        pragmatic_licensed = not pragmatic_warnings
+        pragmatic_activated = pragmatic_licensed
+        selected_proposition = (
+            pragmatic_proposition if pragmatic_licensed else literal_proposition
+        )
+    else:
+        # A literal route remains usable when figurative meaning is absent,
+        # uncertain, or may be supplied by the image rather than the caption.
+        pragmatic_licensed = interpretation_status in {
+            "literal_only", "requires_image"
+        }
+        selected_proposition = literal_proposition
+
+    if not legacy_contract and interpretation_status == "unclear":
+        pragmatic_warnings.append("caption_interpretation_unresolved")
+
+    literal_contract_valid = bool(proposition_preserved and entity_frame_preserved)
+    interpretation_route_valid = bool(
+        legacy_contract
+        or pragmatic_activated
+        or interpretation_status in {"literal_only", "requires_image"}
+    )
     return {
         "source_caption": source_caption,
-        "caption_proposition": proposition,
+        "caption_proposition": selected_proposition,
+        "literal_proposition": literal_proposition,
+        "pragmatic_proposition": pragmatic_proposition,
+        "selected_proposition": selected_proposition,
+        "interpretation_status": interpretation_status,
+        "interpretation_route_valid": interpretation_route_valid,
+        "literal_contract_valid": literal_contract_valid,
+        "pragmatic_contract_valid": (
+            pragmatic_licensed
+            if interpretation_status == "caption_figurative"
+            else None
+        ),
+        "pragmatic_interpretation_activated": pragmatic_activated,
+        "literal_polarity": literal_polarity,
+        "pragmatic_polarity": pragmatic_polarity,
+        "reversal_status": reversal_status,
+        "figurative_cue_anchored": cue_anchored,
+        "reversal_cue_anchored": reversal_cue_anchored,
+        "pragmatic_warnings": pragmatic_warnings,
         "source_numbers": source_numbers,
         "proposition_numbers": proposition_numbers,
         "source_negations": source_negations,
@@ -204,11 +363,11 @@ def audit_claim_contract(caption, language_output):
         "proposition_preserved": proposition_preserved,
         "relation_pair_complete": relation_pair_complete,
         "safe_for_directional_reasoning": bool(
-            proposition_preserved
-            and entity_frame_preserved
+            literal_contract_valid
+            and interpretation_route_valid
             and relation_pair_complete
         ),
-        "warnings": warnings,
+        "warnings": warnings + pragmatic_warnings,
     }
 
 
@@ -216,4 +375,11 @@ def attach_claim_contract(language_output, caption):
     output = deepcopy(language_output or {})
     output["original_caption"] = " ".join(str(caption or "").split())
     output["claim_contract"] = audit_claim_contract(caption, output)
+    contract = output["claim_contract"]
+    output["literal_proposition"] = contract["literal_proposition"]
+    output["pragmatic_proposition"] = contract["pragmatic_proposition"]
+    output["caption_proposition"] = contract["selected_proposition"]
+    output["interpretation_status"] = contract["interpretation_status"]
+    output["literal_polarity"] = contract["literal_polarity"]
+    output["pragmatic_polarity"] = contract["pragmatic_polarity"]
     return output

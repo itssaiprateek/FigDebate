@@ -58,6 +58,22 @@ def build_evidence_ledger(visual_output, language_output, comparison):
         _append(entries, "VR", "agent1", "visual_relation", text)
     for text in visual_output.get("visible_text", []) or []:
         _append(entries, "VT", "agent1", "visible_text", text)
+    for binding in visual_output.get("entity_state_bindings", []) or []:
+        if not isinstance(binding, dict) or not binding.get("complete", False):
+            continue
+        _append(
+            entries,
+            "VB",
+            "agent1",
+            "entity_state_binding",
+            binding.get("source_text") or (
+                f"{binding.get('entity', '')} {binding.get('state', '')}"
+            ),
+            relation="NEUTRAL",
+            grounded=bool(binding.get("grounded", False)),
+            decision_grade=False,
+            verification_method=binding.get("method"),
+        )
     symbolic_tone = str(visual_output.get("symbolic_tone", "")).strip()
     if symbolic_tone.lower() not in {"", "none", "unclear", "unspecified"}:
         _append(

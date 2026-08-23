@@ -33,6 +33,20 @@ HEADINGS = {
         "Caption Proposition",
     ],
 
+    "literal_proposition": ["Literal Proposition"],
+
+    "pragmatic_proposition": ["Pragmatic Proposition"],
+
+    "interpretation_status": ["Interpretation Status"],
+
+    "literal_polarity": ["Literal Polarity"],
+
+    "pragmatic_polarity": ["Pragmatic Polarity"],
+
+    "reversal_cue": ["Reversal Cue"],
+
+    "evaluation_target": ["Evaluation Target"],
+
     "claim_subject": ["Claim Subject"],
 
     "claim_predicate": ["Claim Predicate"],
@@ -305,6 +319,20 @@ def parse_claim_response(response):
         "explicit_claims": [],
 
         "caption_proposition": "",
+
+        "literal_proposition": "",
+
+        "pragmatic_proposition": "",
+
+        "interpretation_status": "",
+
+        "literal_polarity": "",
+
+        "pragmatic_polarity": "",
+
+        "reversal_cue": "",
+
+        "evaluation_target": "",
 
         "claim_subject": "",
 

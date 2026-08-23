@@ -62,6 +62,15 @@ class DebateEngine:
         signals = []
         score = 0
 
+        # A one-sided decision-grade relation that agrees with the Arbiter is
+        # already resolved. Debate is for disagreement or genuine uncertainty.
+        if status == "SUPPORTED" and has_support and not has_conflict:
+            if label == "ENTAILS":
+                return {"trigger": False, "reason": None, "level": 0, "score": 0, "signals": []}
+        if status == "CONFLICTING" and has_conflict and not has_support:
+            if label == "CONTRADICTS":
+                return {"trigger": False, "reason": None, "level": 0, "score": 0, "signals": []}
+
         symbolic_relation_review = bool(
             comparison.get("has_symbolic_evidence", False)
             and (
@@ -142,11 +151,21 @@ class DebateEngine:
         relation = comparison.get("claim_relation", {}) or {}
         candidates = comparison.get("structured_relation_candidates", []) or []
         verification = comparison.get("atomic_evidence_verification", {}) or {}
-        if relation.get("resolved") and not verification.get("verified_count", 0):
+        raw_confidence = float(
+            decision.get("_binary_resolution_raw_confidence")
+            or decision.get("confidence")
+            or 0.5
+        )
+        if raw_confidence < 0.62:
+            score += 1
+            signals.append("close_semantic_decision")
+        if relation.get("resolved") and not (
+            has_support or has_conflict or verification.get("verified_count", 0)
+        ):
             score += 1
             signals.append("structured_claim_without_verified_direction")
-        if candidates and not verification.get("verified_count", 0):
-            score += 2
+        if candidates and not (has_support or has_conflict):
+            score += 1
             signals.append("uncorroborated_structured_relation")
         if (
             relation.get("resolved")
@@ -176,11 +195,12 @@ class DebateEngine:
         if score < 2:
             return {"trigger": False, "reason": None, "level": 0, "score": score, "signals": signals}
         level2_signals = {
-            "uncorroborated_structured_relation",
             "unresolved_text_relation_semantics",
             "figurative_symbol_requires_visual_reinspection",
             "insufficient_visual_evidence",
         }
+        # A weak first-pass structured nomination starts as a cached Level-1
+        # review. Escalate it only when another acquisition signal is present.
         level = 2 if level2_signals.intersection(signals) else 1
         reason = signals[0]
         return {"trigger": True, "reason": reason, "level": level, "score": score, "signals": signals}
@@ -230,6 +250,65 @@ class DebateEngine:
             "specific_evidence": True,
             "method": "independent_cached_evidence_review",
             "review_method": "independent_cached_evidence_review",
+            "_seconds": 0.0,
+        }
+
+    @staticmethod
+    def _structured_recovery_critique(comparison, evidence_ledger):
+        """Create a reviewer record from one-sided recovered bindings."""
+        candidates = [
+            item for item in (comparison or {}).get(
+                "structured_relation_candidates", []
+            ) or []
+            if item.get("binding_complete", False)
+            and item.get("grounded", False)
+            and item.get("proposed_relation") in {"SUPPORT", "CONFLICT"}
+        ]
+        relations = {item.get("proposed_relation") for item in candidates}
+        if len(relations) != 1:
+            return None
+        relation = next(iter(relations))
+        grade_items = [
+            item for item in evidence_ledger or []
+            if item.get("grounded", False)
+            and item.get("relation") == relation
+            and (
+                item.get("decision_grade", False)
+                or item.get("verification", {}).get("decision_grade", False)
+            )
+        ]
+        opposite = "CONFLICT" if relation == "SUPPORT" else "SUPPORT"
+        if not grade_items or any(
+            item.get("grounded", False)
+            and item.get("relation") == opposite
+            and (
+                item.get("decision_grade", False)
+                or item.get("verification", {}).get("decision_grade", False)
+            )
+            for item in evidence_ledger or []
+        ):
+            return None
+        candidate = candidates[0]
+        evidence = grade_items[0]
+        recommendation = "ENTAILS" if relation == "SUPPORT" else "CONTRADICTS"
+        return {
+            "stance": "UNRESOLVED",
+            "recommendation": recommendation,
+            "reason": (
+                f"[{evidence.get('id')}] {candidate.get('text')} binds visible "
+                f"entity '{candidate.get('observed_entity')}' to observed state "
+                f"'{candidate.get('observed_state')}'."
+            ),
+            "specific_evidence": True,
+            "observed_entity": candidate.get("observed_entity"),
+            "observed_state": candidate.get("observed_state"),
+            "image_region": candidate.get("image_region", "unspecified"),
+            "claim_relation": relation,
+            "review_method": "structured_recovery_binding",
+            "_format_valid": True,
+            "_format_retry_used": False,
+            "_format_retry_success": False,
+            "_generation_seconds": 0.0,
             "_seconds": 0.0,
         }
 
@@ -540,18 +619,32 @@ class DebateEngine:
                         case["visual_output"] = recovered_visual
                         case["comparison"] = recovered_comparison
                         case["evidence_ledger"] = recovered_ledger
+                        recovered_visual[
+                            "_targeted_recovery_evidence_success"
+                        ] = bool(
+                            recovered_comparison.get("supporting_evidence")
+                            or recovered_comparison.get("contradicting_evidence")
+                            or recovered_comparison.get(
+                                "relation_binding_observed", False
+                            )
+                        )
                         recovered_visual_outputs[case["key"]] = recovered_visual
                         recovered_comparisons[case["key"]] = recovered_comparison
-                    critique_started = time.time()
-                    critique = agent1.critique(
-                        case["image"],
-                        self.build_agent1_challenge_prompt(
-                            case["visual_output"],
-                            case["decision"],
-                            case.get("comparison"),
-                        ),
+                    critique = self._structured_recovery_critique(
+                        case.get("comparison", {}),
+                        case.get("evidence_ledger", []),
                     )
-                    critique["_seconds"] = time.time() - critique_started
+                    if critique is None:
+                        critique_started = time.time()
+                        critique = agent1.critique(
+                            case["image"],
+                            self.build_agent1_challenge_prompt(
+                                case["visual_output"],
+                                case["decision"],
+                                case.get("comparison"),
+                            ),
+                        )
+                        critique["_seconds"] = time.time() - critique_started
                     agent1_critiques[case["key"]] = critique
             finally:
                 if agent1 is not None:

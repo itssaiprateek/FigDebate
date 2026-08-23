@@ -12,6 +12,7 @@ from utils.decision_scoring import (
     position_balanced_relation_scores,
 )
 from engine.region_verifier import verify_region_pairs
+from engine.decision_packet import build_decision_packet, format_decision_packet
 
 
 class Arbiter:
@@ -104,6 +105,17 @@ Reasoning: one sentence citing [VISUAL], [CAPTION], or [COMPARATOR].
                 "Visual relations:\n"
                 + "; ".join(str(item) for item in visual_relations[:5])
             )
+
+        bindings = visual_grounding.get("entity_state_bindings", []) or []
+        if bindings:
+            binding_lines = [
+                f"{item.get('entity')} -> {item.get('state')} "
+                f"(region: {item.get('region', 'unspecified')})"
+                for item in bindings[:6]
+                if isinstance(item, dict) and item.get("complete", False)
+            ]
+            if binding_lines:
+                parts.append("Entity-state bindings:\n" + "; ".join(binding_lines))
 
         description = visual_grounding.get("visual_description", "")
         if description:
@@ -421,6 +433,7 @@ Return exactly one word: ENTAILS or CONTRADICTS.
         language_summary,
         comparison_summary,
         debate_section,
+        decision_packet_summary="",
     ):
         return f"""<s>[INST]
 Compare the observed image evidence with the caption's intended meaning. The
@@ -440,6 +453,9 @@ Caption analysis:
 
 Comparator notes:
 {comparison_summary}
+
+Structured support/conflict packet:
+{decision_packet_summary or 'Unavailable'}
 
 {debate_section}
 
@@ -519,6 +535,7 @@ Evidence IDs: its exact catalog ID, or NONE
         comparison_summary,
         assessment,
         support_first=True,
+        decision_packet_summary="",
     ):
         support = "The observed image evidence supports the caption's intended meaning."
         conflict = "The observed image evidence conflicts with the caption's intended meaning."
@@ -545,6 +562,9 @@ Caption analysis:
 
 Comparator notes:
 {comparison_summary}
+
+Structured support/conflict packet:
+{decision_packet_summary or 'Unavailable'}
 
 Evidence assessment:
 {assessment}
@@ -707,6 +727,7 @@ Confidence:
         language_summary,
         comparison_summary,
         assessment,
+        decision_packet_summary="",
     ):
         """Score support/conflict twice with reversed option positions."""
         forward_prompt = self._build_relation_choice_prompt(
@@ -716,6 +737,7 @@ Confidence:
             comparison_summary,
             assessment,
             support_first=True,
+            decision_packet_summary=decision_packet_summary,
         )
         reversed_prompt = self._build_relation_choice_prompt(
             caption,
@@ -724,6 +746,7 @@ Confidence:
             comparison_summary,
             assessment,
             support_first=False,
+            decision_packet_summary=decision_packet_summary,
         )
         forward_scores = self._completion_log_scores(forward_prompt, ("A", "B"))
         reversed_scores = self._completion_log_scores(reversed_prompt, ("A", "B"))
@@ -899,6 +922,10 @@ Reason:
                 visual_summary = f"{targeted_review}\n{visual_summary}"
         language_summary = self._summarize_language(language_understanding)
         comparison_summary = self._summarize_comparison(comparison)
+        decision_packet = build_decision_packet(
+            language_understanding, comparison
+        )
+        decision_packet_summary = format_decision_packet(decision_packet)
         feedback_section = (
             "Calibrated error-avoidance guidance:\n"
             f"{feedback.strip()}\n"
@@ -1045,6 +1072,7 @@ Binary completion rule before writing the answer:
             language_summary,
             comparison_and_guidance,
             debate_section,
+            decision_packet_summary,
         )
         assessment = "No generated assessment was available."
         assessment_seconds = 0.0
@@ -1084,6 +1112,7 @@ Binary completion rule before writing the answer:
                 language_summary,
                 comparison_and_guidance,
                 assessment,
+                decision_packet_summary,
             )
         except (RuntimeError, ValueError) as error:
             print(f"[Arbiter WARNING] Primary binary scoring failed: {error}")
@@ -1127,6 +1156,7 @@ Binary completion rule before writing the answer:
                 "_binary_resolution_raw_confidence": raw_confidence,
                 "_evidence_quality": evidence_quality,
                 "_arbiter_assessment": assessment,
+                "_decision_packet": decision_packet,
                 "_model_cited_evidence_ids": cited_evidence_ids,
                 "_citation_retry_used": citation_retry_used,
                 "_citation_retry_response": citation_retry_response,

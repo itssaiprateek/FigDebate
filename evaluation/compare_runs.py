@@ -30,6 +30,25 @@ def _truth_rate(rows, key):
     return sum(_truth(row.get(key)) for row in rows) / len(rows)
 
 
+def _conditional_truth_rate(rows, key, condition_key):
+    selected = [row for row in rows if _truth(row.get(condition_key))]
+    if not selected or not any(
+        str(row.get(key, "")).strip() for row in selected
+    ):
+        return None
+    return sum(_truth(row.get(key)) for row in selected) / len(selected)
+
+
+def _directional_packet_rate(rows):
+    values = [str(row.get("decision_packet_profile", "")).strip() for row in rows]
+    if not any(values):
+        return None
+    directional = {
+        "SUPPORT_ONLY", "CONFLICT_ONLY", "MIXED_DIRECTIONAL_EVIDENCE"
+    }
+    return sum(value in directional for value in values) / len(values)
+
+
 def _read(path):
     with open(path, newline="", encoding="utf-8") as handle:
         rows = {row["id"]: row for row in csv.DictReader(handle)}
@@ -101,6 +120,18 @@ def compare(control_path, treatment_path, output_dir):
             ),
             "control_feedback_rules": left.get("feedback_matched_rule_ids", ""),
             "treatment_feedback_rules": right.get("feedback_matched_rule_ids", ""),
+            "control_feedback_agents": left.get(
+                "feedback_matched_target_agents", ""
+            ),
+            "treatment_feedback_agents": right.get(
+                "feedback_matched_target_agents", ""
+            ),
+            "control_feedback_mechanisms": left.get(
+                "feedback_matched_failure_mechanisms", ""
+            ),
+            "treatment_feedback_mechanisms": right.get(
+                "feedback_matched_failure_mechanisms", ""
+            ),
         })
 
     total = len(paired)
@@ -151,6 +182,56 @@ def compare(control_path, treatment_path, output_dir):
         ),
         "treatment_claim_contract_valid_rate": _truth_rate(
             treatment_rows, "claim_contract_valid"
+        ),
+        "control_literal_contract_valid_rate": _truth_rate(
+            control_rows, "claim_literal_contract_valid"
+        ),
+        "treatment_literal_contract_valid_rate": _truth_rate(
+            treatment_rows, "claim_literal_contract_valid"
+        ),
+        "control_pragmatic_activation_rate": _truth_rate(
+            control_rows, "claim_pragmatic_activated"
+        ),
+        "treatment_pragmatic_activation_rate": _truth_rate(
+            treatment_rows, "claim_pragmatic_activated"
+        ),
+        "control_required_binding_resolution_rate": _conditional_truth_rate(
+            control_rows,
+            "comparator_relation_binding_observed",
+            "comparator_relation_binding_required",
+        ),
+        "treatment_required_binding_resolution_rate": _conditional_truth_rate(
+            treatment_rows,
+            "comparator_relation_binding_observed",
+            "comparator_relation_binding_required",
+        ),
+        "control_mean_entity_state_bindings": _mean(
+            control_rows, "agent1_entity_state_binding_count"
+        ),
+        "treatment_mean_entity_state_bindings": _mean(
+            treatment_rows, "agent1_entity_state_binding_count"
+        ),
+        "control_directional_packet_rate": _directional_packet_rate(control_rows),
+        "treatment_directional_packet_rate": _directional_packet_rate(treatment_rows),
+        "control_level2_debate_rate": sum(
+            _truth(row.get("debate_triggered"))
+            and float(row.get("debate_level") or 0) >= 2
+            for row in control_rows
+        ) / total,
+        "treatment_level2_debate_rate": sum(
+            _truth(row.get("debate_triggered"))
+            and float(row.get("debate_level") or 0) >= 2
+            for row in treatment_rows
+        ) / total,
+        "control_recovery_evidence_yield": _conditional_truth_rate(
+            control_rows,
+            "debate_grounding_recovery_evidence_success",
+            "debate_grounding_recovery_attempted",
+        ),
+        "treatment_recovery_evidence_yield": _conditional_truth_rate(
+            treatment_rows,
+            "debate_grounding_recovery_evidence_success",
+            "debate_grounding_recovery_attempted",
         ),
         "control_review_board_grounded_rate": _truth_rate(
             control_rows, "review_board_directionally_grounded"

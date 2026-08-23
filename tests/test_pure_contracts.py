@@ -8,6 +8,8 @@ from engine.evidence_ledger import (
     add_visual_reinspection_evidence,
     audit_decision,
 )
+from engine.evidence_binding import build_visual_bindings, parse_binding_line
+from engine.decision_packet import build_decision_packet, format_decision_packet
 from engine.feedback_loop import FeedbackLoop
 from engine.relation_schema import build_claim_relation, nominate_visual_relations
 from engine.region_verifier import verify_region_pairs
@@ -21,6 +23,18 @@ from utils.visual_parser import parse_list, parse_visual_response
 
 
 class PureParserTests(unittest.TestCase):
+    def test_entity_state_bindings_are_parsed(self):
+        parsed = parse_visual_response(
+            "Literal Scene: A graph is shown.\n"
+            "Entity-State Bindings:\n"
+            "- Entity: graph | State: falling sharply | Region: center\n"
+            "Scene Type: chart\n"
+        )
+        self.assertEqual(
+            parsed["entity_state_bindings"],
+            ["Entity: graph | State: falling sharply | Region: center"],
+        )
+
     def test_visual_relations_are_parsed(self):
         parsed = parse_visual_response(
             "Visible Text:\nNone\n"
@@ -79,6 +93,20 @@ class PureParserTests(unittest.TestCase):
         self.assertEqual(parsed["claim_source"], "Same as subject")
         self.assertEqual(parsed["claim_target"], "Jewish people")
 
+    def test_dual_interpretation_contract_sections_are_parsed(self):
+        parsed = parse_claim_response(
+            "Interpretation Status: caption_figurative\n"
+            "Literal Proposition: The result is wonderful.\n"
+            "Pragmatic Proposition: The result is terrible.\n"
+            "Literal Polarity: positive\n"
+            "Pragmatic Polarity: negative\n"
+            "Reversal Cue: wonderful\n"
+            "Evaluation Target: the result\n"
+        )
+        self.assertEqual(parsed["interpretation_status"], "caption_figurative")
+        self.assertEqual(parsed["pragmatic_polarity"], "negative")
+        self.assertEqual(parsed["evaluation_target"], "the result")
+
     def test_parenthetical_claim_headings_are_parsed(self):
         parsed = parse_claim_response(
             "Alternative Interpretation (if literal): a physical heart.\n"
@@ -94,6 +122,99 @@ class PureParserTests(unittest.TestCase):
 
 
 class ClaimContractTests(unittest.TestCase):
+    def test_caption_licensed_sarcasm_activates_pragmatic_proposition(self):
+        output = attach_claim_contract(
+            {
+                "literal_proposition": "The failed result is wonderful.",
+                "pragmatic_proposition": "The failed result is terrible.",
+                "interpretation_status": "caption_figurative",
+                "figurative_type": "sarcasm",
+                "linguistic_cue": "wonderful",
+                "polarity_reversal": "yes",
+                "reversal_cue": "wonderful",
+                "literal_polarity": "positive",
+                "pragmatic_polarity": "negative",
+                "claim_subject": "result",
+                "expected_visual_state": "the result visibly failed",
+                "opposite_visual_state": "the result visibly succeeded",
+            },
+            "The failed result is wonderful.",
+        )
+        self.assertEqual(
+            output["caption_proposition"], "The failed result is terrible."
+        )
+        self.assertTrue(
+            output["claim_contract"]["pragmatic_interpretation_activated"]
+        )
+
+    def test_explanatory_words_around_quoted_cue_do_not_block_sarcasm(self):
+        output = attach_claim_contract(
+            {
+                "literal_proposition": "The speaker says great job.",
+                "pragmatic_proposition": "The speaker criticizes the job.",
+                "interpretation_status": "caption_figurative",
+                "figurative_type": "sarcasm",
+                "linguistic_cue": 'the quoted phrase "great job"',
+                "reversal_cue": 'the phrase "great job"',
+                "polarity_reversal": "yes",
+                "literal_polarity": "positive",
+                "pragmatic_polarity": "negative",
+                "caption_proposition": "The speaker criticizes the job.",
+                "claim_subject": "speaker",
+                "expected_visual_state": "a visibly poor result",
+                "opposite_visual_state": "a visibly successful result",
+            },
+            "Great job.",
+        )
+        self.assertTrue(
+            output["claim_contract"]["pragmatic_interpretation_activated"]
+        )
+
+    def test_unlicensed_pragmatic_reading_keeps_literal_proposition(self):
+        output = attach_claim_contract(
+            {
+                "literal_proposition": "The result is wonderful.",
+                "pragmatic_proposition": "The result is terrible.",
+                "interpretation_status": "caption_figurative",
+                "figurative_type": "sarcasm",
+                "linguistic_cue": "obviously failed",
+                "polarity_reversal": "yes",
+                "reversal_cue": "obviously failed",
+                "literal_polarity": "positive",
+                "pragmatic_polarity": "negative",
+                "claim_subject": "result",
+                "expected_visual_state": "the result is wonderful",
+                "opposite_visual_state": "the result is terrible",
+            },
+            "The result is wonderful.",
+        )
+        self.assertEqual(
+            output["caption_proposition"], "The result is wonderful."
+        )
+        self.assertFalse(output["claim_contract"]["pragmatic_contract_valid"])
+        self.assertIn(
+            "figurative_cue_not_anchored_in_caption",
+            output["claim_contract"]["warnings"],
+        )
+
+    def test_image_dependent_interpretation_uses_literal_route(self):
+        output = attach_claim_contract(
+            {
+                "literal_proposition": "The people are at orientation.",
+                "pragmatic_proposition": "The people are at orientation.",
+                "interpretation_status": "requires_image",
+                "figurative_type": "literal",
+                "claim_subject": "people",
+                "expected_visual_state": "people attend orientation",
+                "opposite_visual_state": "people are somewhere else",
+            },
+            "The people are at orientation.",
+        )
+        self.assertTrue(output["claim_contract"]["safe_for_directional_reasoning"])
+        self.assertFalse(
+            output["claim_contract"]["pragmatic_interpretation_activated"]
+        )
+
     def test_complete_claim_frame_is_safe(self):
         audit = audit_claim_contract(
             "Kanye blames Jewish people for his problems.",
@@ -202,7 +323,142 @@ class ClaimContractTests(unittest.TestCase):
         )
 
 
+class VisualBindingTests(unittest.TestCase):
+    def test_explicit_binding_preserves_source_and_region(self):
+        binding = parse_binding_line(
+            "Entity: red line | State: falling sharply | Region: top right"
+        )
+        self.assertEqual(binding["entity"], "red line")
+        self.assertEqual(binding["state"], "falling sharply")
+        self.assertEqual(binding["region"], "top right")
+        self.assertEqual(binding["method"], "explicit_agent1_binding")
+
+    def test_complete_observation_can_be_bound_without_direction_label(self):
+        bindings = build_visual_bindings({
+            "visual_facts": ["The woman is smiling beside the bicycle."],
+        })
+        self.assertEqual(len(bindings), 1)
+        self.assertEqual(bindings[0]["entity"].lower(), "the woman")
+        self.assertEqual(bindings[0]["state"], "smiling beside the bicycle")
+        self.assertNotIn("relation", bindings[0])
+
+    def test_unbound_ocr_does_not_become_entity_state_evidence(self):
+        self.assertEqual(build_visual_bindings({
+            "visible_text": ["great job"],
+        }), [])
+
+
+class DecisionPacketTests(unittest.TestCase):
+    def test_packet_keeps_support_and_conflict_separate(self):
+        packet = build_decision_packet(
+            {
+                "caption_proposition": "The value rises.",
+                "claim_contract": {
+                    "selected_proposition": "The value rises.",
+                    "safe_for_directional_reasoning": True,
+                },
+            },
+            {
+                "support_hypothesis": {"state": "graph rises"},
+                "conflict_hypothesis": {"state": "graph falls"},
+                "grounded_evidence_catalog": [
+                    {
+                        "id": "CS001", "type": "direct_support",
+                        "text": "The graph rises.", "decision_grade": True,
+                    },
+                    {
+                        "id": "CC001", "type": "direct_conflict",
+                        "text": "The graph falls.", "decision_grade": True,
+                    },
+                ],
+                "required_evidence_status": "MIXED_VERIFIED_EVIDENCE",
+            },
+        )
+        self.assertEqual(packet["support_evidence"][0]["id"], "CS001")
+        self.assertEqual(packet["conflict_evidence"][0]["id"], "CC001")
+        rendered = format_decision_packet(packet)
+        self.assertIn("SUPPORT hypothesis", rendered)
+        self.assertIn("CONFLICT hypothesis", rendered)
+        self.assertIn("NONE means unavailable evidence", rendered)
+
+    def test_packet_does_not_turn_missing_support_into_conflict(self):
+        packet = build_decision_packet(
+            {"caption_proposition": "The value rises."},
+            {"missing_evidence": ["No chart direction is readable."]},
+        )
+        self.assertEqual(packet["support_evidence"], [])
+        self.assertEqual(packet["conflict_evidence"], [])
+        self.assertEqual(len(packet["missing_evidence"]), 1)
+
+
 class PureComparatorTests(unittest.TestCase):
+    @staticmethod
+    def _trajectory_language():
+        caption = "The economy recovered."
+        return caption, attach_claim_contract(
+            {
+                "caption_proposition": caption,
+                "claim_subject": "economy",
+                "relation_family": "trajectory",
+                "expected_visual_state": "economy graph rising upward",
+                "opposite_visual_state": "economy graph falling downward",
+                "intended_meaning": caption,
+                "figurative_type": "literal",
+            },
+            caption,
+        )
+
+    def test_bound_expected_state_is_direct_support(self):
+        caption, language = self._trajectory_language()
+        result = compare(
+            {
+                "entity_state_bindings": [{
+                    "entity": "graph", "state": "rising upward",
+                    "region": "center", "source_text": "The graph rises.",
+                    "grounded": True, "complete": True,
+                }],
+                "visual_description": "A graph is visible.",
+            },
+            language,
+            caption=caption,
+        )
+        self.assertEqual(result["recommendation"], "LEAN_ENTAILS")
+        self.assertTrue(result["supporting_evidence"])
+
+    def test_bound_opposite_state_is_direct_conflict(self):
+        caption, language = self._trajectory_language()
+        result = compare(
+            {
+                "entity_state_bindings": [{
+                    "entity": "graph", "state": "falling downward",
+                    "region": "center", "source_text": "The graph falls.",
+                    "grounded": True, "complete": True,
+                }],
+                "visual_description": "A graph is visible.",
+            },
+            language,
+            caption=caption,
+        )
+        self.assertEqual(result["recommendation"], "LEAN_CONTRADICTS")
+        self.assertTrue(result["contradicting_evidence"])
+
+    def test_bound_state_for_wrong_entity_is_not_directional(self):
+        caption, language = self._trajectory_language()
+        result = compare(
+            {
+                "entity_state_bindings": [{
+                    "entity": "heart", "state": "falling downward",
+                    "region": "center", "source_text": "A heart falls.",
+                    "grounded": True, "complete": True,
+                }],
+                "visual_description": "A heart is visible.",
+            },
+            language,
+            caption=caption,
+        )
+        self.assertFalse(result["supporting_evidence"])
+        self.assertFalse(result["contradicting_evidence"])
+
     def test_semantic_gap_is_review_not_contradiction(self):
         result = compare(
             {
@@ -701,6 +957,36 @@ class RegionVerifierTests(unittest.TestCase):
 
 
 class PureFeedbackAttributionTests(unittest.TestCase):
+    def test_invalid_claim_contract_is_attributed_to_language_agent(self):
+        loop = FeedbackLoop()
+        calibration = loop.calibration_rule(
+            {"claim_contract": {"safe_for_directional_reasoning": False}},
+            {
+                "required_evidence_status": "SEMANTIC_REVIEW_REQUIRED",
+                "visual_schema_complete": True,
+            },
+            {"label": "CONTRADICTS"},
+            "ENTAILS",
+        )
+        self.assertEqual(calibration[:2], ("agent2", "claim_contract_unresolved"))
+
+    def test_missing_entity_state_binding_is_attributed_to_visual_agent(self):
+        loop = FeedbackLoop()
+        calibration = loop.calibration_rule(
+            {"claim_contract": {"safe_for_directional_reasoning": True}},
+            {
+                "required_evidence_status": "GROUNDED_REVIEW_REQUIRED",
+                "visual_schema_complete": True,
+                "relation_binding_required": True,
+                "relation_binding_observed": False,
+            },
+            {"label": "ENTAILS"},
+            "CONTRADICTS",
+        )
+        self.assertEqual(
+            calibration[:2], ("agent1", "entity_state_binding_missing")
+        )
+
     def test_dataset_phenomenon_mismatch_is_not_blamed_on_caption_agent(self):
         failure = FeedbackLoop.classify_verified_error(
             {"figurative_type": "literal"},
@@ -750,7 +1036,7 @@ class PureFeedbackAttributionTests(unittest.TestCase):
         self.assertNotIn("verified_relation", item)
         self.assertNotIn("initial_label", item["signature"])
 
-    def test_procedural_memory_is_selective(self):
+    def test_procedural_memory_generalizes_across_topic_words(self):
         caption = "The people move at a leisurely pace."
         language = attach_claim_contract(
             {
@@ -793,8 +1079,69 @@ class PureFeedbackAttributionTests(unittest.TestCase):
                 },
             }
             self.assertEqual(
-                loop.matching_rules("arbiter", unrelated), []
+                len(loop.matching_rules("arbiter", unrelated)), 1
             )
+
+    def test_procedural_memory_does_not_cross_relation_mechanisms(self):
+        pace_caption, pace_language = self._pace_memory_language()
+        pace_context = {
+            "language_output": pace_language,
+            "comparison": {
+                "required_evidence_status": "SEMANTIC_REVIEW_REQUIRED"
+            },
+            "decision": {"label": "ENTAILS"},
+            "evidence_ledger": [],
+        }
+        safety_caption = "The worker is completely safe."
+        safety_language = attach_claim_contract(
+            {
+                "caption_proposition": safety_caption,
+                "claim_subject": "worker",
+                "figurative_type": "metaphor",
+                "relation_family": "safety",
+                "expected_visual_state": "worker protected from danger",
+                "opposite_visual_state": "worker exposed to danger",
+            },
+            safety_caption,
+        )
+        safety_language["claim_relation"] = build_claim_relation(
+            safety_caption, safety_language
+        )
+        safety_context = {
+            **pace_context,
+            "language_output": safety_language,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            loop = FeedbackLoop(
+                log_file=os.path.join(temp_dir, "feedback.json")
+            )
+            loop.add_verified_case(
+                pace_context,
+                "CONTRADICTS",
+                "unsupported_entailment",
+                loop.CALIBRATED_RULES["unsupported_entailment"],
+                {"sample_id": "dev_pace"},
+            )
+            self.assertEqual(
+                len(loop.matching_rules("arbiter", safety_context)), 0
+            )
+
+    @staticmethod
+    def _pace_memory_language():
+        caption = "The people move at a leisurely pace."
+        language = attach_claim_contract(
+            {
+                "caption_proposition": caption,
+                "claim_subject": "people",
+                "figurative_type": "metaphor",
+                "relation_family": "pace",
+                "expected_visual_state": "people walking slowly",
+                "opposite_visual_state": "people running quickly",
+            },
+            caption,
+        )
+        language["claim_relation"] = build_claim_relation(caption, language)
+        return caption, language
 
 
 if __name__ == "__main__":

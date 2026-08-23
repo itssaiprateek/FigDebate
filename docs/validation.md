@@ -34,7 +34,7 @@ that refer to another sample.
 
 ## 4. Build New Procedural Memory
 
-Do not reuse a pre-v2 feedback file.
+Do not reuse a pre-v3 feedback file.
 
 ```powershell
 python run_figdebate.py --dataset-split vflute_train_dev50 --num-samples 50 --selection-strategy stratified --seed 42 --feedback-mode calibrate --debate-mode enabled --evidence-mode enabled --run-dir outputs\final_dev50_calibration
@@ -82,6 +82,14 @@ python -m evaluation.compare_runs --control outputs\final_val100_debate\predicti
 - Level 2 visual reinspection evidence is separately counted and identified;
   weak, negated, or entity-unbound observations remain non-decision-grade.
 - Claim-contract failures and review-board statuses are reported, not hidden.
+- Literal and pragmatic contract validity, pragmatic activation, and reversal
+  status are reported separately.
+- Entity-state binding coverage and required-binding resolution are reported.
+- The decision packet reports support-only, conflict-only, mixed, and
+  no-directional-evidence cases separately.
+- Level 2 recovery success and decision-grade evidence yield are reported;
+  recovery format alone is not counted as success.
+- Feedback matches report both the target component and failure mechanism.
 - Runtime comparison includes model loading and per-stage inference.
 - Accuracy, balanced accuracy, macro F1, calibration, explanation diagnostics,
   and phenomenon breakdowns are present in each run folder.

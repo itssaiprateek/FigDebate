@@ -261,10 +261,25 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
             or text_surface_without_ocr
         )
     )
+    complete_bindings = [
+        item for item in visual_output.get("entity_state_bindings", []) or []
+        if isinstance(item, dict)
+        and item.get("complete", False)
+        and item.get("grounded", False)
+    ]
+    relational_caption = any(
+        cue in normalized_caption for cue in RELATIONAL_CAPTION_CUES
+    )
+    required_binding_count = 2 if relational_caption else 1
     relation_binding_observed = bool(
         relation_binding_required
-        and has_explicit_region_pair
-        and len(visible_text_terms.intersection(relation_terms)) >= 2
+        and (
+            (
+                has_explicit_region_pair
+                and len(visible_text_terms.intersection(relation_terms)) >= 2
+            )
+            or len(complete_bindings) >= required_binding_count
+        )
     )
     # The four-crop verifier assumes a very specific graphic: two compared
     # items across the top with their outcomes below.  Text binding can be
@@ -284,18 +299,34 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
     review_questions = []
 
     for candidate in relation_candidates:
+        required_cue_count = 1 if (
+            candidate.get("binding_complete", False)
+            and candidate.get("grounded", False)
+            and candidate.get("method") == "symmetric_entity_state_binding"
+        ) else 2
         if (
-            len(set(candidate.get("matched_cues", []))) < 2
+            len(set(candidate.get("matched_cues", []))) < required_cue_count
             or not candidate.get("matched_entities")
             or not claim_contract.get("safe_for_directional_reasoning", False)
         ):
             continue
-        evidence = (
-            f"[VISUAL] {candidate.get('text')} [CAPTION] Entity-bound "
-            f"{candidate.get('relation_family')} cues "
-            f"({', '.join(candidate.get('matched_cues', []))}) "
-            "match the structured caption relation."
-        )
+        if candidate.get("binding_complete", False):
+            evidence = (
+                f"[VISUAL] {candidate.get('observed_entity')} is bound to "
+                f"state '{candidate.get('observed_state')}' in region "
+                f"'{candidate.get('image_region')}'. [SOURCE] "
+                f"{candidate.get('text')} [CAPTION] This matches the "
+                f"{candidate.get('proposed_relation', '').lower()} hypothesis "
+                f"for {candidate.get('relation_family')} through cue(s): "
+                f"{', '.join(candidate.get('matched_cues', []))}."
+            )
+        else:
+            evidence = (
+                f"[VISUAL] {candidate.get('text')} [CAPTION] Entity-bound "
+                f"{candidate.get('relation_family')} cues "
+                f"({', '.join(candidate.get('matched_cues', []))}) "
+                "match the structured caption relation."
+            )
         if candidate.get("proposed_relation") == "SUPPORT":
             direct_support.append(evidence)
         elif candidate.get("proposed_relation") == "CONFLICT":
@@ -428,6 +459,8 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
         "caption": caption,
         "claim_proposition": caption_proposition or intended_meaning or surface_meaning,
         "claim_relation": claim_relation,
+        "support_hypothesis": claim_relation.get("support_hypothesis", {}),
+        "conflict_hypothesis": claim_relation.get("conflict_hypothesis", {}),
         "claim_contract": claim_contract,
         "claim_contract_valid": bool(
             claim_contract.get("safe_for_directional_reasoning", False)
@@ -461,7 +494,7 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
         "recommendation": recommendation,
         "evidence_quality": evidence_quality,
         "visual_schema_complete": bool(visual_output.get("schema_complete", False)),
-        "has_visual_relations": bool(visual_relations),
+        "has_visual_relations": bool(visual_relations or complete_bindings),
         "has_visible_text": bool(visible_text),
         "has_symbolic_evidence": has_symbolic_evidence,
         "has_explicit_symbolic_evidence": explicit_symbolic_evidence,
@@ -470,6 +503,7 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
         "text_surface_without_ocr": text_surface_without_ocr,
         "relation_binding_required": relation_binding_required,
         "relation_binding_observed": relation_binding_observed,
+        "complete_entity_state_binding_count": len(complete_bindings),
         "region_pair_verifier_eligible": region_pair_verifier_eligible,
         "alignment_score": round(
             len(direct_terms) / max(1, len(content_terms(claim_text))),
