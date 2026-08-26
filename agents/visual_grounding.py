@@ -72,6 +72,7 @@ describe clothing, people, or objects as text.
 
         self.processor = llava_model.processor
         self.model = llava_model.model
+        self._last_generation_diagnostics = {}
 
         print("[Agent1] Ready.")
 
@@ -193,6 +194,21 @@ describe clothing, people, or objects as text.
             generated_tokens,
             skip_special_tokens=True,
         )[0]
+        generated_count = int(generated_tokens.shape[1])
+        eos_value = getattr(
+            getattr(self.model, "generation_config", None), "eos_token_id", None
+        )
+        eos_ids = set(eos_value if isinstance(eos_value, (list, tuple)) else [eos_value])
+        eos_ids.discard(None)
+        last_token = (
+            int(generated_tokens[0, -1].item()) if generated_count else None
+        )
+        self._last_generation_diagnostics = {
+            "generated_tokens": generated_count,
+            "max_new_tokens": int(max_new_tokens),
+            "hit_token_limit": bool(generated_count >= int(max_new_tokens)),
+            "ended_by_eos": bool(last_token in eos_ids),
+        }
         return response, time.time() - started
 
     @staticmethod
@@ -555,8 +571,12 @@ must be reported as uncertain, not converted into an opposite observation.
             recovery_responses.append(("TARGETED OCR", ocr_response))
             recovery_parsed.append(parse_visual_response(ocr_response))
 
-        original_parsed = (visual_output or {}).get("_internal", {}) or {}
-        combined = self._merge_parsed(original_parsed, *recovery_parsed)
+        # A targeted recovery is a new observation generation.  Do not union
+        # stale, disputed observations from the earlier pass into it.
+        combined = self._merge_parsed(
+            recovery_parsed[0] if recovery_parsed else {},
+            *recovery_parsed[1:],
+        )
         combined_raw = "\n\n".join(
             f"{name}:\n{text}" for name, text in recovery_responses
         )
@@ -843,6 +863,133 @@ Text Binding: exact visible phrase -> attached visible entity, or None
         }
 
     @staticmethod
+    def _extract_atomic_question(critique_prompt):
+        match = re.search(
+            r"(?im)^Review question\s*:\s*(.+)$", str(critique_prompt or "")
+        )
+        if match:
+            return " ".join(match.group(1).split()).strip()
+        match = re.search(
+            r"(?im)^(?:Question|Verification request)\s*:\s*(.+)$",
+            str(critique_prompt or ""),
+        )
+        if match:
+            return " ".join(match.group(1).split()).strip()
+        return "What exact visible state or relation is shown for the claim subject?"
+
+    @staticmethod
+    def _question_id(critique_prompt):
+        match = re.search(
+            r"(?im)^Question ID\s*:\s*([A-Za-z0-9_.-]+)",
+            str(critique_prompt or ""),
+        )
+        return match.group(1) if match else "agent1_visual_observation"
+
+    @staticmethod
+    def _claim_frame_excerpt(critique_prompt):
+        wanted = (
+            "Original caption", "Claim subject", "Claim predicate",
+            "Asserted property", "Expected visual state",
+            "Opposite visual state", "Intended meaning", "Relation family",
+        )
+        lines = []
+        for name in wanted:
+            match = re.search(
+                rf"(?im)^\s*{re.escape(name)}\s*:\s*(.+)$",
+                str(critique_prompt or ""),
+            )
+            if match:
+                lines.append(f"{name}: {' '.join(match.group(1).split())}")
+        return "\n".join(lines) or "Claim frame: unavailable"
+
+    @staticmethod
+    def _parse_observation_response(response):
+        headings = (
+            "Observation Status", "Observed Entity", "Observed State",
+            "Image Region", "Reason",
+        )
+
+        def field(name):
+            following = "|".join(re.escape(item) for item in headings)
+            match = re.search(
+                rf"(?ims)^\s*{re.escape(name)}\s*:\s*(.*?)"
+                rf"(?=^\s*(?:{following})\s*:|\Z)",
+                str(response or ""),
+            )
+            return " ".join(match.group(1).split()).strip() if match else ""
+
+        status_match = re.search(
+            r"\b(OBSERVED|UNCLEAR)\b", field("Observation Status"),
+            flags=re.IGNORECASE,
+        )
+        status = status_match.group(1).upper() if status_match else ""
+        entity = field("Observed Entity")
+        state = field("Observed State")
+        region = field("Image Region")
+        reason = field("Reason")
+        placeholders = {"", "none", "unknown", "unavailable"}
+        if status == "UNCLEAR":
+            format_valid = bool(status_match and reason)
+        else:
+            format_valid = bool(
+                status == "OBSERVED"
+                and entity.casefold() not in placeholders
+                and state.casefold() not in placeholders
+                and region.casefold() not in placeholders
+                and reason
+            )
+        return {
+            "observation_status": status or "INVALID",
+            "observed_entity": entity,
+            "observed_state": state,
+            "image_region": region,
+            "reason": reason,
+            "_format_valid": format_valid,
+            "_raw_response": str(response or "").strip(),
+        }
+
+    @staticmethod
+    def _parse_relation_response(response):
+        has_heading = bool(re.search(
+            r"(?im)^\s*Claim Relation\s*:", str(response or "")
+        ))
+        match = re.search(
+            r"(?im)^\s*Claim Relation\s*:\s*"
+            r"(SUPPORT|CONFLICT|UNRESOLVED)\b",
+            str(response or ""),
+        )
+        return {
+            "claim_relation": match.group(1).upper() if match else "UNRESOLVED",
+            "_format_valid": bool(match),
+            "_invalid_enum": bool(has_heading and not match),
+            "_raw_response": str(response or "").strip(),
+        }
+
+    @staticmethod
+    def _response_status(observation, relation, diagnostics):
+        if (diagnostics or {}).get("hit_token_limit"):
+            return "TRUNCATED_RESPONSE"
+        if not observation.get("_raw_response"):
+            return "QUESTION_NOT_ANSWERED"
+        if relation.get("_invalid_enum"):
+            return "INVALID_ENUM"
+        if (
+            observation.get("observation_status") == "UNCLEAR"
+            and relation.get("claim_relation") in {"SUPPORT", "CONFLICT"}
+        ):
+            return "INCONSISTENT_FIELDS"
+        if not observation.get("_format_valid") or not relation.get("_format_valid"):
+            return "FORMAT_FAILURE"
+        if observation.get("observation_status") == "UNCLEAR":
+            return "VALID_ABSTENTION"
+        value = relation.get("claim_relation")
+        if value not in {"SUPPORT", "CONFLICT", "UNRESOLVED"}:
+            return "INVALID_ENUM"
+        if value == "UNRESOLVED":
+            return "SEMANTICALLY_UNRESOLVED"
+        return "VALID_DIRECTIONAL_ANSWER"
+
+    @staticmethod
     def _critique_quality(parsed):
         return sum(bool(parsed.get(field)) for field in (
             "observed_entity", "observed_state", "image_region", "reason"
@@ -910,6 +1057,14 @@ Text Binding: exact visible phrase -> attached visible entity, or None
                     "review_method": "region_ocr",
                     "region_pairs": region_pairs,
                     "_format_valid": True,
+                    "observation_status": "OBSERVED",
+                    "response_status": "VALID_ABSTENTION",
+                    "question_id": "agent1_region_binding",
+                    "question": (
+                        "Which exact text belongs to each visible comparison region?"
+                    ),
+                    "parser_errors": [],
+                    "generation_diagnostics": {},
                 }
             if reason:
                 critique_prompt += (
@@ -937,83 +1092,198 @@ Text Binding: exact visible phrase -> attached visible entity, or None
                     "before using it as evidence.\n"
                 )
 
+        question = self._extract_atomic_question(critique_prompt)
+        question_id = self._question_id(critique_prompt)
+        claim_frame = self._claim_frame_excerpt(critique_prompt)
         prompt_text = f"""
-You are the independent visual reviewer in a multimodal reasoning system.
+Inspect the image and answer only this one visual question:
+{question}
 
-You are not shown another agent's answer. Evaluate the caption relation using
-only the image and the supplied immutable claim frame.
+Do not choose ENTAILS or CONTRADICTS. Do not repeat the supplied claim. Report
+only a directly visible state, action, text attachment, symbol attachment, or
+spatial relation. If the requested detail cannot be seen, use UNCLEAR.
 
-Rules:
-- Inspect the image carefully again.
-- Do NOT use outside knowledge.
-- Do NOT imagine missing objects.
-- Use only visible visual evidence.
-- Recommend a label only when a specific visible relation supports it.
-- Use ABSTAIN when the image is not directionally decisive.
-- A printed label or visible symbol may instantiate a caption role without the
-  literal object being present, but only when its attachment is visible.
-- Do not repeat the supplied analysis or any headings other than the six
-  response fields below.
-
-Return exactly these six lines, without brackets or angle brackets:
-Recommendation: ENTAILS, CONTRADICTS, or ABSTAIN
-Observed Entity: exact visible person or object, or None
-Observed State: exact directly observed state or relation, or None
-Image Region: location of that evidence, or None
-Claim Relation: SUPPORT, CONFLICT, or UNRESOLVED
-Reason: one concise explanation linking the observation to the claim state
-
-====================================================
-
-{critique_prompt}
+Return exactly these five single-line fields:
+Observation Status: OBSERVED or UNCLEAR
+Observed Entity: exact visible person, object, label, or symbol; None if unclear
+Observed State: exact visible state or relation; None if unclear
+Image Region: exact visible location; None if unclear
+Reason: short factual observation or why the detail is unclear
 """
         print("\n========== Agent 1 Critique ==========")
 
         response, primary_seconds = self._generate_response(
-            image, prompt_text, 170
+            image, prompt_text, 110
+        )
+        primary_diagnostics = dict(
+            getattr(self, "_last_generation_diagnostics", {}) or {}
         )
 
-        print("\n================ AGENT 1 CRITIQUE ================\n")
+        print("\n================ AGENT 1 OBSERVATION ================\n")
         print(response)
         print("\n=================================================\n")
         review_method = self._critique_review_method(critique_prompt)
-        parsed = self._parse_critique_response(response, review_method)
-        retry_response = ""
+        observation = self._parse_observation_response(response)
+        observation_retry_response = ""
         retry_seconds = 0.0
-        retry_used = not parsed["_format_valid"]
+        retry_used = not observation["_format_valid"]
         if retry_used:
             retry_prompt = f"""
-Inspect the image and repair the visual review. Do not repeat this instruction.
-Use the claim frame below only to decide what visible state must be checked.
+Repair only the missing visual-observation fields for this one question:
+{question}
 
-{critique_prompt}
-
-Return exactly six single-line fields. Every field is mandatory. Image Region
-must name a visible location. Recommendation and Claim Relation must agree:
-ENTAILS=SUPPORT, CONTRADICTS=CONFLICT, ABSTAIN=UNRESOLVED.
-Recommendation: ENTAILS, CONTRADICTS, or ABSTAIN
-Observed Entity: exact visible person, object, printed label, or symbol
-Observed State: exact visible state, action, attachment, or bound text
-Image Region: exact location in the image
-Claim Relation: SUPPORT, CONFLICT, or UNRESOLVED
-Reason: one sentence connecting the visible observation to expected or opposite state
+Do not classify the caption. If the evidence is not visible, use UNCLEAR.
+Return exactly:
+Observation Status: OBSERVED or UNCLEAR
+Observed Entity: exact visible entity, or None
+Observed State: exact visible state or relation, or None
+Image Region: exact visible location, or None
+Reason: one short factual sentence
 """
-            retry_response, retry_seconds = self._generate_response(
-                image, retry_prompt, 150
+            observation_retry_response, retry_seconds = self._generate_response(
+                image, retry_prompt, 90
             )
-            retry_parsed = self._parse_critique_response(
-                retry_response, review_method
+            retry_diagnostics = dict(
+                getattr(self, "_last_generation_diagnostics", {}) or {}
             )
-            if self._critique_quality(retry_parsed) > self._critique_quality(parsed):
-                parsed = retry_parsed
+            retry_observation = self._parse_observation_response(
+                observation_retry_response
+            )
+            if retry_observation["_format_valid"]:
+                observation = retry_observation
+        else:
+            retry_diagnostics = {}
+
+        relation_response = ""
+        relation_retry_response = ""
+        relation_seconds = 0.0
+        relation_retry_seconds = 0.0
+        if observation.get("observation_status") == "UNCLEAR":
+            relation = {
+                "claim_relation": "UNRESOLVED",
+                "_format_valid": True,
+                "_raw_response": "Claim Relation: UNRESOLVED",
+            }
+            relation_diagnostics = {}
+            relation_retry_diagnostics = {}
+        elif observation.get("_format_valid"):
+            relation_prompt = f"""
+Classify the supplied direct visual observation against the immutable claim
+frame. Do not add visual details and do not choose a final dataset label.
+
+{claim_frame}
+
+Observed Entity: {observation.get('observed_entity')}
+Observed State: {observation.get('observed_state')}
+Image Region: {observation.get('image_region')}
+
+Return exactly one line:
+Claim Relation: SUPPORT, CONFLICT, or UNRESOLVED
+"""
+            relation_response, relation_seconds = self._generate_response(
+                image, relation_prompt, 28
+            )
+            relation_diagnostics = dict(
+                getattr(self, "_last_generation_diagnostics", {}) or {}
+            )
+            relation = self._parse_relation_response(relation_response)
+            if not relation["_format_valid"]:
+                relation_retry_prompt = f"""
+Use only this observation: {observation.get('observed_entity')} —
+{observation.get('observed_state')} in {observation.get('image_region')}.
+
+{claim_frame}
+
+Return one line only: Claim Relation: SUPPORT, CONFLICT, or UNRESOLVED
+"""
+                relation_retry_response, relation_retry_seconds = (
+                    self._generate_response(image, relation_retry_prompt, 20)
+                )
+                relation_retry_diagnostics = dict(
+                    getattr(self, "_last_generation_diagnostics", {}) or {}
+                )
+                retry_relation = self._parse_relation_response(
+                    relation_retry_response
+                )
+                if retry_relation["_format_valid"]:
+                    relation = retry_relation
+            else:
+                relation_retry_diagnostics = {}
+        else:
+            relation = {
+                "claim_relation": "UNRESOLVED",
+                "_format_valid": False,
+                "_raw_response": "",
+            }
+            relation_diagnostics = {}
+            relation_retry_diagnostics = {}
+
+        relation_value = relation.get("claim_relation", "UNRESOLVED")
+        recommendation = {
+            "SUPPORT": "ENTAILS",
+            "CONFLICT": "CONTRADICTS",
+            "UNRESOLVED": "ABSTAIN",
+        }.get(relation_value, "ABSTAIN")
+        combined_diagnostics = {
+            "observation_primary": primary_diagnostics,
+            "observation_retry": retry_diagnostics,
+            "relation_primary": relation_diagnostics,
+            "relation_retry": relation_retry_diagnostics,
+        }
+        any_truncated = any(
+            item.get("hit_token_limit")
+            for item in combined_diagnostics.values() if item
+        )
+        status_diagnostics = {"hit_token_limit": any_truncated}
+        response_status = self._response_status(
+            observation, relation, status_diagnostics
+        )
+        format_valid = bool(
+            observation.get("_format_valid") and relation.get("_format_valid")
+        )
+        specific_evidence = bool(
+            format_valid
+            and response_status == "VALID_DIRECTIONAL_ANSWER"
+            and observation.get("observation_status") == "OBSERVED"
+        )
+        parsed = {
+            "stance": "UNRESOLVED",
+            "recommendation": recommendation,
+            "reason": observation.get("reason") or "Visual question was not answered.",
+            "specific_evidence": specific_evidence,
+            "observed_entity": observation.get("observed_entity", ""),
+            "observed_state": observation.get("observed_state", ""),
+            "image_region": observation.get("image_region", ""),
+            "claim_relation": relation_value,
+            "review_method": review_method,
+            "observation_status": observation.get("observation_status"),
+            "response_status": response_status,
+            "question_id": question_id,
+            "question": question,
+            "parser_errors": [
+                name for name, valid in (
+                    ("observation_contract_invalid", observation.get("_format_valid")),
+                    ("relation_contract_invalid", relation.get("_format_valid")),
+                ) if not valid
+            ],
+            "generation_diagnostics": combined_diagnostics,
+            "_format_valid": format_valid,
+            "_raw_response": "\n".join(
+                item for item in (response, relation_response) if item
+            ).strip(),
+        }
         parsed.update({
             "_format_retry_used": retry_used,
             "_format_retry_success": bool(retry_used and parsed["_format_valid"]),
             "_raw_primary_response": response.strip(),
-            "_raw_retry_response": retry_response.strip(),
+            "_raw_retry_response": observation_retry_response.strip(),
+            "_raw_relation_response": relation_response.strip(),
+            "_raw_relation_retry_response": relation_retry_response.strip(),
             "_region_ocr_candidates": crop_ocr_candidates,
             "_generation_seconds": round(
-                primary_seconds + retry_seconds + crop_ocr_seconds, 4
+                primary_seconds + retry_seconds + relation_seconds
+                + relation_retry_seconds + crop_ocr_seconds,
+                4,
             ),
         })
         return parsed

@@ -624,6 +624,71 @@ Caption:
             )
         return support_requirement.strip(), conflict_requirement.strip()
 
+    @classmethod
+    def _validate_visual_requirements(
+        cls, support_requirement, conflict_requirement, critique_prompt,
+    ):
+        """Reject claim requirements that cease to be mutually directional."""
+        stopwords = {
+            "a", "an", "and", "are", "as", "at", "be", "by", "for",
+            "from", "in", "is", "it", "of", "on", "or", "the", "to",
+            "visible", "visibly", "image", "caption", "claim", "state",
+            "condition", "object", "person", "symbol", "label", "role",
+        }
+
+        def tokens(value):
+            result = set()
+            for token in re.findall(r"[a-z0-9]+", str(value or "").casefold()):
+                if token in stopwords or len(token) < 3:
+                    continue
+                for suffix in ("ingly", "edly", "ing", "ed", "es", "s"):
+                    if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+                        token = token[:-len(suffix)]
+                        break
+                result.add(token)
+            return result
+
+        support_tokens = tokens(support_requirement)
+        conflict_tokens = tokens(conflict_requirement)
+        expected_tokens = tokens(
+            cls._audit_field(critique_prompt, "Expected visual state")
+        )
+        opposite_tokens = tokens(
+            cls._audit_field(critique_prompt, "Opposite visual state")
+        )
+        expected_only = expected_tokens - opposite_tokens
+        opposite_only = opposite_tokens - expected_tokens
+        errors = []
+        if " ".join(str(support_requirement).casefold().split()) == " ".join(
+            str(conflict_requirement).casefold().split()
+        ):
+            errors.append("IDENTICAL_REQUIREMENTS")
+        if expected_only and not support_tokens.intersection(expected_only):
+            errors.append("SUPPORT_DROPPED_EXPECTED_STATE")
+        if opposite_only and not conflict_tokens.intersection(opposite_only):
+            errors.append("CONFLICT_DROPPED_OPPOSITE_STATE")
+        if (
+            support_tokens
+            and conflict_tokens
+            and support_tokens == conflict_tokens
+            and "IDENTICAL_REQUIREMENTS" not in errors
+        ):
+            errors.append("NON_OPPOSING_REQUIREMENTS")
+        expected_text = str(
+            cls._audit_field(critique_prompt, "Expected visual state") or ""
+        ).casefold()
+        outcome_terms = {
+            "admit", "honest", "truthful", "success", "successful",
+            "effective", "effectively", "result", "outcome", "recover",
+            "recovery", "fail", "failure", "last", "disappear",
+        }
+        required_outcomes = tokens(expected_text).intersection(
+            {next(iter(tokens(term)), term) for term in outcome_terms}
+        )
+        if required_outcomes and not support_tokens.intersection(required_outcomes):
+            errors.append("CLAIM_OUTCOME_DROPPED")
+        return not errors, errors
+
     def critique(self, caption, critique_prompt):
 
         prompt = self._chat_prompt(f"""
@@ -746,6 +811,11 @@ Structured Caption Analysis:
                 critique_prompt,
             )
         )
+        requirements_valid, requirement_errors = (
+            self._validate_visual_requirements(
+                support_requirement, conflict_requirement, critique_prompt
+            )
+        )
         format_valid = bool(
             stance != "UNRESOLVED"
             and reason
@@ -764,6 +834,8 @@ Structured Caption Analysis:
             "figurative_mechanism": figurative_mechanism,
             "ambiguity": ambiguity,
             "requirements_source": "caption_audit_with_role_equivalence",
+            "requirements_valid": requirements_valid,
+            "requirement_errors": requirement_errors,
             "_format_valid": format_valid,
             "_raw_response": response,
         }

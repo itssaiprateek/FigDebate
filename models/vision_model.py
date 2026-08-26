@@ -16,6 +16,10 @@ class LlavaModel:
 
         model_id = "llava-hf/llava-1.5-7b-hf"
         model_revision = "b234b804b114d9e37bb655e11cbbb5f5e971b7a9"
+        from models.hub_source import cached_snapshot_or_hub
+        model_source, source_kwargs = cached_snapshot_or_hub(
+            model_id, model_revision
+        )
 
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -25,8 +29,8 @@ class LlavaModel:
         )
 
         self.model = LlavaForConditionalGeneration.from_pretrained(
-            model_id,
-            revision=model_revision,
+            model_source,
+            **source_kwargs,
             quantization_config=bnb_config,
             device_map="auto",
         )
@@ -34,7 +38,7 @@ class LlavaModel:
         # Match the original LLaVA image-padding behavior and populate the
         # processor metadata required by recent Transformers releases.
         self.processor = AutoProcessor.from_pretrained(
-            model_id, revision=model_revision
+            model_source, **source_kwargs
         )
         self.processor.image_processor.do_pad = True
         self.processor.patch_size = getattr(

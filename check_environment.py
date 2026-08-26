@@ -1,7 +1,9 @@
 """Fail-fast local readiness check for the FigDebate runtime."""
 
+import argparse
 import importlib
 from importlib import metadata
+import json
 import os
 import platform
 import sys
@@ -40,9 +42,67 @@ REQUIRED_DATA = (
     "dataset/data/processed/vflute_val.pkl",
     "dataset/data/processed/vflute_test.pkl",
 )
+JUDGE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+JUDGE_FILES = (
+    "config.json",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "chat_template.jinja",
+    "model.safetensors.index.json",
+    "model.safetensors-00001-of-00002.safetensors",
+    "model.safetensors-00002-of-00002.safetensors",
+)
+
+
+def check_judge_files(root, failures):
+    model_root = os.path.join(root, "models", "judge", "Qwen3.5-4B")
+    print("\nOPTIONAL MULTIMODAL JUDGE")
+    for filename in JUDGE_FILES:
+        path = os.path.join(model_root, filename)
+        if os.path.isfile(path):
+            print(f"[OK]   models/judge/Qwen3.5-4B/{filename}")
+        else:
+            print(f"[FAIL] models/judge/Qwen3.5-4B/{filename}")
+            failures.append(f"Missing judge model file: {filename}")
+    config_path = os.path.join(model_root, "config.json")
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as handle:
+                config = json.load(handle)
+        except (OSError, ValueError) as error:
+            failures.append(f"Judge config is unreadable: {error}")
+        else:
+            architecture = (config.get("architectures") or [None])[0]
+            if architecture != "Qwen3_5ForConditionalGeneration":
+                failures.append(f"Unexpected judge architecture: {architecture}")
+            else:
+                print(f"[OK]   judge architecture: {architecture}")
+    metadata_path = os.path.join(
+        model_root, ".cache", "huggingface", "download", "config.json.metadata"
+    )
+    if os.path.isfile(metadata_path):
+        with open(metadata_path, "r", encoding="utf-8") as handle:
+            revision = handle.readline().strip()
+        if revision != JUDGE_REVISION:
+            failures.append(
+                f"Judge revision mismatch: {revision} (expected {JUDGE_REVISION})"
+            )
+        else:
+            print(f"[OK]   judge revision: {revision}")
+    else:
+        failures.append("Judge revision metadata is missing.")
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Validate the pinned FigDebate environment."
+    )
+    parser.add_argument(
+        "--check-judge",
+        action="store_true",
+        help="Also validate the optional pinned local Qwen judge files.",
+    )
+    args = parser.parse_args()
     failures = []
     print("FIGDEBATE ENVIRONMENT CHECK")
     print("=" * 40)
@@ -98,6 +158,9 @@ def main():
         else:
             print(f"[FAIL] {relative_path}")
             failures.append(f"Missing dataset file: {relative_path}")
+
+    if args.check_judge:
+        check_judge_files(root, failures)
 
     if failures:
         print("\nNOT READY")

@@ -9,6 +9,9 @@ RELATION_FOR_LABEL = {
     "ENTAILS": "SUPPORT",
     "CONTRADICTS": "CONFLICT",
 }
+EVIDENCE_LIFECYCLE_STATUSES = {
+    "ACTIVE", "DISPUTED", "SUPERSEDED", "RECONFIRMED", "REJECTED_FORMAT",
+}
 
 
 def _clean(value):
@@ -25,6 +28,10 @@ def _append(
     grounded=True,
     decision_grade=False,
     verification_method=None,
+    lifecycle_status="ACTIVE",
+    source_generation="initial",
+    question_id=None,
+    supersedes_ids=None,
 ):
     text = _clean(text)
     if not text:
@@ -37,6 +44,9 @@ def _append(
     ):
         return
     number = 1 + sum(item["id"].startswith(prefix) for item in entries)
+    lifecycle_status = str(lifecycle_status or "ACTIVE").upper()
+    if lifecycle_status not in EVIDENCE_LIFECYCLE_STATUSES:
+        raise ValueError(f"Unknown evidence lifecycle status: {lifecycle_status}")
     entries.append({
         "id": f"{prefix}{number:03d}",
         "source": source,
@@ -46,7 +56,25 @@ def _append(
         "grounded": bool(grounded),
         "decision_grade": bool(decision_grade),
         "verification_method": verification_method,
+        "lifecycle_status": lifecycle_status,
+        "source_generation": source_generation,
+        "question_id": question_id,
+        "supersedes_ids": list(supersedes_ids or []),
     })
+
+
+def is_active_evidence(item):
+    return str(item.get("lifecycle_status", "ACTIVE")).upper() in {
+        "ACTIVE", "RECONFIRMED"
+    }
+
+
+def evidence_lifecycle_summary(ledger):
+    summary = {}
+    for item in ledger or []:
+        status = str(item.get("lifecycle_status", "ACTIVE")).upper()
+        summary[status] = summary.get(status, 0) + 1
+    return summary
 
 
 def build_evidence_ledger(visual_output, language_output, comparison):
@@ -121,6 +149,14 @@ def build_evidence_ledger(visual_output, language_output, comparison):
             entries, "CM", "comparator", "missing_evidence", text,
             relation="MISSING", grounded=False,
         )
+    generation = (
+        "targeted_recovery"
+        if visual_output.get("_targeted_recovery_attempted", False)
+        else "initial"
+    )
+    for item in entries:
+        if item.get("source") in {"agent1", "comparator"}:
+            item["source_generation"] = generation
     return entries
 
 
@@ -130,6 +166,7 @@ def evidence_ids(ledger, relation=None, grounded_only=True):
         for item in (ledger or [])
         if (relation is None or item.get("relation") == relation)
         and (not grounded_only or item.get("grounded", False))
+        and is_active_evidence(item)
     ]
 
 
@@ -137,7 +174,10 @@ def audit_decision(decision, ledger):
     """Separate valid source attribution from independently verified direction."""
     label = decision.get("label")
     relation = RELATION_FOR_LABEL.get(label)
-    by_id = {item.get("id"): item for item in (ledger or [])}
+    by_id = {
+        item.get("id"): item for item in (ledger or [])
+        if is_active_evidence(item)
+    }
     claimed = list(dict.fromkeys(
         str(item).strip().upper()
         for item in decision.get("_model_cited_evidence_ids", []) or []
@@ -296,6 +336,24 @@ def add_visual_reinspection_evidence(ledger, critique, comparison):
     if len(strict) != 1:
         return output
     item = strict[0]
+    same_direction_exists = any(
+        is_active_evidence(existing)
+        and existing.get("relation") == expected_relation
+        and existing.get("grounded", False)
+        and (
+            existing.get("decision_grade", False)
+            or existing.get("verification", {}).get("decision_grade", False)
+        )
+        for existing in output
+    )
+    opposite = "CONFLICT" if expected_relation == "SUPPORT" else "SUPPORT"
+    for existing in output:
+        if (
+            existing.get("source") == "debate_visual_reinspection"
+            and existing.get("relation") == opposite
+            and is_active_evidence(existing)
+        ):
+            existing["lifecycle_status"] = "DISPUTED"
     _append(
         output,
         "DV",
@@ -308,5 +366,8 @@ def add_visual_reinspection_evidence(ledger, critique, comparison):
         verification_method=(
             "structured_visual_reinspection_entity_bound_state"
         ),
+        source_generation="debate_reinspection",
+        question_id=critique.get("question_id"),
+        lifecycle_status=("RECONFIRMED" if same_direction_exists else "ACTIVE"),
     )
     return output

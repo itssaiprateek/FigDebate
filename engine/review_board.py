@@ -25,6 +25,51 @@ def _grade_ids(ledger, relation):
     }
 
 
+def _mediated_tie_is_safe(
+    candidate_label,
+    candidate_ids,
+    ledger,
+    mediation,
+    claim_contract,
+):
+    """Allow one narrow tie-break backed by new verified debate evidence."""
+    plan = mediation or {}
+    contract = claim_contract or {}
+    if not plan.get("_usable", False):
+        return False
+    if plan.get("status") != "MEDIATE":
+        return False
+    if plan.get("provisional_verdict") != candidate_label:
+        return False
+    if float(plan.get("confidence") or 0.0) < 0.80:
+        return False
+    if plan.get("_invalid_evidence_ids"):
+        return False
+    if not contract.get("safe_for_directional_reasoning", False):
+        return False
+
+    by_id = {item.get("id"): item for item in (ledger or [])}
+    cited = set(plan.get("_valid_evidence_ids", []) or [])
+    if not any(
+        by_id.get(item_id, {}).get("grounded", False)
+        and by_id.get(item_id, {}).get("source") in {
+            "agent1", "comparator", "targeted_region_verifier",
+            "debate_visual_reinspection",
+        }
+        for item_id in cited
+    ):
+        return False
+
+    return any(
+        item_id in candidate_ids
+        and by_id.get(item_id, {}).get("source") in {
+            "targeted_region_verifier", "debate_visual_reinspection",
+        }
+        and _decision_grade(by_id.get(item_id, {}))
+        for item_id in candidate_ids
+    )
+
+
 def audit_final_decision(decision, ledger, claim_contract=None):
     evidence = audit_decision(decision, ledger)
     contract = claim_contract or {}
@@ -84,6 +129,7 @@ def review_revision(
     ledger,
     visual_review=None,
     claim_contract=None,
+    mediation=None,
 ):
     """Accept a change only when stronger current-image evidence supports it."""
     original_label = original.get("label")
@@ -142,12 +188,21 @@ def review_revision(
     cited_ids = set(candidate_audit.get("cited_evidence_ids", []))
     if not (candidate_ids & cited_ids):
         return False, "revision_citation_not_decision_grade", candidate_audit
+    mediated_tie_break = False
     if (
         not same_label
         and original_ids
         and len(candidate_ids) <= len(original_ids)
     ):
-        return False, "unresolved_opposing_decision_grade_evidence", candidate_audit
+        mediated_tie_break = _mediated_tie_is_safe(
+            candidate_label,
+            candidate_ids,
+            ledger,
+            mediation,
+            claim_contract,
+        )
+        if not mediated_tie_break:
+            return False, "unresolved_opposing_decision_grade_evidence", candidate_audit
 
     if review:
         review_tokens = {
@@ -180,7 +235,11 @@ def review_revision(
         (
             "accepted_evidence_backed_confirmation:"
             if same_label
-            else "accepted_stronger_current_image_evidence:"
+            else (
+                "accepted_mediated_verified_tiebreak:"
+                if mediated_tie_break
+                else "accepted_stronger_current_image_evidence:"
+            )
         ) + accepted_ids,
         candidate_audit,
     )

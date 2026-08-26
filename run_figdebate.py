@@ -18,13 +18,14 @@ from engine.run_integrity import validate_resume_config
 from engine.sampling import select_records
 from evaluation.evaluate_predictions import evaluate_predictions
 from figdebate import FigDebate
+from models.judge_model import JUDGE_MODEL_ID, JUDGE_MODEL_REVISION
 
 
 VISION_MODEL_ID = "llava-hf/llava-1.5-7b-hf"
 VISION_MODEL_REVISION = "b234b804b114d9e37bb655e11cbbb5f5e971b7a9"
 LANGUAGE_MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.2"
 LANGUAGE_MODEL_REVISION = "63a8b081895390a26e140280378bc85ec8bce07a"
-EVIDENCE_LEDGER_VERSION = "9.0"
+EVIDENCE_LEDGER_VERSION = "10.0"
 
 
 FIELDNAMES = [
@@ -42,7 +43,8 @@ FIELDNAMES = [
     "round2_confidence", "final_confidence", "debate_triggered",
     "debate_rounds", "decision_changed_after_debate",
     "debate_revision_accepted", "debate_revision_reason", "debate_proposed_label",
-    "debate_proposed_decision_method",
+    "debate_unconstrained_proposed_label", "debate_proposed_decision_method",
+    "debate_relation_status", "debate_deficiencies",
     "debate_review_status", "debate_trigger_reason",
     "debate_level", "debate_need_score", "debate_need_signals",
     "agent1_critique_stance", "agent1_critique_recommendation",
@@ -53,11 +55,14 @@ FIELDNAMES = [
     "agent1_critique_region_ocr_candidates",
     "agent1_critique_observed_entity", "agent1_critique_observed_state",
     "agent1_critique_image_region", "agent1_critique_claim_relation",
+    "agent1_critique_response_status", "agent1_critique_question_id",
+    "agent1_critique_parser_errors", "agent1_generation_diagnostics",
     "agent1_region_pairs",
     "agent2_critique_stance", "agent2_critique_reason",
     "agent2_critique_format_valid", "agent2_support_requirement",
     "agent2_conflict_requirement", "agent2_figurative_mechanism",
     "agent2_critique_ambiguity", "agent2_requirements_source",
+    "agent2_requirements_valid", "agent2_requirement_errors",
     "visual_evidence_consensus_applied",
     "initial_forced_label", "forced_label", "retry_attempted",
     "retry_failed", "final_decision_valid", "figurative_type_predicted",
@@ -97,8 +102,23 @@ FIELDNAMES = [
     "review_board_directionally_grounded", "review_board_source_grounded",
     "review_board_confidence_cap_applied",
     "review_board_confidence_before", "review_board_confidence_after",
+    "judge_mode", "judge_scope", "judge_requested", "judge_status",
+    "pre_judge_prediction",
+    "judge_trigger_reasons", "judge_verdict", "judge_confidence",
+    "judge_format_valid", "judge_format_error", "judge_evidence_ids",
+    "judge_invalid_evidence_ids", "judge_visual_observations", "judge_reason",
+    "judge_agreed_with_pre_judge_decision", "judge_revision_accepted",
+    "judge_revision_reason", "judge_changed_decision", "judge_model",
+    "judge_model_revision", "judge_feedback_candidate_recorded",
+    "judge_feedback_role", "judge_feedback_memory_update_applied",
+    "mediator_status", "mediator_provisional_verdict", "mediator_confidence",
+    "mediator_format_valid", "mediator_format_error", "mediator_evidence_ids",
+    "mediator_invalid_evidence_ids", "mediator_disputed_issues",
+    "mediator_agent1_questions", "mediator_agent2_questions",
+    "mediator_verification_requests", "mediator_reason", "mediator_usable",
+    "mediator_tiebreak_used",
     "agent1_seconds", "agent2_seconds", "comparator_seconds",
-    "arbiter_primary_seconds", "citation_retry_seconds", "format_retry_seconds", "binary_resolution_seconds", "debate_seconds",
+    "arbiter_primary_seconds", "citation_retry_seconds", "format_retry_seconds", "binary_resolution_seconds", "debate_seconds", "judge_seconds", "mediator_seconds",
     "feedback_mode", "feedback_enabled", "feedback_batch", "feedback_memory_active",
     "feedback_update_applied",
     "feedback_candidate_recorded",
@@ -119,6 +139,8 @@ FIELDNAMES = [
     "initial_evidence_status", "initial_evidence_valid", "initial_cited_evidence_ids",
     "initial_source_evidence_valid", "initial_source_cited_evidence_ids",
     "final_evidence_status", "final_evidence_valid", "final_cited_evidence_ids",
+    "evidence_lifecycle_summary", "arbiter_relation_status",
+    "arbiter_revision_status", "arbiter_deficiencies",
     "final_source_evidence_valid", "final_source_cited_evidence_ids",
     "debate_proposed_evidence_status", "debate_proposed_evidence_valid",
     "debate_proposed_cited_evidence_ids",
@@ -193,6 +215,27 @@ def parse_args():
         default="enabled",
         help="Keep enabled for FigDebate; disabled is only for evidence ablation.",
     )
+    parser.add_argument(
+        "--judge-mode",
+        choices=("disabled", "shadow", "appellate", "mediated"),
+        default="disabled",
+        help=(
+            "disabled preserves the established pipeline; shadow logs an independent "
+            "Qwen verdict without changing predictions; appellate allows only revisions "
+            "accepted by the deterministic evidence gate; mediated inserts a "
+            "label-blind Qwen issue map before debate and keeps a verified gate."
+        ),
+    )
+    parser.add_argument(
+        "--judge-scope",
+        choices=("escalated", "all"),
+        default="escalated",
+        help=(
+            "For shadow/appellate, use auditable uncertainty signals or every "
+            "sample. Mediated mode always applies only to cases already routed "
+            "to debate."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -245,11 +288,13 @@ def pipeline_source_checksum():
         "engine/evidence_verifier.py", "models/nli_model.py",
         "engine/claim_contract.py", "engine/relation_schema.py",
         "engine/region_verifier.py", "engine/review_board.py",
+        "engine/judge_review.py", "agents/multimodal_judge.py",
         "engine/sampling.py", "engine/run_integrity.py",
         "engine/feedback_loop.py", "evaluation/build_feedback_memory.py",
         "evaluation/audit_evidence_provenance.py",
         "evaluation/evaluate_predictions.py", "evaluation/metrics_core.py",
         "models/vision_model.py", "models/language_model.py",
+        "models/judge_model.py", "models/hub_source.py", "utils/judge_parser.py",
         "utils/visual_parser.py", "utils/claim_parser.py",
         "utils/arbiter_parser.py", "utils/decision_scoring.py",
         "run_figdebate.py",
@@ -348,6 +393,15 @@ def build_record(index, raw, result, elapsed):
     targeted_verification = decision.get(
         "_targeted_region_verification", {}
     ) or {}
+    judge = result.get("judge", {}) or {}
+    judgment = judge.get("judgment", {}) or {}
+    mediation = judge.get("mediation", result.get("mediation_plan", {})) or {}
+    judge_review = (
+        judge.get("appellate_review", {})
+        or judge.get("mediation_review", {})
+        or {}
+    )
+    judge_feedback = judge.get("feedback_candidate", {}) or {}
     debate_visual_evidence = [
         item for item in ledger
         if item.get("source") == "debate_visual_reinspection"
@@ -387,10 +441,15 @@ def build_record(index, raw, result, elapsed):
         "debate_revision_accepted": debate.get("revision_accepted"),
         "debate_revision_reason": debate.get("revision_acceptance_reason", ""),
         "debate_proposed_label": debate.get("proposed_label", ""),
+        "debate_unconstrained_proposed_label": debate.get(
+            "unconstrained_proposed_label", ""
+        ),
         "debate_proposed_decision_method": (
             debate.get("proposed_decision", {}) or {}
         ).get("decision_method", ""),
         "debate_review_status": debate.get("review_status", ""),
+        "debate_relation_status": debate.get("relation_status", ""),
+        "debate_deficiencies": text_list(debate.get("deficiencies", [])),
         "debate_trigger_reason": result.get("debate_trigger_reason", ""),
         "debate_level": debate.get("level", result.get("debate_level", 0)),
         "debate_need_score": debate.get(
@@ -429,6 +488,16 @@ def build_record(index, raw, result, elapsed):
         "agent1_critique_claim_relation": agent1_critique.get(
             "claim_relation", ""
         ),
+        "agent1_critique_response_status": agent1_critique.get(
+            "response_status", ""
+        ),
+        "agent1_critique_question_id": agent1_critique.get("question_id", ""),
+        "agent1_critique_parser_errors": text_list(
+            agent1_critique.get("parser_errors", [])
+        ),
+        "agent1_generation_diagnostics": json.dumps(
+            agent1_critique.get("generation_diagnostics", {}), sort_keys=True
+        ),
         "agent1_region_pairs": json.dumps(
             agent1_critique.get("region_pairs", []), ensure_ascii=True
         ),
@@ -451,6 +520,12 @@ def build_record(index, raw, result, elapsed):
         ),
         "agent2_requirements_source": agent2_critique.get(
             "requirements_source", ""
+        ),
+        "agent2_requirements_valid": agent2_critique.get(
+            "requirements_valid", True
+        ),
+        "agent2_requirement_errors": text_list(
+            agent2_critique.get("requirement_errors", [])
         ),
         "visual_evidence_consensus_applied": (
             debate.get("proposed_decision", {}) or {}
@@ -579,6 +654,70 @@ def build_record(index, raw, result, elapsed):
         "review_board_confidence_after": review_board.get(
             "confidence_after_review"
         ),
+        "judge_mode": judge.get("mode", "disabled"),
+        "judge_scope": judge.get("scope", "escalated"),
+        "judge_requested": judge.get("requested", False),
+        "judge_status": judge.get("status", "disabled"),
+        "pre_judge_prediction": judge_review.get("previous_label", prediction),
+        "judge_trigger_reasons": text_list(judge.get("trigger_reasons")),
+        "judge_verdict": judgment.get("verdict", ""),
+        "judge_confidence": judgment.get("confidence"),
+        "judge_format_valid": judgment.get("_format_valid", False),
+        "judge_format_error": judgment.get("_format_error", ""),
+        "judge_evidence_ids": text_list(judgment.get("_valid_evidence_ids")),
+        "judge_invalid_evidence_ids": text_list(
+            judgment.get("_invalid_evidence_ids")
+        ),
+        "judge_visual_observations": text_list(
+            judgment.get("visual_observations")
+        ),
+        "judge_reason": judgment.get("reason", ""),
+        "judge_agreed_with_pre_judge_decision": (
+            bool(judgment.get("_format_valid", False))
+            and judgment.get("verdict") == judge_review.get("previous_label")
+        ),
+        "judge_revision_accepted": judge_review.get("accepted", False),
+        "judge_revision_reason": judge_review.get("reason", ""),
+        "judge_changed_decision": judge_review.get("changed_decision", False),
+        "judge_model": judgment.get("_model_id", ""),
+        "judge_model_revision": judgment.get("_model_revision", ""),
+        "judge_feedback_candidate_recorded": judge_feedback.get(
+            "recorded", False
+        ),
+        "judge_feedback_role": judge_feedback.get("role", ""),
+        "judge_feedback_memory_update_applied": judge_feedback.get(
+            "memory_update_applied", False
+        ),
+        "mediator_status": mediation.get("status", ""),
+        "mediator_provisional_verdict": mediation.get(
+            "provisional_verdict", ""
+        ),
+        "mediator_confidence": mediation.get("confidence"),
+        "mediator_format_valid": mediation.get("_format_valid", False),
+        "mediator_format_error": mediation.get("_format_error", ""),
+        "mediator_evidence_ids": text_list(
+            mediation.get("_valid_evidence_ids")
+        ),
+        "mediator_invalid_evidence_ids": text_list(
+            mediation.get("_invalid_evidence_ids")
+        ),
+        "mediator_disputed_issues": text_list(
+            mediation.get("disputed_issues")
+        ),
+        "mediator_agent1_questions": text_list(
+            mediation.get("agent1_questions")
+        ),
+        "mediator_agent2_questions": text_list(
+            mediation.get("agent2_questions")
+        ),
+        "mediator_verification_requests": text_list(
+            mediation.get("verification_requests")
+        ),
+        "mediator_reason": mediation.get("reason", ""),
+        "mediator_usable": mediation.get("_usable", False),
+        "mediator_tiebreak_used": str(
+            judge_review.get("reason", "")
+        ).startswith("accepted_mediated_verified_tiebreak:"),
         "arbiter_evidence_assessment": decision.get("_arbiter_assessment", ""),
         "final_reason": decision.get("explanation", ""),
         "arbiter_visual_support": text_list(decision.get("visual_support")),
@@ -594,6 +733,8 @@ def build_record(index, raw, result, elapsed):
         "format_retry_seconds": round(timing.get("format_retry_seconds", 0.0), 4),
         "binary_resolution_seconds": round(timing.get("binary_resolution_seconds", 0.0), 4),
         "debate_seconds": round(timing.get("debate_seconds", 0.0), 4),
+        "judge_seconds": round(timing.get("judge_seconds", 0.0), 4),
+        "mediator_seconds": round(timing.get("mediator_seconds", 0.0), 4),
         "feedback_mode": feedback.get("mode", "disabled"),
         "feedback_enabled": feedback.get("enabled", False),
         "feedback_batch": feedback.get("batch_index"),
@@ -643,6 +784,12 @@ def build_record(index, raw, result, elapsed):
             item.get("id") for item in debate_visual_evidence
         ),
         "evidence_ledger_json": json.dumps(ledger, ensure_ascii=True),
+        "evidence_lifecycle_summary": json.dumps(
+            debate.get("evidence_lifecycle", {}), sort_keys=True
+        ),
+        "arbiter_relation_status": decision.get("_relation_status", ""),
+        "arbiter_revision_status": decision.get("_revision_status", ""),
+        "arbiter_deficiencies": text_list(decision.get("_deficiencies", [])),
         "initial_evidence_status": initial_audit.get("status"),
         "initial_evidence_valid": initial_audit.get("valid", False),
         "initial_cited_evidence_ids": text_list(initial_audit.get("cited_evidence_ids")),
@@ -712,6 +859,7 @@ def build_record(index, raw, result, elapsed):
             "pre_feedback_decision": pre_feedback,
             "feedback_candidate_decision": feedback_candidate,
             "evidence_verification": evidence_verification,
+            "judge": judge,
         },
     }
 
@@ -882,6 +1030,8 @@ def main():
         )
     if args.evidence_mode == "disabled" and args.execution_mode != "stagewise":
         raise ValueError("Evidence ablation requires --execution-mode stagewise.")
+    if args.judge_mode != "disabled" and args.execution_mode != "stagewise":
+        raise ValueError("Judge modes require --execution-mode stagewise.")
     if args.feedback_mode == "calibrate" and args.dataset_split == "vflute_test":
         raise ValueError(
             "Calibration must never use vflute_test. Use vflute_train_dev50 or vflute_val."
@@ -913,6 +1063,8 @@ def main():
         "debate_mode": args.debate_mode,
         "debate_enabled": args.debate_mode == "enabled",
         "evidence_mode": args.evidence_mode,
+        "judge_mode": args.judge_mode,
+        "judge_scope": args.judge_scope,
         "feedback_enabled": args.feedback_mode != "disabled",
         "feedback_mode": args.feedback_mode,
         "verified_feedback_file": args.verified_feedback_file,
@@ -921,6 +1073,8 @@ def main():
         "model_vision_revision": VISION_MODEL_REVISION,
         "model_language": LANGUAGE_MODEL_ID,
         "model_language_revision": LANGUAGE_MODEL_REVISION,
+        "model_judge": JUDGE_MODEL_ID,
+        "model_judge_revision": JUDGE_MODEL_REVISION,
         "seed": args.seed,
         "selection_strategy": args.selection_strategy,
         "dataset_selection_sha256": dataset_selection_checksum(selected),
@@ -945,6 +1099,24 @@ def main():
             "level_1": "independent_decision_grade_evidence_deliberation",
             "level_2": "adaptive_regrounding_then_independent_multimodal_reinspection",
             "revision_gate": "deterministic_review_board_requires_stronger_current_image_evidence",
+        },
+        "judge_policy": {
+            "position": (
+                "inside_debate_before_agent_reviews"
+                if args.judge_mode == "mediated"
+                else "after_existing_arbiter_and_debate"
+            ),
+            "primary_label_visible": False,
+            "gold_label_visible": False,
+            "shadow_changes_predictions": False,
+            "appellate_revision_gate": (
+                "strict_contract_plus_stronger_cited_decision_grade_current_image_evidence"
+            ),
+            "mediated_revision_gate": (
+                "verified_directional_evidence_plus_narrow_independent_mediation_tiebreak"
+            ),
+            "mediator_provisional_label_visible_to_agents": False,
+            "judge_generated_text_is_visual_proof": False,
         },
         "feedback_policy": {
             "retrieval": "strict_procedural_case_similarity",
@@ -985,6 +1157,8 @@ def main():
                 verified_feedback_path=args.verified_feedback_file,
                 debate_mode=args.debate_mode,
                 evidence_mode=args.evidence_mode,
+                judge_mode=args.judge_mode,
+                judge_scope=args.judge_scope,
             )
             run_timing = runner.run_samples(samples, record_result) or {}
             if args.feedback_mode != "disabled":

@@ -285,10 +285,15 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
 
     for candidate in relation_candidates:
         if (
-            len(set(candidate.get("matched_cues", []))) < 2
+            not candidate.get("directional_cue_valid", False)
+            or not candidate.get("matched_state_cues")
             or not candidate.get("matched_entities")
             or not claim_contract.get("safe_for_directional_reasoning", False)
         ):
+            neutral_notes.append(
+                "[DIAGNOSTIC] Shared entity or lexical cues were not promoted "
+                "without an explicit subject-bound state or polarity cue."
+            )
             continue
         evidence = (
             f"[VISUAL] {candidate.get('text')} [CAPTION] Entity-bound "

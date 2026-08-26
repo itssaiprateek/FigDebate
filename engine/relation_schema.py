@@ -193,6 +193,10 @@ def build_claim_relation(caption, language_output):
         pole = declared_polarity
     expected_state = str(language_output.get("expected_visual_state", "")).strip()
     opposite_state = str(language_output.get("opposite_visual_state", "")).strip()
+    entity_cues = set(_entity_cues(" ".join(
+        str(language_output.get(key, "") or "")
+        for key in ("claim_subject", "claim_object", "claim_source", "claim_target")
+    )))
     parsed_family = normalize_relation_family(
         language_output.get("relation_family", ""),
         proposition,
@@ -209,9 +213,13 @@ def build_claim_relation(caption, language_output):
     )
     opposite = list(RELATION_FAMILIES.get(family, {}).get(opposite_pole, ())) if opposite_pole else []
     if expected_state and expected_state.lower() not in {"none", "unknown"}:
-        expected = sorted(set(expected) | set(_state_cues(expected_state)))
+        expected = sorted(
+            set(expected) | (set(_state_cues(expected_state)) - entity_cues)
+        )
     if opposite_state and opposite_state.lower() not in {"none", "unknown"}:
-        opposite = sorted(set(opposite) | set(_state_cues(opposite_state)))
+        opposite = sorted(
+            set(opposite) | (set(_state_cues(opposite_state)) - entity_cues)
+        )
     shared_cues = set(expected) & set(opposite)
     expected = [item for item in expected if item not in shared_cues]
     opposite = [item for item in opposite if item not in shared_cues]
@@ -315,7 +323,9 @@ def nominate_visual_relations(visual_output, claim_relation):
             "relation_family": claim_relation.get("relation_family"),
             "claim_polarity": claim_relation.get("polarity"),
             "matched_cues": hits,
+            "matched_state_cues": hits,
             "matched_entities": entity_hits,
+            "directional_cue_valid": bool(hits and entity_hits),
             "method": "structured_relation_candidate",
         })
     return nominations

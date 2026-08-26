@@ -10,11 +10,17 @@ It runs:
     image -> Agent 1 visual evidence
     caption -> Agent 2 immutable claim frame
     both -> Evidence Comparator -> Arbiter -> selective two-level Debate
-         -> deterministic Review Board -> prediction and paper artifacts
+         -> deterministic Review Board -> optional independent Qwen Judge
+         -> deterministic appellate gate -> prediction and paper artifacts
 
 The default `stagewise` mode loads LLaVA once for the visual stage and Mistral
 once for the language/Arbiter stage. This reduces repeated model loading while
 keeping the two large models separate in GPU memory.
+
+The judge is disabled by default, so established runs keep the same model loads,
+decision path, and predictions. Shadow and appellate load Qwen after the debate.
+Mediated mode loads Qwen once before debate, unloads it, and then runs the debate
+models so the large GPU runtimes are never resident together.
 
 Quick verification
 ------------------
@@ -24,6 +30,26 @@ Quick verification
     python check_environment.py
     python -m unittest discover -s tests -p "test_*.py"
     python run_figdebate.py --num-samples 3 --selection-strategy stratified
+
+Validate the already-downloaded optional judge as well:
+
+    python check_environment.py --check-judge
+
+On a new teammate system, download the optional judge once after activating
+`.venv` (the weights remain outside Git):
+
+    hf download Qwen/Qwen3.5-4B --revision 851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a --local-dir models/judge/Qwen3.5-4B
+
+Authentication is optional for these public models, but removes Hub rate-limit
+warnings during the first download. The token is stored in the user profile,
+never in this repository:
+
+    hf auth login
+    hf auth whoami
+
+After a pinned LLaVA or Mistral snapshot has been cached, FigDebate resolves its
+local snapshot directly. This avoids repeat Hub metadata requests and the
+unauthenticated warning on later runs while retaining online first-run setup.
 
 Current reasoning flow
 ----------------------
@@ -36,12 +62,64 @@ Current reasoning flow
     Level 2 -> independent targeted multimodal reinspection
     procedural feedback -> diagnostic question and debate routing, never a label
     deterministic Review Board -> accept only stronger current-image evidence
+    optional Qwen judge -> independent raw-image and full-debate audit
+    appellate gate -> require stronger cited decision-grade ledger evidence
+    mediated mode -> Qwen issue map -> targeted agent checks -> verified gate
     final binary decision -> complete audit and paper artifacts
 
 The previous label is hidden from both debate reviewers. Generic text NLI is
 retained as a diagnostic signal but cannot create decision-grade visual
 evidence. Explicit object-to-region text bindings are verified by a
 deterministic relation checker before they can change a label.
+
+Debate evidence safeguards
+--------------------------
+
+Level 2 review now asks Agent 1 one visual question at a time. It records the
+direct observation first and classifies that observation against the claim in
+a separate short response. Formatting failures, token-limit truncation,
+genuine abstention, and unresolved semantics are logged as distinct outcomes.
+Only the failed field is retried.
+
+Targeted recovery creates a fresh evidence generation instead of combining new
+answers with disputed old observations. Ledger entries carry lifecycle status,
+and only `ACTIVE` or `RECONFIRMED` evidence can support a decision. Agent 2's
+support and conflict requirements are checked for opposing states and preserved
+claim outcomes. Entity or theme word overlap remains diagnostic; the comparator
+requires a subject-bound state or polarity cue for directional evidence.
+
+The Arbiter keeps the public binary label contract but uses `INSUFFICIENT`
+internally when evidence proves neither direction. An invalid Agent 1 review or
+invalid Agent 2 requirement produces `NO_VISUAL_REVISION`; it cannot flip the
+existing decision. The deterministic Review Board remains the final revision
+gate.
+
+Judge experiment modes
+----------------------
+
+Use shadow mode first. It records Qwen's independent verdict and disagreement
+without changing a single prediction:
+
+    python run_figdebate.py --num-samples 10 --judge-mode shadow --judge-scope escalated
+
+After comparing the paired shadow run against the established baseline,
+appellate mode can be tested on a development split:
+
+    python run_figdebate.py --num-samples 10 --judge-mode appellate --judge-scope escalated
+
+Mediated mode inserts Qwen before the debate. The agents receive only targeted
+questions; Qwen's provisional vote and rationale remain hidden from them:
+
+    python run_figdebate.py --num-samples 10 --judge-mode mediated --judge-scope escalated
+
+The judge never sees the gold label or the current Arbiter label. A Qwen answer
+cannot become evidence by itself. A proposed label change is accepted only if
+the response is valid JSON, confidence is at least 0.75, every citation belongs
+to the current sample, and the judge cites more matching decision-grade evidence
+than exists for the current direction. In mediated mode, a tied evidence count
+can pass only when Qwen cited known grounded evidence and the debate subsequently
+produced independently verified directional evidence. See
+`docs/judge_architecture.md` for the full contract and rollout protocol.
 
 Run integrity
 -------------
@@ -143,7 +221,7 @@ Project structure
     dataset/         loaders, split manifest, and deterministic preparation
     engine/          orchestration, debate, feedback, evidence, and review
     evaluation/      metrics, audits, comparisons, and paper artifacts
-    models/          vision, language, and NLI model wrappers
+    models/          vision, language, NLI, and optional judge model wrappers
     tests/           contract and regression tests
     utils/           structured response parsers and decision utilities
     docs/            validation protocol and compatibility decisions

@@ -6,9 +6,11 @@ import os
 
 IMMUTABLE_RUN_KEYS = (
     "dataset", "requested_samples", "execution_mode", "debate_mode",
-    "evidence_mode", "feedback_mode", "verified_feedback_sha256",
+    "evidence_mode", "judge_mode", "judge_scope", "feedback_mode",
+    "verified_feedback_sha256",
     "model_vision", "model_vision_revision", "model_language",
     "model_language_revision", "seed", "selection_strategy",
+    "model_judge", "model_judge_revision",
     "dataset_selection_sha256",
     "pipeline_source_sha256", "evidence_ledger_version",
 )
