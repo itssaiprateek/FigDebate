@@ -18,11 +18,18 @@ import venv
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_DIR = PROJECT_ROOT / ".venv"
 STATE_FILE = ENV_DIR / ".figdebate-environment.json"
-SETUP_SCHEMA_VERSION = 1
+SETUP_SCHEMA_VERSION = 3
 REQUIRED_DATA = (
     PROJECT_ROOT / "dataset" / "data" / "processed" / "vflute_train_dev50.pkl",
     PROJECT_ROOT / "dataset" / "data" / "processed" / "vflute_val.pkl",
     PROJECT_ROOT / "dataset" / "data" / "processed" / "vflute_test.pkl",
+)
+REQUIRED_VISION_MODEL = (
+    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "config.json",
+    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "model.safetensors.index.json",
+    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "model-00001-of-00002.safetensors",
+    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "model-00002-of-00002.safetensors",
+    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "tokenizer.json",
 )
 
 
@@ -65,7 +72,7 @@ def requirements_checksum() -> str:
 def environment_is_current() -> bool:
     if not environment_is_usable() or not STATE_FILE.exists():
         return False
-    if not all(path.exists() for path in REQUIRED_DATA):
+    if not all(path.exists() for path in (*REQUIRED_DATA, *REQUIRED_VISION_MODEL)):
         return False
     try:
         with STATE_FILE.open("r", encoding="utf-8") as handle:
@@ -152,6 +159,19 @@ def main() -> int:
     if not args.recreate and environment_is_current():
         print("FigDebate environment is already current.")
         print(f"Python: {environment_python()}")
+        python = str(environment_python())
+        run([python, "check_environment.py"])
+        if not args.skip_tests:
+            run([
+                python,
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests",
+                "-p",
+                "test_*.py",
+            ])
         return 0
 
     if args.recreate:
@@ -169,6 +189,7 @@ def main() -> int:
     run([python, "-m", "pip", "install", "-r", "requirements.txt"])
     if not args.skip_data:
         run([python, "-m", "dataset.prepare_vflute"])
+    run([python, "-m", "models.prepare_vision_model"])
     run([python, "check_environment.py"])
     if not args.skip_tests:
         run([

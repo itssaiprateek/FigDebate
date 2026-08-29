@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import os
 import tempfile
 from PIL import Image
@@ -43,6 +44,18 @@ def safe_language(caption, **values):
 
 
 class ParserContractTests(unittest.TestCase):
+    def test_agent2_keeps_source_caption_as_downstream_proposition(self):
+        source = "The economy recovered relatively easily."
+        preserved = ClaimExtractionAgent._preserve_source_caption(
+            {"caption_proposition": "The economy recovered."}, source
+        )
+        self.assertEqual(preserved["caption_proposition"], source)
+        self.assertEqual(
+            preserved["generated_caption_proposition"],
+            "The economy recovered.",
+        )
+        self.assertTrue(preserved["source_caption_immutable"])
+
     def test_arbiter_accepts_only_exact_final_label(self):
         response = """Evidence Summary:
 Clear evidence.
@@ -296,7 +309,7 @@ Confidence:
         }
         accepted, reason = DebateEngine._accept_revision(original, revised, {})
         self.assertFalse(accepted)
-        self.assertEqual(reason, "absence_is_not_decision_evidence")
+        self.assertEqual(reason, "revision_did_not_cite_current_image_evidence")
 
     def test_claim_parser_keeps_sections_separate(self):
         response = """Linguistic Notes:
@@ -343,9 +356,11 @@ class ComparatorContractTests(unittest.TestCase):
             explicit_claims=["The economy recovered."],
         )
         result = compare(visual, language, caption=caption)
-        self.assertEqual(result["recommendation"], "LEAN_CONTRADICTS")
-        self.assertTrue(result["contradicting_evidence"])
-        self.assertIn("[VISUAL]", result["contradicting_evidence"][0])
+        self.assertEqual(
+            result["recommendation"], "VERIFY_CONFLICT_CANDIDATE"
+        )
+        self.assertEqual(result["contradicting_evidence"], [])
+        self.assertTrue(result["relation_conflict_candidates"])
 
     def test_unrelated_domains_require_semantic_review_without_false_conflict(self):
         visual = {
@@ -418,7 +433,9 @@ class ComparatorContractTests(unittest.TestCase):
             caption=caption,
         )
         self.assertEqual(result["claim_direction"], "growth")
-        self.assertEqual(result["required_evidence_status"], "SUPPORTED")
+        self.assertEqual(
+            result["required_evidence_status"], "SUPPORT_CANDIDATE"
+        )
         self.assertEqual(result["contradicting_evidence"], [])
 
     def test_unbound_contrast_text_requires_layout_review(self):
@@ -453,7 +470,7 @@ class ComparatorContractTests(unittest.TestCase):
         )
         self.assertTrue(result["relation_binding_required"])
         self.assertFalse(result["relation_binding_observed"])
-        self.assertEqual(result["evidence_quality"], 0.55)
+        self.assertEqual(result["evidence_quality"], 0.45)
 
     def test_explicit_two_sided_text_binding_is_observed(self):
         visual = {
@@ -835,20 +852,307 @@ class DebateContractTests(unittest.TestCase):
             engine.last_batch_timing["language_model_load_seconds"], 0.0
         )
 
+    def test_tribunal_visual_question_reopens_image_for_level_one(self):
+        calls = []
+
+        class FakeVisualAgent:
+            def __init__(self, _runtime):
+                pass
+
+            @staticmethod
+            def critique(_image, prompt):
+                calls.append(prompt)
+                return {
+                    "_format_valid": True,
+                    "response_status": "VALID_VISUAL_OBSERVATION",
+                    "observation_status": "OBSERVED",
+                    "observed_entity": "square",
+                    "observed_state": "red",
+                    "image_region": "center",
+                    "specific_evidence": True,
+                    "recommendation": "ABSTAIN",
+                    "claim_relation": "UNRESOLVED",
+                    "reason": "A red square is visible in the center.",
+                    "witness_contract": {
+                        "question_id": "Q1", "entity": "square",
+                        "observation": "red", "region": "center",
+                        "direction_assigned": False,
+                    },
+                }
+
+        class FakeAgent2:
+            @staticmethod
+            def critique(_caption, _prompt):
+                return {
+                    "stance": "ENDORSE", "reason": "Claim preserved.",
+                    "requirements_valid": True,
+                }
+
+        class FakeArbiter:
+            @staticmethod
+            def analyze(*_args, **_kwargs):
+                return {
+                    "label": "ENTAILS", "confidence": 0.60,
+                    "explanation": "The original decision is preserved.",
+                    "_final_decision_valid": True,
+                    "_timing": {"total_seconds": 0.01},
+                }
+
+        case = {
+            "key": "case", "caption": "The square is red.",
+            "image": object(), "visual_output": {}, "language_output": {},
+            "comparison": {},
+            "decision": {
+                "label": "ENTAILS", "confidence": 0.60,
+                "_final_decision_valid": True,
+            },
+            "evidence_ledger": [], "debate_level": 1,
+            "force_visual_review": True,
+            "mediation_plan": {
+                "_usable": True,
+                "agent1_questions": ["What color is the square?"],
+                "agent2_questions": [], "verification_requests": [],
+                "disputed_issues": [],
+            },
+        }
+        engine = DebateEngine()
+        with (
+            patch("engine.debate.Qwen3VLVisionModel", return_value=object()),
+            patch("engine.debate.VisualGroundingAgent", FakeVisualAgent),
+            patch("engine.debate.GPUManager.clear"),
+        ):
+            result = engine.run_debate_batch(
+                [case],
+                language_runtime={
+                    "agent2": FakeAgent2(), "arbiter": FakeArbiter(),
+                },
+            )["case"]
+        self.assertEqual(len(calls), 1)
+        self.assertIn("What color is the square?", calls[0])
+        self.assertEqual(
+            result["_debate"]["agent1_response_status"],
+            "VALID_VISUAL_OBSERVATION",
+        )
+
+    def test_tribunal_followup_skips_redundant_broad_visual_recovery(self):
+        class FakeVisualAgent:
+            def __init__(self, _runtime):
+                pass
+
+            @staticmethod
+            def recover_for_claim(*_args, **_kwargs):
+                raise AssertionError(
+                    "tribunal follow-up must not repeat broad recovery"
+                )
+
+            @staticmethod
+            def critique(_image, _prompt):
+                return {
+                    "_format_valid": True,
+                    "response_status": "VALID_VISUAL_OBSERVATION",
+                    "observation_status": "OBSERVED",
+                    "observed_entity": "square",
+                    "observed_state": "red",
+                    "image_region": "center",
+                    "specific_evidence": True,
+                    "recommendation": "ABSTAIN",
+                    "claim_relation": "UNRESOLVED",
+                    "reason": "A red square is visible.",
+                    "witness_contract": {
+                        "question_id": "Q2", "answer_status": "OBSERVED",
+                        "observation": "red", "region": "center",
+                        "direction_assigned": False,
+                    },
+                }
+
+        class FakeAgent2:
+            @staticmethod
+            def critique(_caption, _prompt):
+                return {
+                    "stance": "ENDORSE", "_format_valid": True,
+                    "reason": "Claim preserved.", "requirements_valid": True,
+                }
+
+        class FakeArbiter:
+            @staticmethod
+            def analyze(*_args, **_kwargs):
+                return {
+                    "label": "ENTAILS", "confidence": 0.60,
+                    "explanation": "No verified change.",
+                    "_final_decision_valid": True,
+                    "_timing": {"total_seconds": 0.01},
+                }
+
+        case = {
+            "key": "followup", "caption": "The square is red.",
+            "image": object(), "visual_output": {}, "language_output": {},
+            "comparison": {},
+            "decision": {
+                "label": "ENTAILS", "confidence": 0.60,
+                "_final_decision_valid": True,
+            },
+            "evidence_ledger": [], "debate_level": 2,
+            "debate_signals": ["tribunal_follow_up"],
+            "mediation_plan": {
+                "_usable": True,
+                "agent1_questions": ["What color is the square?"],
+                "agent2_questions": [], "verification_requests": [],
+                "disputed_issues": [],
+            },
+        }
+        engine = DebateEngine()
+        with (
+            patch("engine.debate.Qwen3VLVisionModel", return_value=object()),
+            patch("engine.debate.VisualGroundingAgent", FakeVisualAgent),
+            patch("engine.debate.GPUManager.clear"),
+        ):
+            result = engine.run_debate_batch(
+                [case],
+                language_runtime={
+                    "agent2": FakeAgent2(), "arbiter": FakeArbiter(),
+                },
+            )["followup"]
+        self.assertEqual(
+            result["_debate"]["grounding_recovery_seconds"], 0.0
+        )
+
+    def test_validated_agent_exchange_reaches_review_board_as_one_pipeline(self):
+        class FakeVisualAgent:
+            def __init__(self, _runtime):
+                pass
+
+            @staticmethod
+            def recover_for_claim(
+                _image, _visual_output, _claim_relation, recovery_reason=None
+            ):
+                return {}
+
+            @staticmethod
+            def critique(_image, _prompt):
+                return {
+                    "_format_valid": True,
+                    "response_status": "VALID_DIRECTIONAL_ANSWER",
+                    "observation_status": "OBSERVED",
+                    "observed_entity": "plotted line",
+                    "observed_state": "The plotted line falls left to right.",
+                    "image_region": "chart",
+                    "specific_evidence": True,
+                    "recommendation": "CONTRADICTS",
+                    "claim_relation": "CONFLICT",
+                    "question_id": "Q1",
+                    "reason": "The plotted line falls left to right.",
+                    "witness_contract": {
+                        "question_id": "Q1",
+                        "answer_status": "OBSERVED",
+                        "observation": "The plotted line falls left to right.",
+                        "region": "chart",
+                        "direction_assigned": True,
+                        "relation_candidate": "CONFLICT",
+                    },
+                }
+
+        class FakeAgent2:
+            @staticmethod
+            def critique(_caption, _prompt):
+                return {
+                    "stance": "ENDORSE", "_format_valid": True,
+                    "requirements_valid": True,
+                    "support_requirement": "the plotted line rises",
+                    "conflict_requirement": "the plotted line falls",
+                    "reason": "The caption asserts a rising line.",
+                }
+
+        class FakeArbiter:
+            saw_verified_relation = False
+
+            @classmethod
+            def analyze(cls, _caption, _visual, _language, comparison, **_kwargs):
+                verified = [
+                    item for item in comparison.get(
+                        "grounded_evidence_catalog", []
+                    )
+                    if item.get("source") == "cross_agent_relation_verifier"
+                    and item.get("relation") == "CONFLICT"
+                    and item.get("decision_grade")
+                ]
+                cls.saw_verified_relation = bool(verified)
+                evidence_id = verified[0]["id"] if verified else ""
+                return {
+                    "label": "CONTRADICTS", "confidence": 0.75,
+                    "decision_method": "verified_relation_arbitration",
+                    "explanation": "The verified line direction conflicts.",
+                    "_model_cited_evidence_ids": [evidence_id],
+                    "_final_decision_valid": True,
+                    "_timing": {"total_seconds": 0.01},
+                }
+
+        claim_contract = {
+            "schema_version": "2.0",
+            "safe_for_directional_reasoning": True,
+            "safe_for_automatic_directional_reasoning": True,
+            "relation_pair_valid": True,
+            "warnings": [],
+        }
+        case = {
+            "key": "case", "caption": "The plotted line rises.",
+            "image": object(), "visual_output": {},
+            "language_output": {"claim_contract": claim_contract},
+            "comparison": {
+                "claim_contract": claim_contract,
+                "claim_relation": {"resolved": False},
+                "grounded_evidence_catalog": [],
+            },
+            "decision": {
+                "label": "ENTAILS", "confidence": 0.55,
+                "_final_decision_valid": True,
+            },
+            "evidence_ledger": [], "debate_level": 2,
+            "debate_score": 8,
+            "debate_signals": ["tribunal_escalation"],
+        }
+        engine = DebateEngine()
+        with (
+            patch("engine.debate.Qwen3VLVisionModel", return_value=object()),
+            patch("engine.debate.VisualGroundingAgent", FakeVisualAgent),
+            patch("engine.debate.GPUManager.clear"),
+        ):
+            result = engine.run_debate_batch(
+                [case],
+                language_runtime={
+                    "agent2": FakeAgent2(), "arbiter": FakeArbiter(),
+                },
+            )["case"]
+        self.assertTrue(FakeArbiter.saw_verified_relation)
+        self.assertTrue(
+            result["_debate"]["cross_agent_verification"]["promoted"]
+        )
+        self.assertTrue(result["_debate"]["revision_accepted"])
+        self.assertEqual(result["label"], "CONTRADICTS")
+        self.assertTrue(any(
+            item.get("id") == "AV001"
+            and item.get("source") == "cross_agent_relation_verifier"
+            for item in result["_debate"]["evidence_ledger_after"]
+        ))
+
 
 class EvidenceLedgerContractTests(unittest.TestCase):
     def test_ledger_preserves_direct_support_provenance(self):
         ledger = build_evidence_ledger(
             {"visual_facts": ["A graph rises."]},
             {"caption_proposition": "The value increased."},
-            {"supporting_evidence": ["The rising graph supports increased value."]},
+            {
+                "relation_support_candidates": [
+                    "The rising graph may support increased value."
+                ]
+            },
         )
         audit = audit_decision({
             "label": "ENTAILS",
             "_model_cited_evidence_ids": ["CS001"],
         }, ledger)
-        self.assertTrue(audit["valid"])
-        self.assertEqual(audit["cited_evidence_ids"], ["CS001"])
+        self.assertFalse(audit["valid"])
+        self.assertTrue(audit["source_valid"])
+        self.assertEqual(audit["source_cited_evidence_ids"], ["CS001"])
 
     def test_neutral_visual_fact_is_valid_source_but_not_directional_proof(self):
         ledger = build_evidence_ledger(

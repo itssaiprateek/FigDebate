@@ -551,6 +551,26 @@ insufficient for that proposition, including figurative meaning when relevant
         return relation_status, deficiencies
 
     @staticmethod
+    def _unopposed_verified_relation(comparison):
+        """Return a unique decision-grade direction already in the ledger."""
+        by_relation = {"SUPPORT": [], "CONFLICT": []}
+        for item in (comparison or {}).get("grounded_evidence_catalog", []) or []:
+            relation = item.get("relation")
+            if (
+                relation in by_relation
+                and item.get("decision_grade", False)
+                and str(item.get("lifecycle_status", "ACTIVE")).upper()
+                in {"ACTIVE", "RECONFIRMED"}
+                and item.get("id")
+            ):
+                by_relation[relation].append(item["id"])
+        if by_relation["SUPPORT"] and not by_relation["CONFLICT"]:
+            return "ENTAILS", by_relation["SUPPORT"]
+        if by_relation["CONFLICT"] and not by_relation["SUPPORT"]:
+            return "CONTRADICTS", by_relation["CONFLICT"]
+        return None, []
+
+    @staticmethod
     def _build_citation_retry_prompt(caption, comparison_summary):
         return f"""<s>[INST]
 Select one observation from the supplied current-image evidence catalog. Copy
@@ -1160,10 +1180,23 @@ Binary completion rule before writing the answer:
             confidence = evidence_adjusted_confidence(
                 raw_confidence, evidence_quality
             )
+            semantic_scored_label = label
+            verified_label, verified_ids = self._unopposed_verified_relation(
+                comparison
+            )
+            decision_method = "position_balanced_semantic"
+            if verified_label:
+                # Scored language preferences cannot overrule an unopposed
+                # independently verified relation.  The Arbiter remains the
+                # final selector and records the exact proof it relied on.
+                label = verified_label
+                cited_evidence_ids = list(verified_ids)
+                confidence = max(confidence, 0.72)
+                decision_method = "verified_relation_arbitration"
             relation_status, deficiencies = self._relation_status(
                 label, assessment, comparison, cited_evidence_ids
             )
-            unconstrained_label = label
+            unconstrained_label = semantic_scored_label
             revision_status = "DIRECTIONAL_PROPOSAL"
             if relation_status == "INSUFFICIENT":
                 confidence = min(confidence, 0.35)
@@ -1185,7 +1218,7 @@ Binary completion rule before writing the answer:
                 "missing_evidence": comparison.get("missing_evidence", []) or [],
                 "confidence": confidence,
                 "debate_needed": confidence < self.CONFIDENCE_THRESHOLD,
-                "decision_method": "position_balanced_semantic",
+                "decision_method": decision_method,
                 "evidence_sources": {
                     "visual_support": "visual_grounding_or_comparator",
                     "contradictions": "visual_grounding_or_comparator",
@@ -1201,6 +1234,7 @@ Binary completion rule before writing the answer:
                 "_binary_resolution_scores": scores,
                 "_binary_resolution_raw_confidence": raw_confidence,
                 "_unconstrained_proposed_label": unconstrained_label,
+                "_verified_relation_override": bool(verified_label),
                 "_relation_status": relation_status,
                 "_revision_status": revision_status,
                 "_deficiencies": deficiencies,

@@ -1,4 +1,4 @@
-from models.vision_model import LlavaModel
+from models.vision_model import Qwen3VLVisionModel
 from models.language_model import MistralModel
 from copy import deepcopy
 import time
@@ -13,8 +13,10 @@ from comparators.evidence_comparator import compare
 from engine.feedback_loop import FeedbackLoop
 from engine.evidence_verifier import AtomicEvidenceVerifier, merge_verified_evidence
 from engine.evidence_ledger import (
+    add_cross_agent_verified_relation,
     add_targeted_verifier_evidence,
     add_visual_reinspection_evidence,
+    add_visual_witness_evidence,
     attach_evidence_audit,
     audit_decision,
     build_evidence_ledger,
@@ -23,6 +25,11 @@ from engine.evidence_ledger import (
 )
 from engine.gpu_manager import GPUManager
 from engine.review_board import attach_final_review, review_revision
+from engine.question_router import build_question_plan, compile_visual_question
+from engine.decision_trace import (
+    append_decision_checkpoint,
+    attach_decision_trace,
+)
 
 class DebateEngine:
 
@@ -60,6 +67,12 @@ class DebateEngine:
         label = decision.get("label")
         has_support = bool(comparison.get("supporting_evidence"))
         has_conflict = bool(comparison.get("contradicting_evidence"))
+        has_support_candidate = bool(
+            comparison.get("relation_support_candidates")
+        )
+        has_conflict_candidate = bool(
+            comparison.get("relation_conflict_candidates")
+        )
         has_grounded_anchors = bool(comparison.get("grounded_anchor_evidence"))
         signals = []
         score = 0
@@ -117,6 +130,24 @@ class DebateEngine:
             return {"trigger": True, "reason": "comparator_conflict_disagrees_with_entails", "level": 1, "score": 5, "signals": ["direct_evidence_disagreement"]}
         if status == "MIXED_VERIFIED_EVIDENCE" and has_support and has_conflict:
             return {"trigger": True, "reason": "mixed_verified_evidence_requires_review", "level": 1, "score": 5, "signals": ["mixed_verified_evidence"]}
+        if status == "MIXED_RELATION_CANDIDATES" and (
+            has_support_candidate and has_conflict_candidate
+        ):
+            return {
+                "trigger": True,
+                "reason": "mixed_relation_candidates_require_verification",
+                "level": 2,
+                "score": 5,
+                "signals": ["mixed_relation_candidates"],
+            }
+        if status in {"SUPPORT_CANDIDATE", "CONFLICT_CANDIDATE"}:
+            return {
+                "trigger": True,
+                "reason": "directional_candidate_requires_verification",
+                "level": 2,
+                "score": 4,
+                "signals": ["directional_candidate_requires_verification"],
+            }
         if (
             status == "GROUNDED_REVIEW_REQUIRED"
             and has_grounded_anchors
@@ -433,7 +464,11 @@ class DebateEngine:
             deficiencies.append("CLAIM_REQUIREMENTS_INVALID")
         if not deficiencies:
             return output
-        output["_unconstrained_proposed_label"] = output.get("label")
+        output.setdefault("_unconstrained_proposed_label", output.get("label"))
+        output.setdefault(
+            "_raw_debate_proposed_label",
+            output.get("_unconstrained_proposed_label"),
+        )
         output["label"] = (original_decision or {}).get("label")
         output["confidence"] = (original_decision or {}).get(
             "confidence", output.get("confidence", 0.5)
@@ -476,7 +511,7 @@ class DebateEngine:
         mediation=None,
     ):
         """Compatibility wrapper around the deterministic review board."""
-        accepted, reason, _ = review_revision(
+        accepted, reason, audit = review_revision(
             original_decision,
             revised_decision,
             evidence_ledger or [],
@@ -486,6 +521,9 @@ class DebateEngine:
             claim_contract=(comparison or {}).get("claim_contract", {}),
             mediation=mediation,
         )
+        # Preserve the complete deterministic audit without changing this
+        # long-standing two-value compatibility interface.
+        revised_decision["_revision_acceptance_audit"] = audit
         return accepted, reason
 
     def run_debate(
@@ -532,36 +570,62 @@ class DebateEngine:
         vision_load_seconds = 0.0
         language_load_seconds = 0.0
 
-        level2_cases = [case for case in cases if int(case.get("debate_level", 2)) >= 2]
-        level1_cases = [case for case in cases if case not in level2_cases]
-        for case in level1_cases:
+        level2_cases = [
+            case for case in cases
+            if int(case.get("debate_level", 2)) >= 2
+        ]
+        visual_review_cases = [
+            case for case in cases
+            if case in level2_cases or case.get("force_visual_review", False)
+        ]
+        cached_review_cases = [
+            case for case in cases if case not in visual_review_cases
+        ]
+        for case in cached_review_cases:
             agent1_critiques[case["key"]] = self._cached_evidence_critique(
                 case.get("evidence_ledger", [])
             )
 
-        print("\nLoading LLaVA for targeted debate batch..." if level2_cases else "\nSkipping LLaVA: Level 1 debate uses cached evidence.")
-        llava = None
+        print(
+            "\nLoading Qwen3-VL for targeted debate batch..."
+            if visual_review_cases
+            else "\nSkipping Qwen3-VL: Level 1 debate uses cached evidence."
+        )
+        vision_runtime = None
         agent1 = None
-        if level2_cases:
+        if visual_review_cases:
             try:
                 load_started = time.time()
-                llava = LlavaModel()
+                vision_runtime = Qwen3VLVisionModel()
                 vision_load_seconds = time.time() - load_started
-                agent1 = VisualGroundingAgent(llava)
-                for case in level2_cases:
-                    recovery_reason = next(iter(
-                        case.get("debate_signals", []) or [
-                            "targeted_grounding_recovery"
-                        ]
-                    ))
-                    recovered_visual = agent1.recover_for_claim(
-                        case["image"],
-                        case.get("visual_output", {}),
-                        (case.get("comparison", {}) or {}).get(
-                            "claim_relation", {}
-                        ),
-                        recovery_reason=recovery_reason,
+                agent1 = VisualGroundingAgent(vision_runtime)
+                for case in visual_review_cases:
+                    debate_signals = list(
+                        case.get("debate_signals", []) or []
                     )
+                    # A tribunal follow-up already has a compact, image-bound
+                    # atomic question. Re-running the broad claim recovery
+                    # before answering it repeats a full visual pass, consumes
+                    # VRAM/time, and does not add independent evidence.
+                    if (
+                        int(case.get("debate_level", 2)) >= 2
+                        and "tribunal_follow_up" not in debate_signals
+                    ):
+                        recovery_reason = next(iter(
+                            debate_signals or [
+                                "targeted_grounding_recovery"
+                            ]
+                        ))
+                        recovered_visual = agent1.recover_for_claim(
+                            case["image"],
+                            case.get("visual_output", {}),
+                            (case.get("comparison", {}) or {}).get(
+                                "claim_relation", {}
+                            ),
+                            recovery_reason=recovery_reason,
+                        )
+                    else:
+                        recovered_visual = {}
                     if recovered_visual.get("_targeted_recovery_success"):
                         superseded_ledger = deepcopy(
                             case.get("evidence_ledger", []) or []
@@ -634,8 +698,8 @@ class DebateEngine:
             finally:
                 if agent1 is not None:
                     del agent1
-                if llava is not None:
-                    del llava
+                if vision_runtime is not None:
+                    del vision_runtime
                 GPUManager.clear()
 
         owns_language_runtime = language_runtime is None
@@ -670,14 +734,16 @@ class DebateEngine:
                     case["decision"].get("label"),
                 )
                 original_ledger = case.get("evidence_ledger", []) or []
-                review_ledger = original_ledger
+                review_ledger = add_visual_witness_evidence(
+                    original_ledger, agent1_critique
+                )
                 if (
                     int(case.get("debate_level", 2)) >= 2
                     and agent1_critique.get("review_method")
                     != "independent_cached_evidence_review"
                 ):
                     review_ledger = add_visual_reinspection_evidence(
-                        original_ledger,
+                        review_ledger,
                         agent1_critique,
                         case.get("comparison", {}),
                     )
@@ -704,6 +770,36 @@ class DebateEngine:
                 )
                 agent2_critique["_seconds"] = time.time() - critique_started
 
+                review_ledger, cross_agent_verification = (
+                    add_cross_agent_verified_relation(
+                        review_ledger,
+                        agent1_critique,
+                        agent2_critique,
+                        (case.get("comparison") or {}).get(
+                            "claim_contract", {}
+                        ),
+                    )
+                )
+                # The Arbiter must see the newly verified relation during its
+                # reasoning pass, not only after it has already selected a
+                # label.  Mediation questions remain advisory metadata.
+                review_comparison = self._comparison_with_review_evidence(
+                    case.get("comparison", {}), review_ledger
+                )
+                if mediation_plan.get("_usable", False):
+                    review_comparison["mediation_questions"] = list(
+                        dict.fromkeys(
+                            list(mediation_plan.get("disputed_issues", []) or [])
+                            + list(
+                                mediation_plan.get(
+                                    "verification_requests", []
+                                ) or []
+                            )
+                        )
+                    )
+                advocate_summary = self._advocate_summary(review_ledger)
+                agent1_critique["advocates"] = advocate_summary
+
                 revised_decision = arbiter.analyze(
                     case["caption"],
                     case["visual_output"],
@@ -712,6 +808,18 @@ class DebateEngine:
                     agent1_critique=agent1_critique,
                     agent2_critique=agent2_critique,
                     previous_decision=case["decision"],
+                )
+                revised_decision["_raw_debate_proposed_label"] = (
+                    revised_decision.get(
+                        "_unconstrained_proposed_label",
+                        revised_decision.get("label"),
+                    )
+                )
+                decision_trace = append_decision_checkpoint(
+                    case["decision"].get("_decision_trace", []),
+                    "raw_debate_proposal",
+                    revised_decision,
+                    ledger=review_ledger,
                 )
                 revised_decision["_debate_agent1_critique"] = agent1_critique
                 revised_ledger = add_targeted_verifier_evidence(
@@ -722,6 +830,12 @@ class DebateEngine:
                 revised_decision = self._enforce_revision_requirements(
                     case["decision"], revised_decision, agent1_critique,
                     agent2_critique, case.get("debate_level", 2),
+                )
+                decision_trace = append_decision_checkpoint(
+                    decision_trace,
+                    "evidence_constrained_proposal",
+                    revised_decision,
+                    ledger=revised_ledger,
                 )
                 targeted_verification = revised_decision.get(
                     "_targeted_region_verification", {}
@@ -766,6 +880,20 @@ class DebateEngine:
                     revised_ledger,
                     (case.get("comparison") or {}).get("claim_contract", {}),
                 )
+                decision_trace = append_decision_checkpoint(
+                    decision_trace,
+                    "debate_review_accepted" if accepted else "debate_review_preserved",
+                    decision,
+                    ledger=revised_ledger,
+                    metadata={
+                        "accepted": accepted,
+                        "reason": reason,
+                        "failed_invariant": revised_decision.get(
+                            "_revision_acceptance_audit", {}
+                        ).get("failed_invariant", ""),
+                    },
+                )
+                decision = attach_decision_trace(decision, decision_trace)
                 inference_seconds = (
                     agent1_critique["_seconds"]
                     + agent2_critique["_seconds"]
@@ -792,9 +920,12 @@ class DebateEngine:
                     ),
                     "revision_accepted": accepted,
                     "revision_acceptance_reason": reason,
+                    "revision_acceptance_audit": revised_decision.get(
+                        "_revision_acceptance_audit", {}
+                    ),
                     "proposed_label": revised_decision.get("label"),
                     "unconstrained_proposed_label": revised_decision.get(
-                        "_unconstrained_proposed_label",
+                        "_raw_debate_proposed_label",
                         revised_decision.get("label"),
                     ),
                     "agent1_response_status": agent1_critique.get(
@@ -803,6 +934,7 @@ class DebateEngine:
                     "agent2_requirements_valid": agent2_critique.get(
                         "requirements_valid", True
                     ),
+                    "cross_agent_verification": cross_agent_verification,
                     "relation_status": revised_decision.get(
                         "_relation_status"
                     ),
@@ -1025,14 +1157,16 @@ attached to the caption subject.
         plan = mediation or {}
         atomic_question = ""
         if plan.get("_usable", False):
-            atomic_question = next(iter(
-                list(plan.get("agent1_questions", []) or [])
-                + list(plan.get("verification_requests", []) or [])
-                + list(plan.get("disputed_issues", []) or [])
-            ), "")
+            atomic_question = compile_visual_question(
+                comparison or {}, plan
+            )
 
         if not atomic_question and diagnostic_questions:
             atomic_question = str(diagnostic_questions[0])
+        if not atomic_question:
+            atomic_question = build_question_plan(
+                comparison or {}
+            ).agent1_question
         if not atomic_question:
             if "TEXT_LAYOUT_BINDING" in relation_focus:
                 atomic_question = (

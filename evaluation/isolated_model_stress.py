@@ -231,14 +231,14 @@ def agent1_cases(output_dir):
 def run_agent1(output_dir, limit=None):
     from agents.visual_grounding import VisualGroundingAgent
     from engine.gpu_manager import GPUManager
-    from models.vision_model import LlavaModel
+    from models.vision_model import Qwen3VLVisionModel
 
     path = output_dir / "agent1_grounding.jsonl"
     reset_output(path)
     cases, images = agent1_cases(output_dir)
     if limit:
         cases = cases[:limit]
-    runtime = LlavaModel()
+    runtime = Qwen3VLVisionModel()
     agent = VisualGroundingAgent(runtime)
     for index, case in enumerate(cases, 1):
         started = time.time()

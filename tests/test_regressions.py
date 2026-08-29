@@ -243,7 +243,11 @@ class SemanticDebateRegressionTests(unittest.TestCase):
             {**language, "claim_relation": relation},
             caption,
         )
-        self.assertTrue(comparison["supporting_evidence"])
+        self.assertTrue(comparison["relation_support_candidates"])
+        self.assertFalse(comparison["supporting_evidence"])
+        self.assertEqual(
+            comparison["required_evidence_status"], "SUPPORT_CANDIDATE"
+        )
 
     def test_agent2_detects_dropped_truthful_outcome(self):
         valid, errors = ClaimExtractionAgent._validate_visual_requirements(
@@ -254,7 +258,7 @@ class SemanticDebateRegressionTests(unittest.TestCase):
             "Opposite visual state: drivers evade or deny the question",
         )
         self.assertFalse(valid)
-        self.assertIn("CLAIM_OUTCOME_DROPPED", errors)
+        self.assertIn("SUPPORT_DROPPED_EXPECTED_STATE", errors)
 
     def test_vflute_566_2199_2850_invalid_visual_review_cannot_flip(self):
         revised = DebateEngine._enforce_revision_requirements(
@@ -378,7 +382,7 @@ class SemanticDebateRegressionTests(unittest.TestCase):
         )
         self.assertIn("FIGURATIVE_SYMBOL_REINSPECTION", prompt)
 
-    def test_structured_symbolic_reinspection_can_prove_conflict(self):
+    def test_structured_symbolic_reinspection_needs_independent_verification(self):
         caption = "His heart within him is fully rotten."
         language = attach_claim_contract(
             {
@@ -414,7 +418,8 @@ class SemanticDebateRegressionTests(unittest.TestCase):
         )
         self.assertEqual(len(ledger), 1)
         self.assertEqual(ledger[0]["relation"], "CONFLICT")
-        self.assertTrue(ledger[0]["decision_grade"])
+        self.assertFalse(ledger[0]["decision_grade"])
+        self.assertEqual(ledger[0]["evidence_level"], "RELATION_CANDIDATE")
 
     def test_debate_can_keep_a_label_and_strengthen_its_evidence(self):
         ledger = [{

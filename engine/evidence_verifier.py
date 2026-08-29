@@ -231,8 +231,8 @@ def merge_verified_evidence(comparison, ledger, verification_summary):
             "agent1", "comparator", "targeted_region_verifier"
         }
     ]
-    support = list(output.get("supporting_evidence", []) or [])
-    conflict = list(output.get("contradicting_evidence", []) or [])
+    support = []
+    conflict = []
     for item in ledger or []:
         if not is_active_evidence(item):
             continue

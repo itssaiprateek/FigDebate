@@ -1,0 +1,82 @@
+{
+  "system_name": "FigDebate",
+  "dataset": "vflute_train_dev50",
+  "requested_samples": 20,
+  "completed_before_run": 0,
+  "execution_mode": "stagewise",
+  "debate_mode": "enabled",
+  "debate_enabled": true,
+  "evidence_mode": "enabled",
+  "judge_mode": "tribunal",
+  "judge_scope": "all",
+  "feedback_enabled": false,
+  "feedback_mode": "disabled",
+  "verified_feedback_file": null,
+  "verified_feedback_sha256": null,
+  "model_vision": "Qwen/Qwen3-VL-4B-Instruct",
+  "model_vision_revision": "ebb281ec70b05090aa6165b016eac8ec08e71b17",
+  "model_language": "mistralai/Mistral-7B-Instruct-v0.2",
+  "model_language_revision": "63a8b081895390a26e140280378bc85ec8bce07a",
+  "model_judge": "Qwen/Qwen3.5-4B",
+  "model_judge_revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+  "seed": 42,
+  "selection_strategy": "stratified",
+  "dataset_selection_sha256": "8624745d3305e206a88d75c050b072c923f843ff8637f658f74a7375172bcb75",
+  "pipeline_source_sha256": "bccf4be89099b744e280836e485878b37403e3775056a69939d0d377cd6a1d07",
+  "evidence_ledger_version": "11.0",
+  "evidence_verifier_thresholds": {
+    "minimum_relation_probability": 0.7,
+    "minimum_relation_margin": 0.15,
+    "maximum_atomic_items": 8
+  },
+  "evidence_policy": {
+    "generic_nli": "diagnostic_candidate_only",
+    "lexical_relation_matches": "candidate_only_until_independently_verified",
+    "source_attribution": "current_sample_ledger_id_required",
+    "directional_proof": "verified_relation_from_deterministic_check_or_independent_multimodal_corroboration"
+  },
+  "debate_policy": {
+    "routing": "auditable_need_score",
+    "level_1": "independent_decision_grade_evidence_deliberation",
+    "level_2": "adaptive_regrounding_then_independent_multimodal_reinspection",
+    "revision_gate": "deterministic_review_board_requires_stronger_current_image_evidence"
+  },
+  "judge_policy": {
+    "position": "bounded_mediator_before_between_and_after_agent_reviews",
+    "primary_label_visible": false,
+    "gold_label_visible": false,
+    "shadow_changes_predictions": false,
+    "appellate_revision_gate": "strict_contract_plus_stronger_cited_decision_grade_current_image_evidence",
+    "mediated_revision_gate": "verified_directional_evidence_plus_narrow_independent_mediation_tiebreak",
+    "mediator_provisional_label_visible_to_agents": false,
+    "judge_generated_text_is_visual_proof": false,
+    "tribunal_maximum_rounds": 2,
+    "tribunal_follow_up": "one_neutral_atomic_question_per_agent",
+    "tribunal_revision_gate": "ordinary_review_board_plus_independent_current_image_verification"
+  },
+  "feedback_policy": {
+    "retrieval": "strict_procedural_case_similarity",
+    "role": "diagnostic_question_and_debate_routing_only",
+    "online_label_updates": false,
+    "gold_direction_stored": false
+  },
+  "feedback_minimum_case_similarity": 0.72,
+  "comparator": "evidence_comparator",
+  "python_version": "3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "runtime_environment": {
+    "packages": {
+      "torch": "2.5.1+cu121",
+      "transformers": "5.15.0",
+      "bitsandbytes": "0.50.0",
+      "datasets": "5.0.1",
+      "pandas": "3.0.5",
+      "scikit-learn": "1.9.0",
+      "Pillow": "12.2.0"
+    },
+    "torch_cuda_version": "12.1",
+    "cuda_available": true,
+    "gpu_name": "NVIDIA GeForce RTX 4060 Laptop GPU"
+  },
+  "timestamp": "2026-08-29T15:01:44"
+}

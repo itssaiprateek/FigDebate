@@ -29,24 +29,45 @@ PLACEHOLDER_VALUES = {
     "", "none", "n a", "na", "not applicable", "not specified",
     "unknown", "unspecified", "unclear", "implicit", "implicitly",
 }
-TOKEN_ALIASES = {
-    "anything": "object",
-    "good": "product",
-    "goods": "product",
-    "item": "product",
-    "items": "product",
-    "products": "product",
-    "disliked": "dislike",
-    "dislikes": "dislike",
-    "hated": "dislike",
-    "hates": "dislike",
-    "hate": "dislike",
-    "liked": "love",
-    "likes": "love",
-    "loved": "love",
-    "loves": "love",
-    "favorite": "love",
-    "favourite": "love",
+
+# General English state oppositions used only to validate whether Agent 2 has
+# supplied a genuinely directional pair. These are semantic relation classes,
+# never image-, dataset-, or sample-specific rules.
+STATE_OPPOSITION_GROUPS = (
+    ({"up", "upward", "rise", "rising", "increase", "growth", "recover"},
+     {"down", "downward", "fall", "falling", "decrease", "decline", "collapse"}),
+    ({"slow", "slowly", "leisurely", "calm", "relaxed", "serene"},
+     {"fast", "quickly", "rushing", "agitated", "tense", "chaotic"}),
+    ({"whole", "intact", "healthy", "working", "successful", "success"},
+     {"broken", "damaged", "rotten", "failed", "failure", "useless"}),
+    ({"present", "visible", "attached", "open", "using", "used"},
+     {"absent", "missing", "detached", "closed", "unused", "abandoned"}),
+    ({"safe", "respectful", "honest", "truthful", "positive"},
+     {"unsafe", "disrespectful", "dishonest", "false", "negative"}),
+    ({"happy", "happiness", "joy", "joyful", "content", "elated",
+      "celebratory", "pleased", "hopeful"},
+     {"sad", "sadness", "angry", "anger", "distressed", "devastating",
+      "disappointed", "disappointment", "awful", "worried", "fearful"}),
+    ({"more", "greater", "many", "frequent"},
+     {"less", "fewer", "few", "infrequent", "equal"}),
+    ({"long", "lasting", "persistent", "durable"},
+     {"short", "brief", "temporary", "fleeting"}),
+    ({"enough", "sufficient", "adequate"},
+     {"insufficient", "inadequate", "lacking"}),
+    ({"expected", "support", "supports"},
+     {"opposite", "conflict", "conflicts"}),
+)
+
+STATE_STOPWORDS = ENTITY_STOPWORDS | {
+    "appears", "condition", "displayed", "explicitly", "matches",
+    "observable", "observed", "show", "shown", "shows", "state",
+    "visible", "visibly",
+}
+
+NORMATIVE_CUES = {
+    "abusive", "cruel", "demeaning", "disrespectful", "ethical", "fair",
+    "gross", "immoral", "inappropriate", "misogynistic", "offensive",
+    "respectful", "rude", "sexist", "unethical", "unfair",
 }
 HUMAN_REFERENCE_TOKENS = {
     "he", "her", "hers", "him", "his", "human", "man", "men",
@@ -65,10 +86,55 @@ def _normalize(value):
 
 
 def _tokens(value):
+    # Keep source auditing lexical and domain-neutral.  Semantic aliases must
+    # come from the generated claim frame and be verified downstream; a fixed
+    # vocabulary here can silently make one dataset example look valid.
+    return set(_normalize(value).split())
+
+
+def _english_forms(token):
+    """Return conservative surface/base forms for common English inflections.
+
+    The contract only uses these forms to recognize members of an explicit
+    semantic opposition group.  They are not used to make entities equivalent
+    or to introduce domain aliases.
+    """
+    forms = {token}
+    if len(token) > 4 and token.endswith("ies"):
+        forms.add(token[:-3] + "y")
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        forms.add(token[:-1])
+    if len(token) > 4 and token.endswith("ed"):
+        stem = token[:-2]
+        forms.update({stem, stem + "e"})
+        if len(stem) > 2 and stem[-1] == stem[-2]:
+            forms.add(stem[:-1])
+    if len(token) > 5 and token.endswith("ing"):
+        stem = token[:-3]
+        forms.update({stem, stem + "e"})
+        if len(stem) > 2 and stem[-1] == stem[-2]:
+            forms.add(stem[:-1])
+    return forms
+
+
+def _opposition_forms(tokens):
     return {
-        TOKEN_ALIASES.get(token, token)
-        for token in _normalize(value).split()
+        form
+        for token in tokens
+        for form in _english_forms(token)
     }
+
+
+def _state_clauses(value):
+    return [
+        frozenset(_state_tokens(part))
+        for part in re.split(
+            r"\s*(?:;|\||\bwhile\b|\bwhereas\b|\bbut\b)\s*",
+            str(value or ""),
+            flags=re.IGNORECASE,
+        )
+        if _state_tokens(part)
+    ]
 
 
 def _numbers(value):
@@ -96,6 +162,118 @@ def _is_placeholder(value):
         token in PLACEHOLDER_VALUES
         for token in normalized.replace("implicitly", "implicit").split()
     )
+
+
+def _state_tokens(value):
+    return {
+        token for token in _tokens(value)
+        if len(token) >= 3 and token not in STATE_STOPWORDS
+    }
+
+
+def _background_required(language_output):
+    value = language_output.get("background_knowledge", "")
+    return not _is_placeholder(value) and _normalize(value) not in {
+        "not specified", "not required"
+    }
+
+
+def _normative_required(language_output):
+    declared = _normalize(language_output.get("reasoning_requirement", ""))
+    if declared in {"normative", "mixed"}:
+        return True
+    text = " ".join(
+        _normalize(language_output.get(key, ""))
+        for key in (
+            "caption_proposition", "asserted_property", "intended_meaning"
+        )
+    )
+    return bool(_tokens(text) & NORMATIVE_CUES)
+
+
+def audit_relation_pair(expected_state, opposite_state, subject=""):
+    """Conservatively validate a generated support/conflict state pair."""
+    expected = _normalize(expected_state)
+    opposite = _normalize(opposite_state)
+    expected_tokens = _state_tokens(expected)
+    opposite_tokens = _state_tokens(opposite)
+    expected_forms = _opposition_forms(expected_tokens)
+    opposite_forms = _opposition_forms(opposite_tokens)
+    subject_tokens = _entity_tokens(subject)
+    warnings = []
+    if not expected or not opposite:
+        warnings.append("directional_state_pair_incomplete")
+    if expected and expected == opposite:
+        warnings.append("directional_state_pair_identical")
+
+    opposition_signals = []
+    for positive, negative in STATE_OPPOSITION_GROUPS:
+        if (
+            expected_forms & positive and opposite_forms & negative
+        ) or (
+            expected_forms & negative and opposite_forms & positive
+        ):
+            signals = (
+                expected_forms & (positive | negative)
+            ) | (
+                opposite_forms & (positive | negative)
+            )
+            opposition_signals.append("/".join(sorted(signals)))
+    # Negation is directional only when both sides negate the same underlying
+    # condition.  Merely placing "without" in an unrelated clause must not
+    # make two otherwise different states look like opposites.
+    shared_negated_condition = bool(
+        expected_forms & opposite_forms
+        or expected_tokens & opposite_tokens
+    )
+    negation_opposition = bool(
+        shared_negated_condition
+        and (
+            (_negations(expected) and not _negations(opposite))
+            or (_negations(opposite) and not _negations(expected))
+        )
+    )
+    if negation_opposition:
+        opposition_signals.append("explicit_negation")
+
+    # A multi-entity relation may express its opposite by swapping outcomes
+    # rather than using antonyms: "A has X; B has Y" versus
+    # "A has Y; B has X".  Accept only a true token-preserving reassignment;
+    # merely reordering the same clauses does not qualify.
+    expected_clauses = _state_clauses(expected_state)
+    opposite_clauses = _state_clauses(opposite_state)
+    if len(expected_clauses) >= 2 and len(opposite_clauses) >= 2:
+        expected_union = set().union(*expected_clauses)
+        opposite_union = set().union(*opposite_clauses)
+        if (
+            expected_union == opposite_union
+            and set(expected_clauses) != set(opposite_clauses)
+        ):
+            opposition_signals.append("structured_relation_reassignment")
+
+    shared_state_tokens = (
+        expected_tokens & opposite_tokens
+    ) - subject_tokens
+    # Expected/opposite are typed fields already attached to `subject`.  They
+    # need not redundantly repeat that subject ("rotten" versus "healthy").
+    # When no subject is available, retain the older shared-anchor safeguard.
+    anchor_preserved = bool(subject_tokens or shared_state_tokens)
+    if not anchor_preserved:
+        warnings.append("directional_state_pair_lacks_shared_anchor")
+    if expected and opposite and not opposition_signals:
+        warnings.append("directional_state_pair_not_proven_opposing")
+
+    return {
+        "complete": bool(expected and opposite),
+        "distinct": bool(expected and opposite and expected != opposite),
+        "anchor_preserved": anchor_preserved,
+        "opposition_signals": sorted(set(opposition_signals)),
+        "valid": bool(
+            expected and opposite and expected != opposite
+            and anchor_preserved and opposition_signals
+        ),
+        "warnings": warnings,
+    }
 
 
 def _has_human_coreference(source_value, entity_value):
@@ -188,11 +366,32 @@ def audit_claim_contract(caption, language_output):
         }
         for warning in warnings
     )
-    relation_pair_complete = bool(
-        str(language_output.get("expected_visual_state") or "").strip()
-        and str(language_output.get("opposite_visual_state") or "").strip()
+    relation_pair = audit_relation_pair(
+        language_output.get("expected_visual_state"),
+        language_output.get("opposite_visual_state"),
+        entity_fields.get("claim_subject", ""),
+    )
+    relation_pair_complete = relation_pair["complete"]
+    background_required = _background_required(language_output)
+    normative_required = _normative_required(language_output)
+    declared_reasoning = _normalize(
+        language_output.get("reasoning_requirement", "")
+    )
+    if declared_reasoning not in {
+        "visual", "text binding", "text_binding", "background",
+        "normative", "mixed",
+    }:
+        declared_reasoning = "mixed" if (
+            background_required or normative_required
+        ) else "visual"
+    source_safe = bool(
+        proposition_preserved
+        and entity_frame_preserved
+        and relation_pair_complete
+        and relation_pair["valid"]
     )
     return {
+        "schema_version": "2.0",
         "source_caption": source_caption,
         "caption_proposition": proposition,
         "source_numbers": source_numbers,
@@ -203,12 +402,16 @@ def audit_claim_contract(caption, language_output):
         "entity_frame_preserved": entity_frame_preserved,
         "proposition_preserved": proposition_preserved,
         "relation_pair_complete": relation_pair_complete,
-        "safe_for_directional_reasoning": bool(
-            proposition_preserved
-            and entity_frame_preserved
-            and relation_pair_complete
+        "relation_pair_valid": relation_pair["valid"],
+        "relation_pair_audit": relation_pair,
+        "reasoning_requirement": declared_reasoning,
+        "requires_background_knowledge": background_required,
+        "requires_normative_reasoning": normative_required,
+        "safe_for_directional_reasoning": source_safe,
+        "safe_for_automatic_directional_reasoning": bool(
+            source_safe and not background_required and not normative_required
         ),
-        "warnings": warnings,
+        "warnings": sorted(set(warnings + relation_pair["warnings"])),
     }
 
 

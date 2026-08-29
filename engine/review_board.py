@@ -2,7 +2,7 @@
 
 import re
 
-from engine.evidence_ledger import audit_decision
+from engine.evidence_ledger import audit_decision, evidence_reliability
 
 
 VALID_LABELS = {"ENTAILS", "CONTRADICTS"}
@@ -23,6 +23,31 @@ def _grade_ids(ledger, relation):
         and item.get("relation") == relation
         and _decision_grade(item)
     }
+
+
+def _grade_strength(ledger, relation, allowed_ids=None):
+    """Combine independent provenance roots, not repeated descriptions."""
+    allowed = set(allowed_ids) if allowed_ids is not None else None
+    by_root = {}
+    for item in ledger or []:
+        if (
+            not item.get("grounded", False)
+            or item.get("relation") != relation
+            or not _decision_grade(item)
+            or (allowed is not None and item.get("id") not in allowed)
+        ):
+            continue
+        roots = tuple(sorted(
+            item.get("derived_from_ids", []) or [item.get("id")]
+        ))
+        by_root[roots] = max(
+            by_root.get(roots, 0.0), evidence_reliability(item)
+        )
+    return round(sum(by_root.values()), 6)
+
+
+def decision_grade_strength(ledger, relation, evidence_ids=None):
+    return _grade_strength(ledger, relation, allowed_ids=evidence_ids)
 
 
 def _mediated_tie_is_safe(
@@ -54,7 +79,10 @@ def _mediated_tie_is_safe(
         by_id.get(item_id, {}).get("grounded", False)
         and by_id.get(item_id, {}).get("source") in {
             "agent1", "comparator", "targeted_region_verifier",
-            "debate_visual_reinspection",
+            "debate_visual_reinspection", "debate_visual_witness",
+            "tribunal_independent_verifier",
+            "cross_agent_relation_verifier",
+            "tribunal_relation_verifier",
         }
         for item_id in cited
     ):
@@ -64,6 +92,9 @@ def _mediated_tie_is_safe(
         item_id in candidate_ids
         and by_id.get(item_id, {}).get("source") in {
             "targeted_region_verifier", "debate_visual_reinspection",
+            "tribunal_independent_verifier",
+            "cross_agent_relation_verifier",
+            "tribunal_relation_verifier",
         }
         and _decision_grade(by_id.get(item_id, {}))
         for item_id in candidate_ids
@@ -134,29 +165,56 @@ def review_revision(
     """Accept a change only when stronger current-image evidence supports it."""
     original_label = original.get("label")
     candidate_label = candidate.get("label")
+    acceptance_checks = []
+
+    def checked(name, passed, detail=""):
+        acceptance_checks.append({
+            "name": name,
+            "passed": bool(passed),
+            "detail": str(detail or ""),
+        })
+        return bool(passed)
+
+    def reject(public_reason, audit=None, failed_invariant=None):
+        diagnostics = dict(audit or {})
+        diagnostics.update({
+            "original_label": original_label,
+            "candidate_label": candidate_label,
+            "same_label": candidate_label == original_label,
+            "accepted": False,
+            "failed_invariant": failed_invariant or public_reason,
+            "acceptance_checks": list(acceptance_checks),
+        })
+        return False, public_reason, diagnostics
+
     if candidate_label not in VALID_LABELS:
-        return False, "invalid_proposed_label", {}
+        checked("candidate_is_binary", False, candidate_label)
+        return reject("invalid_proposed_label")
+    checked("candidate_is_binary", True, candidate_label)
     same_label = candidate_label == original_label
 
     review = visual_review or {}
     recommendation = str(review.get("recommendation", "")).upper()
     if recommendation and recommendation not in {candidate_label, "ABSTAIN"}:
-        return False, "visual_reviewer_recommends_other_label", {}
+        checked("visual_reviewer_agrees_with_candidate", False, recommendation)
+        return reject("visual_reviewer_recommends_other_label")
+    checked("visual_reviewer_agrees_with_candidate", True, recommendation)
     if recommendation == "ABSTAIN":
-        return (
-            False,
+        checked("visual_reviewer_is_directional", False, recommendation)
+        return reject(
             "unchanged" if same_label else "visual_reviewer_abstained",
-            {},
+            failed_invariant="visual_reviewer_abstained",
         )
+    checked("visual_reviewer_is_directional", True, recommendation)
     if review and not review.get("specific_evidence", False):
-        return False, "visual_review_lacks_specific_evidence", {}
+        checked("visual_review_has_specific_evidence", False)
+        return reject("visual_review_lacks_specific_evidence")
+    checked("visual_review_has_specific_evidence", True)
     reason_text = str(review.get("reason", "")).casefold()
-    if any(phrase in reason_text for phrase in (
-        "no evidence", "no direct visual evidence", "no clear indication",
-        "not shown", "not visible", "cannot be determined",
-        "does not directly support", "does not directly contradict",
-    )):
-        return False, "absence_is_not_decision_evidence", {}
+    # Wording such as "does not support" may accompany affirmative opposing
+    # evidence (for example, a visibly falling line). Missing evidence is kept
+    # out of the revision path structurally: it is never decision grade, and a
+    # candidate still has to cite a verified relation below.
 
     auditable_candidate = dict(candidate)
     if not auditable_candidate.get("_model_cited_evidence_ids"):
@@ -167,32 +225,42 @@ def review_revision(
         )
     candidate_audit = audit_decision(auditable_candidate, ledger)
     if not candidate_audit.get("source_valid"):
-        return (
-            False,
+        checked("candidate_cites_current_image_source", False)
+        return reject(
             "unchanged" if same_label
             else "revision_did_not_cite_current_image_evidence",
             candidate_audit,
+            failed_invariant="revision_did_not_cite_current_image_evidence",
         )
+    checked("candidate_cites_current_image_source", True)
     if not candidate_audit.get("valid"):
-        return (
-            False,
+        checked("candidate_cites_decision_grade_direction", False)
+        return reject(
             "unchanged" if same_label
             else "revision_lacks_decision_grade_direction",
             candidate_audit,
+            failed_invariant="revision_lacks_decision_grade_direction",
         )
+    checked("candidate_cites_decision_grade_direction", True)
 
     candidate_relation = RELATION_FOR_LABEL[candidate_label]
     original_relation = RELATION_FOR_LABEL.get(original_label)
     candidate_ids = _grade_ids(ledger, candidate_relation)
     original_ids = _grade_ids(ledger, original_relation)
     cited_ids = set(candidate_audit.get("cited_evidence_ids", []))
+    candidate_strength = _grade_strength(
+        ledger, candidate_relation, allowed_ids=cited_ids
+    )
+    original_strength = _grade_strength(ledger, original_relation)
     if not (candidate_ids & cited_ids):
-        return False, "revision_citation_not_decision_grade", candidate_audit
+        checked("citation_matches_candidate_direction", False)
+        return reject("revision_citation_not_decision_grade", candidate_audit)
+    checked("citation_matches_candidate_direction", True)
     mediated_tie_break = False
     if (
         not same_label
         and original_ids
-        and len(candidate_ids) <= len(original_ids)
+        and candidate_strength <= original_strength
     ):
         mediated_tie_break = _mediated_tie_is_safe(
             candidate_label,
@@ -202,7 +270,18 @@ def review_revision(
             claim_contract,
         )
         if not mediated_tie_break:
-            return False, "unresolved_opposing_decision_grade_evidence", candidate_audit
+            checked(
+                "candidate_is_stronger_or_safely_mediated", False,
+                f"candidate={candidate_strength};original={original_strength}",
+            )
+            return reject(
+                "unresolved_opposing_decision_grade_evidence",
+                candidate_audit,
+            )
+    checked(
+        "candidate_is_stronger_or_safely_mediated", True,
+        f"candidate={candidate_strength};original={original_strength}",
+    )
 
     if review:
         review_tokens = {
@@ -214,7 +293,9 @@ def review_revision(
         for item_id in cited_ids:
             item = by_id.get(item_id, {})
             if item.get("source") in {
-                "targeted_region_verifier", "comparator"
+                "targeted_region_verifier", "tribunal_independent_verifier",
+                "cross_agent_relation_verifier", "tribunal_relation_verifier",
+                "comparator",
             }:
                 linked = True
                 break
@@ -227,9 +308,21 @@ def review_revision(
                 linked = True
                 break
         if not linked:
-            return False, "revision_not_linked_to_visual_review", candidate_audit
+            checked("visual_review_links_to_cited_evidence", False)
+            return reject("revision_not_linked_to_visual_review", candidate_audit)
+        checked("visual_review_links_to_cited_evidence", True)
 
     accepted_ids = ",".join(sorted(candidate_ids & cited_ids))
+    candidate_audit["candidate_evidence_strength"] = candidate_strength
+    candidate_audit["original_evidence_strength"] = original_strength
+    candidate_audit.update({
+        "original_label": original_label,
+        "candidate_label": candidate_label,
+        "same_label": same_label,
+        "accepted": True,
+        "failed_invariant": "",
+        "acceptance_checks": list(acceptance_checks),
+    })
     return (
         True,
         (

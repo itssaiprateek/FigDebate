@@ -1,10 +1,14 @@
 """Routing and deterministic acceptance gate for the optional Qwen judge."""
 
 from engine.evidence_ledger import attach_evidence_audit
-from engine.review_board import attach_final_review, review_revision
+from engine.review_board import (
+    attach_final_review,
+    decision_grade_strength,
+    review_revision,
+)
 
 
-JUDGE_MODES = {"disabled", "shadow", "appellate", "mediated"}
+JUDGE_MODES = {"disabled", "shadow", "appellate", "mediated", "tribunal"}
 JUDGE_SCOPES = {"escalated", "all"}
 MIN_APPELLATE_CONFIDENCE = 0.75
 RELATION_FOR_LABEL = {"ENTAILS": "SUPPORT", "CONTRADICTS": "CONFLICT"}
@@ -131,9 +135,19 @@ def apply_judge_review(
     if not proposed_grade_ids:
         metadata["reason"] = "judge_citations_lack_decision_grade_direction"
         return current_decision, metadata
-    if current_grade_ids and len(proposed_grade_ids) <= len(current_grade_ids):
+    proposed_strength = decision_grade_strength(
+        ledger,
+        RELATION_FOR_LABEL[proposed_label],
+        evidence_ids=proposed_grade_ids,
+    )
+    current_strength = decision_grade_strength(
+        ledger, RELATION_FOR_LABEL.get(current_decision.get("label"))
+    )
+    if current_grade_ids and proposed_strength <= current_strength:
         metadata["reason"] = "unresolved_opposing_decision_grade_evidence"
         return current_decision, metadata
+    metadata["proposed_evidence_strength"] = proposed_strength
+    metadata["current_evidence_strength"] = current_strength
 
     cited_texts = _cited_texts(ledger, cited_ids)
     candidate = dict(current_decision)

@@ -1,3 +1,4 @@
+from copy import deepcopy
 import re
 import time
 try:
@@ -5,12 +6,20 @@ try:
 except ImportError:
     torch = None
 from utils.visual_parser import parse_visual_response
+from agents.visual_adapter import (
+    AtomicVisualQuestionController,
+    VisualAnswer,
+    VisualQuestion,
+    normalized,
+    question_region,
+    split_atomic_items,
+)
 
 
 class VisualGroundingAgent:
     """
     Agent 1:
-    Performs visual grounding using a preloaded LLaVA model.
+    Performs visual grounding using a preloaded vision model.
     Extracts detailed visual evidence only.
 
     Returns the FIXED schema Shrihan's orchestrator expects:
@@ -64,17 +73,23 @@ Write None under both headings only when no characters are readable. Do not
 describe clothing, people, or objects as text.
 """
 
-    def __init__(self, llava_model):
-        if torch is None:
+    def __init__(self, vision_model):
+        self.runtime = vision_model
+        self.processor = vision_model.processor
+        self.model = vision_model.model
+        self.backend = getattr(vision_model, "backend", "legacy_llava")
+        self.uses_atomic_adapter = bool(
+            getattr(vision_model, "supports_atomic_questions", False)
+        )
+        if torch is None and not self.uses_atomic_adapter:
             raise RuntimeError(
-                "Agent 1 requires PyTorch. Run check_environment.py."
+                "The legacy Agent 1 path requires PyTorch. "
+                "Run check_environment.py."
             )
-
-        self.processor = llava_model.processor
-        self.model = llava_model.model
+        self.question_controller = AtomicVisualQuestionController()
         self._last_generation_diagnostics = {}
 
-        print("[Agent1] Ready.")
+        print(f"[Agent1] Ready ({self.backend}).")
 
     def _move_inputs(self, inputs):
         """Move token IDs and image tensors without casting integer IDs."""
@@ -159,6 +174,19 @@ describe clothing, people, or objects as text.
         return output
 
     def _generate_response(self, image, prompt_text, max_new_tokens):
+        if (
+            getattr(self, "uses_atomic_adapter", False)
+            and hasattr(self, "runtime")
+            and hasattr(self.runtime, "generate")
+        ):
+            response, elapsed = self.runtime.generate(
+                image, prompt_text, max_new_tokens=max_new_tokens
+            )
+            self._last_generation_diagnostics = dict(
+                getattr(self.runtime, "_last_generation_diagnostics", {}) or {}
+            )
+            return response, elapsed
+
         conversation = [
             {
                 "role": "user",
@@ -375,7 +403,374 @@ describe clothing, people, or objects as text.
             "_internal": parsed,
         }
 
+    def _run_atomic_question(self, image, question):
+        valid_question, question_error = self.question_controller.validate_question(
+            question.text, question.question_type
+        )
+        if not valid_question:
+            return VisualAnswer(
+                question_id=question.question_id,
+                question_type=question.question_type,
+                question=question.text,
+                answer="",
+                status="INVALID_QUESTION",
+                valid=False,
+                error=question_error,
+                raw_response="",
+                elapsed_seconds=0.0,
+                generation_diagnostics={},
+            )
+
+        prompt = self.question_controller.build_prompt(
+            question.text, question.question_type
+        )
+        raw, elapsed = self._generate_response(
+            image, prompt, question.max_new_tokens
+        )
+        diagnostics = dict(self._last_generation_diagnostics or {})
+        answer, status, valid, error = self.question_controller.validate_answer(
+            raw,
+            question.text,
+            question.question_type,
+            diagnostics=diagnostics,
+        )
+        retry_attempted = not valid
+        retry_success = False
+        raw_responses = [raw]
+        if retry_attempted:
+            retry_raw, retry_elapsed = self._generate_response(
+                image,
+                self.question_controller.retry_prompt(
+                    question.text, question.question_type
+                ),
+                question.max_new_tokens,
+            )
+            elapsed += retry_elapsed
+            retry_diagnostics = dict(self._last_generation_diagnostics or {})
+            retry_answer, retry_status, retry_valid, retry_error = (
+                self.question_controller.validate_answer(
+                    retry_raw,
+                    question.text,
+                    question.question_type,
+                    diagnostics=retry_diagnostics,
+                )
+            )
+            raw_responses.append(retry_raw)
+            diagnostics = {
+                "primary": diagnostics,
+                "retry": retry_diagnostics,
+            }
+            if retry_valid:
+                answer, status, valid, error = (
+                    retry_answer, retry_status, retry_valid, retry_error
+                )
+                retry_success = True
+
+        return VisualAnswer(
+            question_id=question.question_id,
+            question_type=question.question_type,
+            question=question.text,
+            answer=answer,
+            status=status,
+            valid=valid,
+            error=error,
+            raw_response="\n\nRETRY:\n".join(raw_responses),
+            elapsed_seconds=round(elapsed, 4),
+            retry_attempted=retry_attempted,
+            retry_success=retry_success,
+            generation_diagnostics=diagnostics,
+        )
+
+    def answer_visual_question(
+        self,
+        image,
+        question,
+        question_type=None,
+        question_id="agent1_visual_question",
+    ):
+        """Answer one neutral visual question through a validated public API."""
+        question_type = question_type or self.question_controller.infer_question_type(
+            question
+        )
+        max_tokens = {
+            "count": 12,
+            "yes_no": 18,
+            "ocr": 120,
+            "relation": 80,
+        }.get(question_type, 70)
+        answer = self._run_atomic_question(
+            image,
+            VisualQuestion(
+                question_id=question_id,
+                question_type=question_type,
+                text=" ".join(str(question or "").split()),
+                max_new_tokens=max_tokens,
+            ),
+        )
+        return answer.to_dict()
+
+    @staticmethod
+    def _atomic_schema(answers, backend="atomic_visual"):
+        by_id = {answer.question_id: answer for answer in answers}
+
+        def observed(question_id):
+            answer = by_id.get(question_id)
+            return answer.answer if answer and answer.status == "OBSERVED" else ""
+
+        literal_scene = " ".join(observed("initial_scene").split())
+        object_answer = observed("initial_objects").split("\n\n", 1)[0]
+        object_answer = object_answer.splitlines()[0] if object_answer else ""
+        objects = split_atomic_items(
+            object_answer, comma_separated=True, maximum=12
+        )
+        visible_text = split_atomic_items(observed("initial_ocr"), maximum=24)
+        ocr_lines = [normalized(item) for item in visible_text]
+        objects = [
+            item for item in objects
+            if normalized(item) not in {"text", "label", "labels"}
+            and not normalized(item).endswith(" text")
+            and not (
+                len(normalized(item).split()) <= 2
+                and any(
+                    re.search(rf"\b{re.escape(normalized(item))}\b", line)
+                    for line in ocr_lines
+                )
+            )
+        ]
+        visual_facts = split_atomic_items(observed("initial_facts"), maximum=8)
+        visual_relations = split_atomic_items(
+            observed("initial_relations"), maximum=8
+        )
+        text_bindings = []
+        full_ocr_text = " ".join(visible_text)
+        for answer in answers:
+            if (
+                answer.question_id.startswith("initial_region_ocr_")
+                and answer.status == "OBSERVED"
+            ):
+                region = answer.question_id.removeprefix(
+                    "initial_region_ocr_"
+                ).replace("_", " ")
+                region_items = split_atomic_items(answer.answer, maximum=12)
+                region_items = [
+                    item for item in region_items
+                    if len(normalized(item)) > 1
+                    or re.search(
+                        rf"(?<![A-Za-z0-9]){re.escape(normalized(item))}(?![A-Za-z0-9])",
+                        full_ocr_text,
+                        flags=re.IGNORECASE,
+                    )
+                ]
+                if not region_items:
+                    continue
+                binding = (
+                    f"{region} contains text: {'; '.join(region_items)}"
+                )
+                text_bindings.append(binding)
+                visible_text.append(binding)
+        visual_relations = list(dict.fromkeys([
+            *text_bindings, *visual_relations
+        ]))
+        visual_relations = [
+            item for item in visual_relations
+            if not re.search(
+                r"^(?:no|none|not)\b|\bno (?:spatial )?relationship\b",
+                item,
+                flags=re.IGNORECASE,
+            )
+        ]
+        symbolic_cues = split_atomic_items(
+            observed("initial_symbolic_cues"), maximum=6
+        )
+        scene_type_words = observed("initial_scene_type").split()
+        scene_type = " ".join(scene_type_words[:5]).strip() or "Unspecified"
+        required_answers = [answer for answer in answers if answer.question_id in {
+            "initial_scene", "initial_objects", "initial_facts", "initial_scene_type"
+        }]
+        format_valid = bool(
+            len(required_answers) == 4 and all(answer.valid for answer in required_answers)
+        )
+        factual_grounding_present = bool(
+            literal_scene and (objects or visual_facts or visual_relations)
+        )
+        schema_issues = []
+        if not format_valid:
+            schema_issues.append("atomic_contract_incomplete")
+        if not factual_grounding_present:
+            schema_issues.append("factual_grounding_missing")
+        for answer in answers:
+            if not answer.valid:
+                schema_issues.append(
+                    f"{answer.question_id}:{answer.error or answer.status.lower()}"
+                )
+        relation_binding_present = any(
+            re.search(
+                r"\b(?:left|right|top|bottom|above|below|inside|attached|"
+                r"belongs|labels?|reads?|panel|next to|between)\b",
+                item,
+                flags=re.IGNORECASE,
+            )
+            for item in visual_relations
+        )
+        visual_description = " ".join(
+            item for item in (
+                literal_scene,
+                *visible_text,
+                *visual_facts,
+                *visual_relations,
+            ) if item
+        ).strip()
+        valid_count = sum(answer.valid for answer in answers)
+        deterministic_raw = "\n".join(
+            (
+                f"Literal Scene: {literal_scene or 'None'}",
+                f"Objects: {'; '.join(objects) or 'None'}",
+                f"Visible Text: {'; '.join(visible_text) or 'None'}",
+                f"Visual Facts: {'; '.join(visual_facts) or 'None'}",
+                f"Visual Relations: {'; '.join(visual_relations) or 'None'}",
+                f"Scene Type: {scene_type}",
+                "Confidence: unavailable (model self-confidence is not used)",
+            )
+        )
+        return {
+            "visual_description": visual_description,
+            "objects": objects,
+            "scene_type": scene_type,
+            "symbolic_tone": "; ".join(symbolic_cues) or "None",
+            "visual_facts": visual_facts,
+            "visual_relations": visual_relations,
+            "visible_text": visible_text,
+            "visible_text_count": len(visible_text),
+            "visual_fact_count": len(visual_facts),
+            "visual_relation_count": len(visual_relations),
+            "visual_hypotheses": symbolic_cues,
+            "possible_visual_metaphors": symbolic_cues,
+            "uncertain_observations": [
+                answer.question_id
+                for answer in answers
+                if answer.status in {"UNCLEAR", "INVALID_RESPONSE"}
+            ],
+            "visual_confidence": None,
+            "schema_complete": bool(format_valid and factual_grounding_present),
+            "schema_format_valid": format_valid,
+            "factual_grounding_present": factual_grounding_present,
+            "ocr_usable": bool(visible_text),
+            "relation_binding_present": relation_binding_present,
+            "schema_heading_count": 7,
+            "schema_issues": list(dict.fromkeys(schema_issues)),
+            "schema_source": "deterministic_atomic_adapter_v1",
+            "agent1_backend": backend,
+            "adapter_completion_rate": round(valid_count / len(answers), 4),
+            "_schema_retry_attempted": any(
+                answer.retry_attempted for answer in answers
+            ),
+            "_schema_retry_success": all(
+                not answer.retry_attempted or answer.retry_success
+                for answer in answers
+            ),
+            "_generation_seconds": round(
+                sum(answer.elapsed_seconds for answer in answers), 4
+            ),
+            "_internal": {
+                "raw_output": deterministic_raw,
+                "atomic_answers": [answer.to_dict() for answer in answers],
+            },
+        }
+
+    def _analyze_atomic(self, image, feedback=None):
+        questions = list(self.question_controller.STANDARD_QUESTIONS)
+        if feedback:
+            feedback_question = VisualQuestion(
+                "feedback_reinspection",
+                "open",
+                "Reinspect the complete image for a directly visible important "
+                "fact, object, text binding, or relation that may have been missed. "
+                "Do not assume the feedback is correct. Answer NONE if nothing new "
+                "is directly visible.",
+                80,
+            )
+            questions.append(feedback_question)
+        answers = []
+        print("\n========== Agent 1: atomic visual grounding ==========")
+        for question in questions:
+            dependency = None
+            if question.question_id == "initial_ocr":
+                dependency = next(
+                    (item for item in answers if item.question_id == "initial_text_presence"),
+                    None,
+                )
+            elif question.question_id == "initial_symbolic_cues":
+                dependency = next(
+                    (item for item in answers if item.question_id == "initial_symbolic_presence"),
+                    None,
+                )
+            if (
+                dependency
+                and dependency.valid
+                and re.match(r"^NO\b", dependency.answer, flags=re.IGNORECASE)
+            ):
+                answer = VisualAnswer(
+                    question_id=question.question_id,
+                    question_type=question.question_type,
+                    question=question.text,
+                    answer="NONE",
+                    status="ABSENT",
+                    valid=True,
+                    error="",
+                    raw_response="Skipped after validated absence gate.",
+                    elapsed_seconds=0.0,
+                    generation_diagnostics={"skipped_by": dependency.question_id},
+                )
+            else:
+                answer = self._run_atomic_question(image, question)
+            answers.append(answer)
+            print(
+                f"[{question.question_id}] {answer.status}: "
+                f"{answer.answer or answer.error}"
+            )
+        text_presence = next(
+            (item for item in answers if item.question_id == "initial_text_presence"),
+            None,
+        )
+        if (
+            text_presence
+            and text_presence.valid
+            and re.match(r"^YES\b", text_presence.answer, flags=re.IGNORECASE)
+        ):
+            for region_name, crop in self._text_relation_crops(image):
+                region_id = re.sub(r"[^a-z0-9]+", "_", region_name.casefold()).strip("_")
+                region_question = VisualQuestion(
+                    f"initial_region_ocr_{region_id}",
+                    "ocr",
+                    "Transcribe every readable phrase in this cropped image "
+                    "region. Copy exact visible characters only. Answer NONE "
+                    "if the crop contains no readable text.",
+                    120,
+                )
+                answer = self._run_atomic_question(crop, region_question)
+                answers.append(answer)
+                print(
+                    f"[{region_question.question_id}] {answer.status}: "
+                    f"{answer.answer or answer.error}"
+                )
+        output = self._atomic_schema(answers, backend=self.backend)
+        feedback_answer = next(
+            (item for item in answers if item.question_id == "feedback_reinspection"),
+            None,
+        )
+        if feedback_answer and feedback_answer.status == "OBSERVED":
+            output["visual_facts"] = list(dict.fromkeys([
+                *output["visual_facts"], feedback_answer.answer
+            ]))
+            output["visual_fact_count"] = len(output["visual_facts"])
+            output["visual_description"] = " ".join(
+                [output["visual_description"], feedback_answer.answer]
+            ).strip()
+        return output
+
     def analyze(self, image, feedback=None):
+        if getattr(self, "uses_atomic_adapter", False):
+            return self._analyze_atomic(image, feedback=feedback)
 
         prompt_text = self.DEFAULT_PROMPT
 
@@ -433,7 +828,7 @@ Do not turn a possible symbolic interpretation into a visual fact.
                 f"GPU Memory After  : {torch.cuda.memory_allocated()/1024**3:.2f} GB"
             )
 
-        print("\n================ RAW LLaVA OUTPUT ================\n")
+        print("\n================ RAW LEGACY VISION OUTPUT ================\n")
         print(response)
         print("\n==================================================\n")
 
@@ -478,7 +873,7 @@ Do not turn a possible symbolic interpretation into a visual fact.
             recovery_parsed.append(parse_visual_response(ocr_response))
 
         if recovery_responses:
-            print("\n================ RAW LLaVA RECOVERY ================\n")
+            print("\n================ RAW LEGACY VISION RECOVERY ================\n")
             for name, recovery_response in recovery_responses:
                 print(f"{name}:\n{recovery_response}\n")
             print("====================================================\n")
@@ -515,6 +910,54 @@ Do not turn a possible symbolic interpretation into a visual fact.
     ):
         """Acquire a fresh observation record for a disputed claim."""
         claim_relation = claim_relation or {}
+        if getattr(self, "uses_atomic_adapter", False):
+            # Preserve a complete caption-blind grounding and acquire only the
+            # missing claim-targeted observation.  Repeating all nine visual
+            # questions is expensive and can replace good evidence with a
+            # slightly different second description.
+            recovered = (
+                deepcopy(visual_output)
+                if (visual_output or {}).get("schema_complete", False)
+                else self._analyze_atomic(image)
+            )
+            base_generation_seconds = float(
+                recovered.get("_generation_seconds", 0.0)
+            )
+            subject = " ".join(
+                str(claim_relation.get("subject") or "the claim subject").split()
+            )
+            targeted = self.answer_visual_question(
+                image,
+                f"What directly visible state, action, text, or relation is shown for {subject}?",
+                question_type="open",
+                question_id="targeted_claim_reinspection",
+            )
+            if targeted.get("status") == "OBSERVED":
+                recovered["visual_facts"] = list(dict.fromkeys([
+                    *recovered.get("visual_facts", []), targeted["answer"]
+                ]))
+                recovered["visual_fact_count"] = len(recovered["visual_facts"])
+                recovered["visual_description"] = " ".join([
+                    recovered.get("visual_description", ""), targeted["answer"]
+                ]).strip()
+            recovered["_targeted_recovery_attempted"] = True
+            recovered["_targeted_recovery_success"] = bool(
+                recovered.get("schema_complete")
+                and targeted.get("status") == "OBSERVED"
+            )
+            recovered["_targeted_recovery_reason"] = recovery_reason
+            recovered["_targeted_recovery_seconds"] = round(
+                float(targeted.get("elapsed_seconds", 0.0)), 4
+            )
+            recovered["_generation_seconds"] = round(
+                base_generation_seconds
+                + float(targeted.get("elapsed_seconds", 0.0)),
+                4,
+            )
+            recovered.setdefault("_internal", {})[
+                "targeted_claim_reinspection"
+            ] = targeted
+            return recovered
         prompt = f"""
 Reinspect the image as a factual evidence collector. The immutable claim frame
 below is supplied only to identify relevant entities and regions. Do not choose
@@ -685,40 +1128,7 @@ Copy only visibly printed words. Do not infer hidden words. Return exactly one
 line:
 Text: exact text, or None
 """
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": prompt_text},
-                ],
-            }
-        ]
-        prompt = self.processor.apply_chat_template(
-            conversation,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        inputs = self.processor(
-            text=prompt,
-            images=image,
-            return_tensors="pt",
-        )
-        inputs = self._move_inputs(inputs)
-        with torch.inference_mode():
-            output = self.model.generate(
-                **inputs,
-                max_new_tokens=100,
-                do_sample=False,
-                repetition_penalty=1.10,
-                no_repeat_ngram_size=8,
-                use_cache=True,
-            )
-        generated = output[:, inputs["input_ids"].shape[1]:]
-        response = self.processor.batch_decode(
-            generated,
-            skip_special_tokens=True,
-        )[0].strip()
+        response, _ = self._generate_response(image, prompt_text, 100)
         match = re.search(r"text\s*:\s*(.+)", response, flags=re.IGNORECASE | re.DOTALL)
         text = match.group(1).strip() if match else response
         if not text or text.lower().rstrip(".") == "none":
@@ -748,6 +1158,26 @@ Text: exact text, or None
         return [
             ("top region", image.crop((0, 0, width, min(height, midpoint + overlap_y)))),
             ("bottom region", image.crop((0, max(0, midpoint - overlap_y), width, height))),
+        ]
+
+    @staticmethod
+    def _initial_text_regions(image):
+        """Use non-overlapping halves so OCR cannot leak across a binding."""
+        if not hasattr(image, "size") or not hasattr(image, "crop"):
+            return []
+        width, height = image.size
+        if width <= 1 or height <= 1:
+            return []
+        if width >= height:
+            midpoint = width // 2
+            return [
+                ("left region", image.crop((0, 0, midpoint, height))),
+                ("right region", image.crop((midpoint, 0, width, height))),
+            ]
+        midpoint = height // 2
+        return [
+            ("top region", image.crop((0, 0, width, midpoint))),
+            ("bottom region", image.crop((0, midpoint, width, height))),
         ]
 
     def _read_text_relation_crop(self, image, region_name):
@@ -950,19 +1380,31 @@ Text Binding: exact visible phrase -> attached visible entity, or None
 
     @staticmethod
     def _parse_relation_response(response):
-        has_heading = bool(re.search(
-            r"(?im)^\s*Claim Relation\s*:", str(response or "")
-        ))
-        match = re.search(
-            r"(?im)^\s*Claim Relation\s*:\s*"
-            r"(SUPPORT|CONFLICT|UNRESOLVED)\b",
-            str(response or ""),
+        raw = str(response or "").strip()
+        text = re.sub(
+            r"^```(?:text)?\s*|\s*```$", "", raw,
+            flags=re.IGNORECASE | re.DOTALL,
+        ).strip()
+        # Local instruction-tuned models commonly omit a requested field name
+        # while still returning the exact bounded enum.  Canonicalize that
+        # harmless surface variation, but reject explanations, multiple lines,
+        # and every value outside the closed relation vocabulary.
+        match = re.fullmatch(
+            r"(?:Claim\s+Relation\s*:\s*)?"
+            r"(SUPPORT|CONFLICT|UNRESOLVED)\s*[.!]?",
+            text,
+            flags=re.IGNORECASE,
         )
         return {
             "claim_relation": match.group(1).upper() if match else "UNRESOLVED",
             "_format_valid": bool(match),
-            "_invalid_enum": bool(has_heading and not match),
-            "_raw_response": str(response or "").strip(),
+            "_invalid_enum": bool(text and not match),
+            "_normalized_from_bare_enum": bool(
+                match and not re.match(
+                    r"^Claim\s+Relation\s*:", text, flags=re.IGNORECASE
+                )
+            ),
+            "_raw_response": raw,
         }
 
     @staticmethod
@@ -997,7 +1439,179 @@ Text Binding: exact visible phrase -> attached visible entity, or None
             bool(parsed.get("specific_evidence"))
         )
 
+    @staticmethod
+    def _prompt_field(prompt, name):
+        match = re.search(
+            rf"(?im)^\s*{re.escape(name)}\s*:\s*(.+)$", str(prompt or "")
+        )
+        return " ".join(match.group(1).split()) if match else ""
+
+    def _atomic_critique(self, image, critique_prompt):
+        question = self._extract_atomic_question(critique_prompt)
+        question_id = self._question_id(critique_prompt)
+        question_type = self.question_controller.infer_question_type(question)
+        answer = self.answer_visual_question(
+            image,
+            question,
+            question_type=question_type,
+            question_id=question_id,
+        )
+        answer_status = answer.get("status")
+        observation_status = (
+            "OBSERVED" if answer_status == "OBSERVED"
+            else "ABSENT" if answer_status == "ABSENT"
+            else "UNCLEAR"
+        )
+        subject = self._prompt_field(critique_prompt, "Claim subject") or (
+            "question-targeted visual entity"
+        )
+        observed_state = answer.get("answer") if observation_status == "OBSERVED" else ""
+        relation_value = "UNRESOLVED"
+        relation_raw = ""
+        relation_seconds = 0.0
+        relation_diagnostics = {}
+        recommendation = "ABSTAIN"
+        relation_parsed = {
+            "claim_relation": "UNRESOLVED",
+            "_format_valid": True,
+            "_invalid_enum": False,
+            "_raw_response": "Claim Relation: UNRESOLVED",
+        }
+        relation_retry_raw = ""
+        if answer.get("valid") and observation_status == "OBSERVED":
+            relation_prompt = f"""
+Inspect the image and use the factual observation below. Compare it with the
+immutable caption conditions. Do not use absence as conflict and do not guess.
+
+Factual observation: {observed_state}
+{self._claim_frame_excerpt(critique_prompt)}
+
+Return exactly one line:
+Claim Relation: SUPPORT, CONFLICT, or UNRESOLVED
+
+SUPPORT means the observed state matches the expected caption condition.
+CONFLICT means the observed state directly matches the stated opposite.
+UNRESOLVED means neither direction is directly established.
+"""
+            relation_raw, relation_seconds = self._generate_response(
+                image, relation_prompt, 20
+            )
+            relation_diagnostics = dict(
+                getattr(self, "_last_generation_diagnostics", {}) or {}
+            )
+            relation_parsed = self._parse_relation_response(relation_raw)
+            if (
+                not relation_parsed.get("_format_valid", False)
+                or relation_diagnostics.get("hit_token_limit", False)
+            ):
+                retry_raw, retry_seconds = self._generate_response(
+                    image,
+                    relation_prompt
+                    + "\nYour previous format was invalid. Output only the one Claim Relation line.",
+                    12,
+                )
+                retry_parsed = self._parse_relation_response(retry_raw)
+                relation_retry_raw = retry_raw
+                relation_seconds += retry_seconds
+                if retry_parsed.get("_format_valid", False):
+                    relation_raw = retry_raw
+                    relation_parsed = retry_parsed
+                    relation_diagnostics = dict(
+                        getattr(self, "_last_generation_diagnostics", {}) or {}
+                    )
+            relation_value = relation_parsed.get(
+                "claim_relation", "UNRESOLVED"
+            )
+            recommendation = {
+                "SUPPORT": "ENTAILS",
+                "CONFLICT": "CONTRADICTS",
+            }.get(relation_value, "ABSTAIN")
+
+        observation_contract = {
+            "observation_status": (
+                "OBSERVED" if observation_status == "OBSERVED" else "UNCLEAR"
+            ),
+            "_format_valid": bool(answer.get("valid")),
+            "_raw_response": answer.get("raw_response", ""),
+        }
+        response_status = self._response_status(
+            observation_contract, relation_parsed, relation_diagnostics
+        )
+        format_valid = bool(
+            answer.get("valid") and relation_parsed.get("_format_valid", False)
+        )
+        parser_errors = []
+        observation_error = str(answer.get("error") or "").strip()
+        if not answer.get("valid"):
+            parser_errors.append(
+                "observation:" + (observation_error or "invalid_answer")
+            )
+        if not relation_parsed.get("_format_valid", False):
+            parser_errors.append("relation:invalid_relation_enum")
+        return {
+            "stance": "UNRESOLVED",
+            "recommendation": recommendation,
+            "reason": (
+                f"Atomic visual answer: {observed_state}"
+                if observed_state else answer.get("error") or "Visual detail is unclear."
+            ),
+            "specific_evidence": bool(
+                observation_status == "OBSERVED"
+                and relation_value in {"SUPPORT", "CONFLICT"}
+            ),
+            "observed_entity": subject if observation_status == "OBSERVED" else "",
+            "observed_state": observed_state,
+            "image_region": question_region(question) if observation_status == "OBSERVED" else "",
+            "claim_relation": relation_value,
+            "witness_contract": {
+                "schema_version": "1.0",
+                "question_id": question_id,
+                "question_type": question_type,
+                "question": question,
+                "answer_status": answer_status,
+                "entity_present": observation_status == "OBSERVED",
+                "observation": observed_state,
+                "region": (
+                    question_region(question)
+                    if observation_status == "OBSERVED" else ""
+                ),
+                "direction_assigned": relation_value in {"SUPPORT", "CONFLICT"},
+                "relation_candidate": relation_value,
+            },
+            "review_method": self._critique_review_method(critique_prompt),
+            "observation_status": observation_status,
+            "response_status": response_status,
+            "question_id": question_id,
+            "question": question,
+            "parser_errors": parser_errors,
+            "observation_parser_error": observation_error,
+            "relation_parser_error": (
+                "" if relation_parsed.get("_format_valid", False)
+                else "invalid_relation_enum"
+            ),
+            "generation_diagnostics": {
+                "observation": answer.get("generation_diagnostics", {}),
+                "relation": relation_diagnostics,
+            },
+            "_format_valid": format_valid,
+            "_format_retry_used": bool(answer.get("retry_attempted")),
+            "_format_retry_success": bool(answer.get("retry_success")),
+            "_raw_response": "\n".join(
+                item for item in (answer.get("raw_response", ""), relation_raw) if item
+            ),
+            "_raw_primary_response": answer.get("raw_response", ""),
+            "_raw_retry_response": "",
+            "_raw_relation_response": relation_raw,
+            "_raw_relation_retry_response": relation_retry_raw,
+            "_region_ocr_candidates": [],
+            "_generation_seconds": round(
+                float(answer.get("elapsed_seconds", 0.0)) + relation_seconds, 4
+            ),
+        }
+
     def critique(self, image, critique_prompt):
+        if getattr(self, "uses_atomic_adapter", False):
+            return self._atomic_critique(image, critique_prompt)
 
         if "UNRESOLVED_TEXT_LAYOUT_BINDING" in critique_prompt:
             region_texts = {}
@@ -1077,7 +1691,7 @@ Text Binding: exact visible phrase -> attached visible entity, or None
         crop_ocr_candidates = []
         crop_ocr_seconds = 0.0
         if "UNRESOLVED_TEXT_RELATION_SEMANTICS" in critique_prompt:
-            for region_name, crop in self._text_relation_crops(image):
+            for region_name, crop in self._initial_text_regions(image):
                 candidate, elapsed = self._read_text_relation_crop(
                     crop, region_name
                 )

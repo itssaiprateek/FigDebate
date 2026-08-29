@@ -61,6 +61,7 @@ Relation Family: trajectory, pace, outcome, sentiment, safety, trust,
 association, quantity, or other
 Expected Visual State: one short observable state that would support the claim
 Opposite Visual State: one short observable state that would conflict with it
+Reasoning Requirement: visual, text_binding, background, normative, or mixed
 Background Knowledge: one short sentence or None
 Confidence: one decimal from 0 to 1
 """
@@ -69,7 +70,8 @@ Confidence: one decimal from 0 to 1
         "caption_proposition", "claim_subject", "claim_predicate",
         "claim_object", "claim_source", "claim_target",
         "asserted_property", "relation_family", "expected_visual_state",
-        "opposite_visual_state",
+        "opposite_visual_state", "reasoning_requirement",
+        "background_knowledge",
     )
 
     def __init__(self, mistral_model, tokenizer):
@@ -276,6 +278,8 @@ Asserted Property:
 Relation Family:
 Expected Visual State:
 Opposite Visual State:
+Reasoning Requirement:
+Background Knowledge:
 
 Caption: {caption}
 """
@@ -289,7 +293,7 @@ Caption: {caption}
         with torch.inference_mode():
             output = self.model.generate(
                 **inputs,
-                max_new_tokens=180,
+                max_new_tokens=200,
                 do_sample=False,
                 repetition_penalty=1.05,
                 no_repeat_ngram_size=6,
@@ -313,6 +317,7 @@ Caption: {caption}
             output.get("opposite_visual_state", ""),
         )
         return (
+            int(contract.get("safe_for_automatic_directional_reasoning", False)),
             int(contract.get("safe_for_directional_reasoning", False)),
             int(contract.get("proposition_preserved", False)),
             int(contract.get("entity_frame_preserved", False)),
@@ -372,6 +377,9 @@ Caption: {caption}
             "relation_family": relation_family or relation_family_raw,
             "expected_visual_state": parsed.get("expected_visual_state", ""),
             "opposite_visual_state": parsed.get("opposite_visual_state", ""),
+            "reasoning_requirement": parsed.get(
+                "reasoning_requirement", ""
+            ),
             "explicit_claims": explicit_claims,
             "implicit_claims": parsed.get("implicit_claims", []) or [],
             "linguistic_notes": parsed.get("linguistic_notes", []) or [],
@@ -381,6 +389,83 @@ Caption: {caption}
             "_relation_family_raw": relation_family_raw,
             "_internal": parsed,
         }
+
+    @staticmethod
+    def _preserve_source_caption(output, caption):
+        """Keep the source proposition immutable while retaining diagnostics.
+
+        Agent 2 may interpret or decompose a caption, but downstream relation
+        reasoning must never operate on a shortened generated paraphrase.
+        """
+        preserved = dict(output or {})
+        generated = " ".join(
+            str(preserved.get("caption_proposition") or "").split()
+        )
+        source = " ".join(str(caption or "").split())
+        preserved["generated_caption_proposition"] = generated
+        preserved["caption_proposition"] = source
+        preserved["source_caption_immutable"] = True
+        preserved.setdefault("explicit_claims", [])
+        if source and not preserved["explicit_claims"]:
+            preserved["explicit_claims"] = [source]
+        return preserved
+
+    @classmethod
+    def _merge_repaired_claim_fields(cls, base, retry_parsed, caption):
+        """Keep only retry field groups that improve the source audit.
+
+        Relation states and entity roles have cross-field dependencies, so the
+        candidates include both individual fields and coherent groups.  The
+        immutable caption is reattached after every candidate and therefore a
+        superficially fluent but source-changing repair cannot win.
+        """
+        best = dict(base or {})
+        best_quality = cls._claim_frame_quality(best)
+        accepted_fields = []
+        available = {
+            field: retry_parsed.get(field)
+            for field in cls.CLAIM_FRAME_FIELDS
+            if retry_parsed.get(field) is not None
+            and str(retry_parsed.get(field)).strip()
+        }
+        groups = [[field] for field in available]
+        groups.extend((
+            [
+                field for field in (
+                    "relation_family", "expected_visual_state",
+                    "opposite_visual_state", "reasoning_requirement",
+                    "background_knowledge",
+                ) if field in available
+            ],
+            [
+                field for field in (
+                    "claim_subject", "claim_predicate", "claim_object",
+                    "claim_source", "claim_target", "asserted_property",
+                ) if field in available
+            ],
+            list(available),
+        ))
+        for fields in groups:
+            if not fields:
+                continue
+            candidate = dict(best)
+            for field in fields:
+                candidate[field] = available[field]
+            candidate["relation_family"] = normalize_relation_family(
+                candidate.get("relation_family", ""),
+                candidate.get("caption_proposition", ""),
+                candidate.get("expected_visual_state", ""),
+                candidate.get("opposite_visual_state", ""),
+            ) or candidate.get("relation_family", "")
+            candidate = attach_claim_contract(
+                cls._preserve_source_caption(candidate, caption), caption
+            )
+            quality = cls._claim_frame_quality(candidate)
+            if quality > best_quality:
+                best = candidate
+                best_quality = quality
+                accepted_fields.extend(fields)
+        return best, list(dict.fromkeys(accepted_fields))
 
     def analyze(self, caption, feedback=None):
         prompt_text = self.DEFAULT_PROMPT
@@ -466,7 +551,10 @@ Caption:
         parsed = parse_claim_response(response)
 
         spec_output = attach_claim_contract(
-            self._to_spec_schema(parsed, response), caption
+            self._preserve_source_caption(
+                self._to_spec_schema(parsed, response), caption
+            ),
+            caption,
         )
         spec_output["_claim_retry_attempted"] = False
         spec_output["_claim_retry_success"] = False
@@ -485,26 +573,18 @@ Caption:
                 print(f"[Agent2 WARNING] Claim-frame recovery failed: {error}")
             else:
                 elapsed += retry_elapsed
-                repaired = dict(spec_output)
-                for field in self.CLAIM_FRAME_FIELDS:
-                    value = retry_parsed.get(field)
-                    if value is not None and str(value).strip():
-                        repaired[field] = value
-                repaired["relation_family"] = normalize_relation_family(
-                    repaired.get("relation_family", ""),
-                    repaired.get("caption_proposition", ""),
-                    repaired.get("expected_visual_state", ""),
-                    repaired.get("opposite_visual_state", ""),
-                ) or repaired.get("relation_family", "")
-                repaired = attach_claim_contract(repaired, caption)
-                if (
-                    repaired["claim_contract"].get(
-                        "safe_for_directional_reasoning", False
-                    )
-                    and self._claim_frame_quality(repaired) > primary_quality
-                ):
+                repaired, repaired_fields = self._merge_repaired_claim_fields(
+                    spec_output, retry_parsed, caption
+                )
+                if self._claim_frame_quality(repaired) > primary_quality:
                     spec_output = repaired
                     spec_output["_claim_retry_success"] = True
+                    spec_output["_claim_retry_repaired_fields"] = repaired_fields
+                    spec_output["_claim_retry_directionally_safe"] = bool(
+                        repaired["claim_contract"].get(
+                            "safe_for_directional_reasoning", False
+                        )
+                    )
                     print("[Agent2] Accepted improved structured-claim recovery.")
                 else:
                     print("[Agent2] Rejected non-improving structured-claim recovery.")
@@ -674,22 +754,9 @@ Caption:
             and "IDENTICAL_REQUIREMENTS" not in errors
         ):
             errors.append("NON_OPPOSING_REQUIREMENTS")
-        expected_text = str(
-            cls._audit_field(critique_prompt, "Expected visual state") or ""
-        ).casefold()
-        outcome_terms = {
-            "admit", "honest", "truthful", "success", "successful",
-            "effective", "effectively", "result", "outcome", "recover",
-            "recovery", "fail", "failure", "last", "disappear",
-        }
-        required_outcomes = tokens(expected_text).intersection(
-            {next(iter(tokens(term)), term) for term in outcome_terms}
-        )
-        if required_outcomes and not support_tokens.intersection(required_outcomes):
-            errors.append("CLAIM_OUTCOME_DROPPED")
         return not errors, errors
 
-    def critique(self, caption, critique_prompt):
+    def critique(self, caption, critique_prompt, _format_retry=False):
 
         prompt = self._chat_prompt(f"""
 You are the independent linguistic claim auditor in a multimodal reasoning
@@ -825,7 +892,7 @@ Structured Caption Analysis:
             and ambiguity_match
         )
 
-        return {
+        result = {
             "stance": stance,
             "reason": reason or response.strip(),
             "specific_evidence": len(reason.split()) >= 5,
@@ -839,3 +906,28 @@ Structured Caption Analysis:
             "_format_valid": format_valid,
             "_raw_response": response,
         }
+        result["_format_retry_used"] = bool(_format_retry)
+        result["_format_retry_success"] = False
+        if (
+            not _format_retry
+            and (not format_valid or not requirements_valid)
+        ):
+            retry = self.critique(
+                caption,
+                critique_prompt
+                + "\nFormat repair: preserve the original caption exactly and "
+                "return all six required lines with mutually opposing, visually "
+                "testable support and conflict conditions.",
+                _format_retry=True,
+            )
+            retry["_format_retry_used"] = True
+            retry["_format_retry_success"] = bool(
+                retry.get("_format_valid", False)
+                and retry.get("requirements_valid", False)
+            )
+            retry["_raw_primary_response"] = response
+            if retry["_format_retry_success"]:
+                return retry
+            result["_format_retry_used"] = True
+            result["_raw_retry_response"] = retry.get("_raw_response", "")
+        return result

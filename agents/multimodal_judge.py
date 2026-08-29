@@ -1,20 +1,25 @@
 """Independent, label-blind Qwen review of the completed FigDebate case."""
 
 import json
+import inspect
 import time
 
 from models.judge_model import JUDGE_MODEL_ID, JUDGE_MODEL_REVISION
-from utils.judge_parser import parse_judge_response, parse_mediation_response
+from utils.judge_parser import (
+    parse_judge_response,
+    parse_mediation_response,
+    parse_tribunal_review_response,
+)
 
 
 JUDGE_SCHEMA_VERSION = "1.0"
 
 
-def _text(value, limit=500):
+def _text(value, limit=320):
     return str(value or "").strip()[:limit]
 
 
-def _list(value, limit=8):
+def _list(value, limit=5):
     return [_text(item) for item in (value or [])[:limit] if _text(item)]
 
 
@@ -96,8 +101,18 @@ def _critique_packet(debate):
     return packets
 
 
-def _ledger_packet(ledger, limit=40):
-    values = list(ledger or [])
+def _ledger_packet(ledger, limit=18):
+    values = sorted(
+        list(ledger or []),
+        key=lambda item: (
+            not bool(
+                item.get("decision_grade", False)
+                or item.get("verification", {}).get("decision_grade", False)
+            ),
+            not bool(item.get("grounded", False)),
+            str(item.get("id", "")),
+        ),
+    )
     if limit is not None:
         values = values[:limit]
     return [
@@ -105,7 +120,7 @@ def _ledger_packet(ledger, limit=40):
             "id": item.get("id"),
             "source": item.get("source"),
             "type": item.get("type"),
-            "text": _text(item.get("text"), 600),
+            "text": _text(item.get("text"), 320),
             "relation": item.get("relation"),
             "grounded": bool(item.get("grounded", False)),
             "decision_grade": bool(
@@ -132,7 +147,7 @@ def build_judge_packet(
         "claim_agent": _language_packet(language_output),
         "deterministic_comparator": _comparison_packet(comparison),
         "debate_reviews": _critique_packet(debate_details),
-        "evidence_ledger": _ledger_packet(evidence_ledger),
+        "evidence_ledger": _ledger_packet(evidence_ledger, limit=None),
     }
 
 
@@ -201,6 +216,99 @@ CASE PACKET:
 """ + json.dumps(packet, ensure_ascii=True, sort_keys=True)
 
 
+def build_tribunal_review_prompt(packet, round_number):
+    return f"""You are the label-blind mediator reviewing tribunal round {round_number}.
+You can inspect the original image, caption, agent answers, comparator candidates,
+and complete evidence ledger. The gold label is hidden.
+
+Decide whether the dispute is resolved, requires one targeted follow-up, or must
+remain unresolved. Missing evidence is never contradiction. Lexical relation
+candidates are not verified evidence. Cite only supplied ledger IDs. Your own
+visual observations are advisory and can never become decision-grade proof by
+themselves.
+
+Rules:
+1. RESOLVE requires SUPPORT or CONFLICT, at least one cited current-round
+   visual witness, and one direct observation. The deterministic resolver will
+   decide whether independent corroboration is sufficient.
+2. FOLLOW_UP requires UNRESOLVED plus one neutral atomic question for either agent.
+3. ABSTAIN requires UNRESOLVED and no leading questions.
+4. Ask about observable facts for Agent 1 and caption meaning for Agent 2.
+5. Keep every string under 16 words and visual_observations to at most two.
+6. Relation means the relation between the cited observation and the preserved
+   caption proposition: SUPPORT, CONFLICT, or UNRESOLVED. Never output a dataset label.
+7. In round 2, FOLLOW_UP is forbidden; choose RESOLVE or ABSTAIN.
+8. Return exactly one JSON object and no extra fields:
+{{"status":"RESOLVE|FOLLOW_UP|ABSTAIN","relation":"SUPPORT|CONFLICT|UNRESOLVED","confidence":0.0,"evidence_ids":["ID"],"visual_observations":["direct observation"],"issue":"unresolved issue","agent1_question":"question or empty","agent2_question":"question or empty","verification_request":"verification or empty","reason":"short evidence audit"}}
+
+CASE PACKET:
+""" + json.dumps(packet, ensure_ascii=True, sort_keys=True)
+
+
+def _run_structured_generation(
+    runtime, image, prompt, parser, *, max_new_tokens, contract_name
+):
+    """Generate, validate, and perform one bounded format-repair retry."""
+    total_seconds = 0.0
+    attempts = []
+    last_output = ""
+    parsed = parser("")
+    try:
+        for attempt in range(2):
+            attempt_prompt = prompt
+            if attempt:
+                attempt_prompt += (
+                    "\nFORMAT REPAIR: The previous response violated the JSON "
+                    f"contract ({parsed.get('_format_error', 'invalid output')}). "
+                    "Return one compact JSON object only. Do not repeat text."
+                )
+            try:
+                parameters = inspect.signature(runtime.generate).parameters.values()
+                supports_token_limit = any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    or parameter.name == "max_new_tokens"
+                    for parameter in parameters
+                )
+            except (TypeError, ValueError):
+                supports_token_limit = True
+            if supports_token_limit:
+                generated = runtime.generate(
+                    image, attempt_prompt, max_new_tokens=max_new_tokens
+                )
+            else:
+                # Preserve compatibility with injected test/research runtimes
+                # that implement the original two-argument contract.
+                generated = runtime.generate(image, attempt_prompt)
+            if isinstance(generated, tuple):
+                last_output, elapsed = generated
+            else:
+                last_output = generated
+                elapsed = 0.0
+            total_seconds += float(elapsed)
+            diagnostics = dict(
+                getattr(runtime, "_last_generation_diagnostics", {}) or {}
+            )
+            attempts.append(diagnostics)
+            parsed = parser(last_output)
+            if (
+                parsed.get("_format_valid", False)
+                and not diagnostics.get("hit_token_limit", False)
+            ):
+                break
+    except Exception as error:
+        parsed = parser("")
+        parsed["_format_error"] = f"{contract_name}_generation_failed:{error}"
+    parsed["_format_retry_used"] = len(attempts) > 1
+    parsed["_format_retry_success"] = bool(
+        len(attempts) > 1 and parsed.get("_format_valid", False)
+    )
+    parsed["_generation_diagnostics"] = attempts
+    parsed["_generation_seconds"] = round(total_seconds, 4)
+    if not parsed.get("_raw_output"):
+        parsed["_raw_output"] = str(last_output or "")
+    return parsed
+
+
 class MultimodalJudgeAgent:
     def __init__(self, runtime):
         self.runtime = runtime
@@ -224,19 +332,14 @@ class MultimodalJudgeAgent:
             debate_details,
         )
         prompt = build_judge_prompt(packet)
-        started = time.time()
-        try:
-            generated = self.runtime.generate(image, prompt)
-            if isinstance(generated, tuple):
-                raw_output, generation_seconds = generated
-            else:
-                raw_output = generated
-                generation_seconds = time.time() - started
-            judgment = parse_judge_response(raw_output)
-        except Exception as error:
-            judgment = parse_judge_response("")
-            judgment["_format_error"] = f"judge_generation_failed:{error}"
-            generation_seconds = time.time() - started
+        judgment = _run_structured_generation(
+            self.runtime,
+            image,
+            prompt,
+            parse_judge_response,
+            max_new_tokens=256,
+            contract_name="judge",
+        )
 
         known_ids = {item.get("id") for item in (evidence_ledger or [])}
         cited = judgment.get("evidence_ids", [])
@@ -246,7 +349,6 @@ class MultimodalJudgeAgent:
         judgment["_invalid_evidence_ids"] = [
             item_id for item_id in cited if item_id not in known_ids
         ]
-        judgment["_generation_seconds"] = round(generation_seconds, 4)
         judgment["_model_id"] = JUDGE_MODEL_ID
         judgment["_model_revision"] = JUDGE_MODEL_REVISION
         judgment["_schema_version"] = JUDGE_SCHEMA_VERSION
@@ -276,19 +378,14 @@ class MultimodalMediatorAgent:
             evidence_ledger,
         )
         prompt = build_mediation_prompt(packet)
-        started = time.time()
-        try:
-            generated = self.runtime.generate(image, prompt, max_new_tokens=256)
-            if isinstance(generated, tuple):
-                raw_output, generation_seconds = generated
-            else:
-                raw_output = generated
-                generation_seconds = time.time() - started
-            mediation = parse_mediation_response(raw_output)
-        except Exception as error:
-            mediation = parse_mediation_response("")
-            mediation["_format_error"] = f"mediator_generation_failed:{error}"
-            generation_seconds = time.time() - started
+        mediation = _run_structured_generation(
+            self.runtime,
+            image,
+            prompt,
+            parse_mediation_response,
+            max_new_tokens=256,
+            contract_name="mediator",
+        )
 
         known_ids = {item.get("id") for item in (evidence_ledger or [])}
         cited = mediation.get("evidence_ids", [])
@@ -303,8 +400,61 @@ class MultimodalMediatorAgent:
             and mediation.get("status") == "MEDIATE"
             and not mediation["_invalid_evidence_ids"]
         )
-        mediation["_generation_seconds"] = round(generation_seconds, 4)
         mediation["_model_id"] = JUDGE_MODEL_ID
         mediation["_model_revision"] = JUDGE_MODEL_REVISION
         mediation["_schema_version"] = JUDGE_SCHEMA_VERSION
         return mediation
+
+
+class TribunalMediatorAgent:
+    """Review agent answers and request at most one additional tribunal round."""
+
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    def review(
+        self, image, caption, visual_output, language_output, comparison,
+        evidence_ledger, debate_details, round_number=1,
+    ):
+        packet = build_judge_packet(
+            caption, visual_output, language_output, comparison,
+            evidence_ledger, debate_details,
+        )
+        packet["tribunal_round"] = int(round_number)
+        prompt = build_tribunal_review_prompt(packet, round_number)
+        review = _run_structured_generation(
+            self.runtime,
+            image,
+            prompt,
+            parse_tribunal_review_response,
+            max_new_tokens=320,
+            contract_name="tribunal_review",
+        )
+        if int(round_number) >= 2 and review.get("status") == "FOLLOW_UP":
+            review = dict(review)
+            review.update({
+                "status": "ABSTAIN",
+                "relation": "UNRESOLVED",
+                "provisional_verdict": "ABSTAIN",
+                "agent1_questions": [],
+                "agent2_questions": [],
+                "verification_requests": [],
+                "reason": (
+                    review.get("reason") or "Maximum tribunal rounds reached."
+                ),
+                "_terminal_normalization": "maximum_rounds_reached",
+            })
+
+        known_ids = {item.get("id") for item in (evidence_ledger or [])}
+        review["_valid_evidence_ids"] = [
+            item_id for item_id in review.get("evidence_ids", [])
+            if item_id in known_ids
+        ]
+        review["_invalid_evidence_ids"] = [
+            item_id for item_id in review.get("evidence_ids", [])
+            if item_id not in known_ids
+        ]
+        review["_model_id"] = JUDGE_MODEL_ID
+        review["_model_revision"] = JUDGE_MODEL_REVISION
+        review["_schema_version"] = "tribunal-1.0"
+        return review

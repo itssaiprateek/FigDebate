@@ -398,6 +398,60 @@ class JudgeEvaluationTests(unittest.TestCase):
             {"ABSTAIN": 1, "CONTRADICTS": 1},
         )
 
+    def test_tribunal_metrics_record_rounds_and_verified_resolution(self):
+        rows = pd.DataFrame({
+            "ground_truth": ["CONTRADICTS"],
+            "prediction": ["CONTRADICTS"],
+            "phenomenon": ["metaphor"],
+            "judge_requested": [True],
+            "judge_mode": ["tribunal"],
+            "judge_verdict": ["CONTRADICTS"],
+            "judge_format_valid": [True],
+            "judge_revision_accepted": [True],
+            "pre_judge_prediction": ["ENTAILS"],
+            "tribunal_state": ["RESOLVED"],
+            "tribunal_round_count": [2],
+            "tribunal_review_status": ["RESOLVE"],
+            "tribunal_verified_evidence_id": ["AV001"],
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            input_path = Path(temporary) / "predictions.csv"
+            output_path = Path(temporary) / "metrics"
+            rows.to_csv(input_path, index=False)
+            metrics = evaluate_predictions(input_path, output_path)
+        self.assertEqual(metrics["judge"]["tribunal_requested_count"], 1)
+        self.assertEqual(metrics["judge"]["tribunal_mean_rounds"], 2.0)
+        self.assertEqual(
+            metrics["judge"]["tribunal_state_distribution"],
+            {"RESOLVED": 1},
+        )
+        self.assertEqual(
+            metrics["judge"]["tribunal_verified_relation_count"], 1
+        )
+
+    def test_tribunal_harm_is_not_counted_as_debate_harm(self):
+        rows = pd.DataFrame({
+            "ground_truth": ["ENTAILS"],
+            "prediction": ["CONTRADICTS"],
+            "final_prediction": ["CONTRADICTS"],
+            "phenomenon": ["metaphor"],
+            "debate_triggered": [True],
+            "initial_prediction": ["ENTAILS"],
+            "pre_judge_prediction": ["ENTAILS"],
+            "judge_requested": [True],
+            "judge_mode": ["tribunal"],
+            "judge_verdict": ["CONTRADICTS"],
+            "judge_format_valid": [True],
+            "judge_revision_accepted": [True],
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            input_path = Path(temporary) / "predictions.csv"
+            output_path = Path(temporary) / "metrics"
+            rows.to_csv(input_path, index=False)
+            metrics = evaluate_predictions(input_path, output_path)
+        self.assertEqual(metrics["debate"]["harm_count"], 0)
+        self.assertEqual(metrics["judge"]["accepted_harms"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

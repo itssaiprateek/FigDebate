@@ -16,7 +16,7 @@ HEADINGS = [
     "Confidence",
 ]
 
-# LLaVA occasionally renames a requested heading. Recognizing common aliases
+# The legacy structured-output path may rename a requested heading. Aliases
 # prevents a whole section from leaking into the preceding evidence field.
 HEADING_ALIASES = {
     "Visible Relations": "Visual Relations",

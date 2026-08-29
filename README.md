@@ -11,16 +11,18 @@ It runs:
     caption -> Agent 2 immutable claim frame
     both -> Evidence Comparator -> Arbiter -> selective two-level Debate
          -> deterministic Review Board -> optional independent Qwen Judge
-         -> deterministic appellate gate -> prediction and paper artifacts
+         -> optional bounded Tribunal -> deterministic revision gate
+         -> prediction and paper artifacts
 
-The default `stagewise` mode loads LLaVA once for the visual stage and Mistral
+The default `stagewise` mode loads Qwen3-VL 4B Instruct once for the visual stage and Mistral
 once for the language/Arbiter stage. This reduces repeated model loading while
 keeping the two large models separate in GPU memory.
 
 The judge is disabled by default, so established runs keep the same model loads,
 decision path, and predictions. Shadow and appellate load Qwen after the debate.
-Mediated mode loads Qwen once before debate, unloads it, and then runs the debate
-models so the large GPU runtimes are never resident together.
+Mediated mode loads Qwen once before debate. Tribunal mode uses the same
+label-blind question plan, reviews both agent answers, and permits at most one
+targeted follow-up. Large GPU runtimes are unloaded between every stage.
 
 Quick verification
 ------------------
@@ -28,8 +30,14 @@ Quick verification
     py -3.11 setup_environment.py
     .\.venv\Scripts\activate
     python check_environment.py
+    python check_environment.py --check-judge
     python -m unittest discover -s tests -p "test_*.py"
     python run_figdebate.py --num-samples 3 --selection-strategy stratified
+
+`setup_environment.py` also downloads and validates the mandatory pinned Agent
+1 model at `models/vision/Qwen3-VL-4B-Instruct`. To prepare only that model later:
+
+    python -m models.prepare_vision_model
 
 Validate the already-downloaded optional judge as well:
 
@@ -47,14 +55,16 @@ never in this repository:
     hf auth login
     hf auth whoami
 
-After a pinned LLaVA or Mistral snapshot has been cached, FigDebate resolves its
-local snapshot directly. This avoids repeat Hub metadata requests and the
-unauthenticated warning on later runs while retaining online first-run setup.
+After the pinned Qwen3-VL model has been prepared, Agent 1 uses only that local
+directory. Other pinned model snapshots are also resolved locally when cached.
+This avoids repeat Hub metadata requests and unauthenticated warnings on later
+runs while retaining online first-run setup.
 
 Current reasoning flow
 ----------------------
 
-    image -> structured visual evidence
+    image -> short Qwen3-VL visual questions -> validated atomic answers
+          -> deterministic Agent 1 evidence schema
     caption -> structured intended claim and relation
     relation candidates -> generic NLI diagnostic routing (never visual proof)
     initial Arbiter -> debate-need score
@@ -65,6 +75,8 @@ Current reasoning flow
     optional Qwen judge -> independent raw-image and full-debate audit
     appellate gate -> require stronger cited decision-grade ledger evidence
     mediated mode -> Qwen issue map -> targeted agent checks -> verified gate
+    tribunal mode -> issue map -> both witnesses -> review -> optional follow-up
+                  -> independent verification -> deterministic Review Board
     final binary decision -> complete audit and paper artifacts
 
 The previous label is hidden from both debate reviewers. Generic text NLI is
@@ -75,11 +87,17 @@ deterministic relation checker before they can change a label.
 Debate evidence safeguards
 --------------------------
 
-Level 2 review now asks Agent 1 one visual question at a time. It records the
-direct observation first and classifies that observation against the claim in
-a separate short response. Formatting failures, token-limit truncation,
-genuine abstention, and unresolved semantics are logged as distinct outcomes.
-Only the failed field is retried.
+Agent 1 does not ask Qwen to author the complete evidence schema. A fixed,
+caption-blind initial question plan collects the scene, entities, OCR, direct
+facts, relationships, scene type, and visible symbolic cues separately. Python
+validates each answer, permits one simplified retry, and assembles the public
+schema. Model self-confidence is deliberately not accepted as calibrated
+evidence. The same Agent 1 works when debate and the judge are disabled.
+
+Level 2 review now asks Agent 1 one visual question at a time. Agent 1 records a
+typed visual observation but never classifies it as entailment or contradiction.
+Formatting failures, token-limit truncation, genuine absence, and valid
+observations are logged as distinct outcomes. Only the failed field is retried.
 
 Targeted recovery creates a fresh evidence generation instead of combining new
 answers with disputed old observations. Ledger entries carry lifecycle status,
@@ -112,14 +130,19 @@ questions; Qwen's provisional vote and rationale remain hidden from them:
 
     python run_figdebate.py --num-samples 10 --judge-mode mediated --judge-scope escalated
 
+Tribunal mode adds post-response review and at most one targeted follow-up:
+
+    python run_figdebate.py --num-samples 10 --judge-mode tribunal --judge-scope escalated
+
 The judge never sees the gold label or the current Arbiter label. A Qwen answer
 cannot become evidence by itself. A proposed label change is accepted only if
 the response is valid JSON, confidence is at least 0.75, every citation belongs
-to the current sample, and the judge cites more matching decision-grade evidence
-than exists for the current direction. In mediated mode, a tied evidence count
-can pass only when Qwen cited known grounded evidence and the debate subsequently
-produced independently verified directional evidence. See
-`docs/judge_architecture.md` for the full contract and rollout protocol.
+to the current sample, and the judge cites independently verified evidence whose
+provenance-weighted strength exceeds the current direction. The validated Agent
+1/Agent 2 exchange can add one cross-agent verified relation before tribunal
+resolution; the judge itself cannot add evidence. The ordinary Review Board
+still rejects the proposal when opposing verified evidence is stronger. See `docs/judge_architecture.md` and
+`docs/tribunal_implementation.md` for the contracts and rollout protocol.
 
 Run integrity
 -------------
@@ -172,9 +195,10 @@ Linux setup:
     source .venv/bin/activate
 
 The setup script creates only `.venv`, installs the pinned dependencies,
-downloads and validates the required V-FLUTE splits, runs
-`check_environment.py`, and executes the unit suite. Model weights are fetched
-from their pinned Hugging Face revisions on the first pipeline run. Virtual
+downloads and validates the required V-FLUTE splits, downloads and validates
+the pinned Qwen3-VL 4B Instruct Agent 1 weights, runs `check_environment.py`, and
+executes the unit suite. Other model weights are fetched from their pinned
+Hugging Face revisions when required. Virtual
 environments, model caches, and processed datasets are machine-local and are
 deliberately not committed to Git.
 
@@ -191,6 +215,7 @@ To rebuild only the dataset later:
 
 The pinned `cross-encoder/nli-MiniLM2-L6-H768` model remains a CPU diagnostic
 for text-relation uncertainty. Its output is never promoted to visual proof.
+See `docs/agent1_qwen3vl.md` for the Agent 1 contract and acceptance protocol.
 
 Paper protocol
 --------------

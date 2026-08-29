@@ -1,17 +1,18 @@
 # Independent multimodal judge
 
 The judge is optional. Shadow and appellate use it after debate; mediated mode
-uses it as a label-blind overseer inside the debate workflow. It never replaces
+uses it as a label-blind planner; tribunal mode uses it as a bounded overseer
+before, between, and after agent responses. It never replaces
 Agent 1, Agent 2, the comparator, the Arbiter, the evidence verifier, or the
 deterministic Review Board.
 
 ## Execution order
 
-1. Agent 1 grounds visible image evidence with LLaVA.
+1. Agent 1 grounds visible image evidence with Qwen3-VL 4B Instruct through validated atomic questions.
 2. Agent 2 extracts the caption claim with Mistral.
 3. The deterministic comparator, evidence verifier, and Arbiter produce the
    established decision.
-4. The existing selective debate runs exactly as before.
+4. The evidence-constrained debate runs, preserving raw and gated proposals.
 5. All legacy GPU models are unloaded.
 6. For escalated cases, Qwen3.5-4B receives the raw image, caption, compact agent
    packets, comparator output, debate critiques, and current evidence ledger.
@@ -26,17 +27,18 @@ anchoring and prevent label leakage.
 
 1. The established visual, claim, comparator, evidence-verifier, and initial
    Arbiter stages run unchanged.
-2. Only cases already selected for debate are routed to Qwen.
+2. Escalated cases are routed to Qwen even when the ordinary debate router did
+   not select them; they receive the same validated agent-response path.
 3. Qwen sees the raw image, caption, structured agent records, comparator state,
    and the complete current evidence ledger. It does not see the current label
    or gold label.
 4. Qwen returns a strict issue map with separate visual-agent questions,
    claim-agent questions, ledger citations, and verification requests.
-5. Qwen is unloaded before LLaVA or Mistral is loaded for debate.
+5. The judge is unloaded before Agent 1 Qwen3-VL or Mistral is loaded for debate.
 6. Each agent receives only the questions for its role. The provisional verdict,
    confidence, and mediator rationale are hidden to prevent anchoring.
-7. New visual claims remain untrusted until the existing targeted region or
-   structured reinspection verifier promotes them to decision-grade evidence.
+7. New visual claims remain observations or candidates until an independent
+   deterministic or multimodal verifier promotes their direction.
 8. The Arbiter receives the verified debate evidence and advisory issue list.
 9. The deterministic Review Board applies the normal stronger-evidence rule or
    the narrow mediated tie-break described below.
@@ -78,16 +80,16 @@ proof. A disagreeing appellate judgment must:
 - report a direct visual observation;
 - cite only evidence from the current sample;
 - cite decision-grade evidence matching its proposed direction;
-- cite strictly more matching decision-grade items than exist for the current
-  direction; and
+- cite independent decision-grade evidence with greater provenance-weighted
+  reliability than the current direction; and
 - pass the existing deterministic `review_revision` policy and final Review
   Board audit.
 
 Failure of any condition preserves the established decision.
 
 Mediated mode does not lower the global confidence threshold and never promotes
-Qwen prose into the ledger. It relaxes only an equal-count directional evidence
-tie. That tie can pass when all of the following hold:
+Qwen prose into the ledger. Its narrow verified-evidence tie-break can pass only
+when all of the following hold:
 
 - the mediation contract is valid and confidence is at least 0.80;
 - Qwen's provisional direction matches the debated proposal;
@@ -96,11 +98,35 @@ tie. That tie can pass when all of the following hold:
 - the claim contract is safe for directional reasoning;
 - the visual reviewer supplies specific evidence for the proposed direction;
 - the debate creates at least one independently verified decision-grade entry
-  from targeted region verification or structured visual reinspection; and
+  from targeted region verification; and
 - the candidate still passes source attribution, review linkage, and final
   Review Board auditing.
 
 Without these conditions, the original equal-evidence rejection remains.
+
+## Tribunal execution order
+
+1. The initial pipeline selects a case for debate without consulting the judge.
+2. A label-blind mediation plan asks each agent one role-specific question.
+3. Agent 1 returns a typed visual witness statement without a label vote.
+4. Agent 2 returns the caption proposition, polarity, and opposing requirements.
+5. The Arbiter's raw proposal is recorded before evidence constraints are applied.
+6. Qwen reviews the original image, both responses, comparator candidates, and
+   complete current ledger.
+7. Qwen returns `RESOLVE`, `FOLLOW_UP`, or `ABSTAIN` under a strict JSON schema.
+8. `FOLLOW_UP` creates at most one further neutral question for each agent.
+9. A second review is the hard final round; another follow-up becomes abstention.
+10. A resolved direction must cite either an existing matching decision-grade
+    relation or a newly constructed three-source relation. The latter requires
+    the current Agent 1 witness, Agent 2's valid claim audit, and Qwen's independent
+    relation judgment; Qwen cannot promote its own statement by itself.
+11. The deterministic Review Board compares reliability by independent
+    provenance root and accepts only an adequately grounded revision.
+12. The final record exports every decision checkpoint, round, stop reason, and
+    accepted or rejected verification ID.
+
+Questions containing entailment, contradiction, support, conflict, prediction,
+verdict, or final-label wording are rejected before they reach an agent.
 
 Judge disagreements are recorded as human-or-gold verification candidates.
 They never update procedural memory by themselves, so the feedback loop cannot
@@ -116,7 +142,9 @@ turn the judge's own prediction into a future pseudo-label.
 4. Test appellate mode on the same selected development IDs.
 5. Test mediated mode on exactly the same IDs and compare its debate corrections,
    harms, invalid contracts, accepted tie-breaks, and runtime.
-6. Promote only if paired accuracy is non-inferior and the accepted-revision
+6. Test tribunal mode on the same IDs and report follow-up, abstention,
+   correction, harm, verification, and runtime rates.
+7. Promote only if paired accuracy is non-inferior and the accepted-revision
    harm rate is within the predeclared tolerance.
 
 The local model is pinned as `Qwen/Qwen3.5-4B` revision

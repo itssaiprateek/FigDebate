@@ -1,12 +1,23 @@
 """Pinned local Qwen runtime used only by the optional judge stage."""
 
+import gc
 import os
 import time
 
 
 JUDGE_MODEL_ID = "Qwen/Qwen3.5-4B"
 JUDGE_MODEL_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+JUDGE_MODEL_ARCHITECTURE = "Qwen3_5ForConditionalGeneration"
 JUDGE_MODEL_DIRECTORY = os.path.join("models", "judge", "Qwen3.5-4B")
+JUDGE_MODEL_FILES = (
+    "config.json",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "chat_template.jinja",
+    "model.safetensors.index.json",
+    "model.safetensors-00001-of-00002.safetensors",
+    "model.safetensors-00002-of-00002.safetensors",
+)
 
 
 def default_judge_model_path():
@@ -79,7 +90,14 @@ class QwenJudgeModel:
         )
         self.model.eval()
         self.device = next(self.model.parameters()).device
+        self._last_generation_diagnostics = {}
         print("Independent Qwen judge loaded")
+
+    @staticmethod
+    def _release_generation_memory(torch):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def generate(self, image, prompt, max_new_tokens=384):
         import torch
@@ -90,8 +108,9 @@ class QwenJudgeModel:
             {
                 "role": "system",
                 "content": (
-                    "You are an independent multimodal appellate judge. "
-                    "Follow the supplied evidence and JSON contract exactly."
+                    "You are an independent multimodal evidence reviewer. "
+                    "Follow the role, evidence rules, and JSON contract in "
+                    "the user instruction exactly."
                 ),
             },
             {
@@ -102,29 +121,53 @@ class QwenJudgeModel:
                 ],
             },
         ]
-        inputs = self.processor.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-            enable_thinking=False,
-        )
-        inputs = inputs.to(self.device)
-        started = time.time()
-        with torch.inference_mode():
-            generated = self.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                use_cache=True,
-            )
-        elapsed = time.time() - started
-        prompt_length = inputs["input_ids"].shape[1]
-        completion_ids = generated[:, prompt_length:]
-        response = self.processor.batch_decode(
-            completion_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=False,
-        )[0].strip()
-        return response, elapsed
+        inputs = None
+        generated = None
+        completion_ids = None
+        try:
+            inputs = self.processor.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_dict=True,
+                return_tensors="pt",
+                enable_thinking=False,
+            ).to(self.device)
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+            started = time.time()
+            with torch.inference_mode():
+                generated = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    repetition_penalty=1.05,
+                    use_cache=True,
+                )
+            elapsed = time.time() - started
+            prompt_length = int(inputs["input_ids"].shape[1])
+            completion_ids = generated[:, prompt_length:]
+            response = self.processor.batch_decode(
+                completion_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0].strip()
+            generated_tokens = int(completion_ids.shape[-1])
+            self._last_generation_diagnostics = {
+                "input_tokens": prompt_length,
+                "generated_tokens": generated_tokens,
+                "max_new_tokens": int(max_new_tokens),
+                "hit_token_limit": generated_tokens >= int(max_new_tokens),
+                "peak_allocated_gb": (
+                    round(torch.cuda.max_memory_allocated() / 1024 ** 3, 4)
+                    if torch.cuda.is_available() else None
+                ),
+                "elapsed_seconds": round(elapsed, 4),
+            }
+            return response, elapsed
+        finally:
+            completion_ids = None
+            generated = None
+            inputs = None
+            messages = None
+            self._release_generation_memory(torch)

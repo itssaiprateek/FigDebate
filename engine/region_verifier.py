@@ -9,25 +9,9 @@ STOPWORDS = {
     "that", "the", "their", "there", "this", "those", "was", "were",
     "with",
 }
-TOKEN_ALIASES = {
-    "disliked": "dislike", "dislikes": "dislike", "hated": "dislike",
-    "hates": "dislike", "hate": "dislike", "liked": "love",
-    "likes": "love", "loved": "love", "loves": "love",
-    "items": "product", "products": "product",
-}
-PREFERENCE_CUES = {
-    "dislike": {"dislike"},
-    "love": {"love", "favorite", "favourite"},
-}
-DURATION_CUES = {
-    "short": {"disappear", "disappears", "fast", "gone", "quick", "quickly", "week", "weekly"},
-    "long": {"forever", "last", "lasts", "long", "month", "months"},
-}
-
-
 def _tokens(value):
     return {
-        TOKEN_ALIASES.get(token, token)
+        token
         for token in re.findall(r"[a-z0-9]+", str(value or "").casefold())
         if len(token) >= 3 and token not in STOPWORDS
     }
@@ -42,77 +26,36 @@ def _clauses(value):
     return [_tokens(part) for part in parts if _tokens(part)]
 
 
-def _best_overlap(observed, clauses):
-    overlaps = [len(observed & clause) for clause in clauses]
-    return max(overlaps, default=0)
+def _bound_overlap(object_tokens, outcome_tokens, clauses):
+    """Score the outcome only after uniquely binding the observed entity.
 
-
-def _single_pole(tokens, cue_map):
-    matches = [
-        pole for pole, cues in cue_map.items()
-        if tokens.intersection(cues)
+    Matching a state word in the wrong clause is not evidence.  When two
+    clauses tie for the best entity match, the binding is ambiguous and the
+    verifier abstains instead of selecting whichever outcome happens to fit.
+    """
+    scored = [
+        {
+            "entity_overlap": len(object_tokens & clause),
+            "outcome_overlap": len(outcome_tokens & clause),
+        }
+        for clause in clauses
     ]
-    return matches[0] if len(matches) == 1 else None
-
-
-def _preference_duration_map(text):
-    mapping = {}
-    clauses = re.split(
-        r"\s*(?:,|;|\||\bwhile\b|\bwhereas\b|\bbut\b)\s*",
-        str(text or ""),
-        flags=re.IGNORECASE,
+    best_entity = max(
+        (item["entity_overlap"] for item in scored), default=0
     )
-    for clause in clauses:
-        tokens = _tokens(clause)
-        preference = _single_pole(tokens, PREFERENCE_CUES)
-        duration = _single_pole(tokens, DURATION_CUES)
-        if preference and duration:
-            mapping[preference] = duration
-    return mapping
-
-
-def _verify_preference_duration(region_pairs, relation):
-    expected = _preference_duration_map(relation.get("claim_text", ""))
-    if set(expected) != {"dislike", "love"}:
-        return None
-
-    observed = {}
-    pair_results = []
-    for pair in region_pairs:
-        tokens = _tokens(
-            f"{pair.get('object_text', '')} {pair.get('outcome_text', '')}"
-        )
-        preference = _single_pole(tokens, PREFERENCE_CUES)
-        duration = _single_pole(tokens, DURATION_CUES)
-        pair_results.append({
-            "side": str(pair.get("side", "region")),
-            "object_text": str(pair.get("object_text", "")),
-            "outcome_text": str(pair.get("outcome_text", "")),
-            "preference": preference,
-            "duration": duration,
-        })
-        if preference and duration:
-            observed[preference] = duration
-
-    if set(observed) != set(expected):
-        return None
-    matches = sum(observed[key] == expected[key] for key in expected)
-    inversions = sum(observed[key] != expected[key] for key in expected)
-    if matches == len(expected):
-        evidence_relation = "SUPPORT"
-    elif inversions == len(expected):
-        evidence_relation = "CONFLICT"
-    else:
-        return None
+    bound = [
+        item for item in scored
+        if item["entity_overlap"] == best_entity and best_entity > 0
+    ]
+    if len(bound) != 1:
+        return {
+            "entity_overlap": best_entity,
+            "outcome_overlap": 0,
+            "binding_unambiguous": False,
+        }
     return {
-        "resolved": True,
-        "decision_grade": True,
-        "evidence_relation": evidence_relation,
-        "label": "ENTAILS" if evidence_relation == "SUPPORT" else "CONTRADICTS",
-        "confidence": 0.9,
-        "reason": "complete_preference_duration_region_binding",
-        "pair_results": pair_results,
-        "method": "deterministic_preference_duration_binding",
+        **bound[0],
+        "binding_unambiguous": True,
     }
 
 
@@ -134,7 +77,7 @@ def verify_region_pairs(region_pairs, claim_relation):
             "reason": "claim_relation_unresolved",
             "method": "deterministic_structured_region_binding",
         }
-    if not contract.get("safe_for_directional_reasoning", False):
+    if not contract.get("safe_for_automatic_directional_reasoning", False):
         return {
             "resolved": False,
             "decision_grade": False,
@@ -148,10 +91,6 @@ def verify_region_pairs(region_pairs, claim_relation):
             "reason": "no_complete_region_pairs",
             "method": "deterministic_structured_region_binding",
         }
-
-    preference_duration = _verify_preference_duration(region_pairs, relation)
-    if preference_duration:
-        return preference_duration
 
     expected = _clauses(relation.get("expected_visual_state"))
     opposite = _clauses(relation.get("opposite_visual_state"))
@@ -169,14 +108,24 @@ def verify_region_pairs(region_pairs, claim_relation):
         outcome_text = str(pair.get("outcome_text", "")).strip()
         if not object_text or not outcome_text:
             continue
-        observed = _tokens(f"{object_text} {outcome_text}")
-        expected_score = _best_overlap(observed, expected)
-        opposite_score = _best_overlap(observed, opposite)
+        object_tokens = _tokens(object_text)
+        outcome_tokens = _tokens(outcome_text)
+        expected_binding = _bound_overlap(object_tokens, outcome_tokens, expected)
+        opposite_binding = _bound_overlap(object_tokens, outcome_tokens, opposite)
+        expected_score = expected_binding["outcome_overlap"]
+        opposite_score = opposite_binding["outcome_overlap"]
         direction = "ABSTAIN"
-        if max(expected_score, opposite_score) >= 2:
-            if expected_score > opposite_score:
+        bindings_valid = bool(
+            expected_binding["binding_unambiguous"]
+            and opposite_binding["binding_unambiguous"]
+        )
+        # A region pair becomes directional only after an unambiguous entity
+        # binding and a strict outcome advantage. Shared entity words never
+        # contribute to the directional score.
+        if bindings_valid and max(expected_score, opposite_score) >= 1:
+            if expected_score >= opposite_score + 1:
                 direction = "SUPPORT"
-            elif opposite_score > expected_score:
+            elif opposite_score >= expected_score + 1:
                 direction = "CONFLICT"
         pair_results.append({
             "side": str(pair.get("side", "region")),
@@ -184,6 +133,9 @@ def verify_region_pairs(region_pairs, claim_relation):
             "outcome_text": outcome_text,
             "expected_overlap": expected_score,
             "opposite_overlap": opposite_score,
+            "expected_entity_overlap": expected_binding["entity_overlap"],
+            "opposite_entity_overlap": opposite_binding["entity_overlap"],
+            "binding_unambiguous": bindings_valid,
             "direction": direction,
         })
 
@@ -191,7 +143,16 @@ def verify_region_pairs(region_pairs, claim_relation):
         item for item in pair_results if item["direction"] != "ABSTAIN"
     ]
     directions = {item["direction"] for item in informative}
-    if not informative or len(directions) != 1:
+    complete_pair_count = sum(
+        bool(str(item.get("object_text", "")).strip())
+        and bool(str(item.get("outcome_text", "")).strip())
+        for item in region_pairs
+    )
+    if (
+        not informative
+        or len(directions) != 1
+        or len(informative) != complete_pair_count
+    ):
         return {
             "resolved": False,
             "decision_grade": False,
