@@ -608,7 +608,10 @@ class EvidenceGradeTests(unittest.TestCase):
             ledger,
             {"safe_for_directional_reasoning": True},
         )
-        self.assertEqual(decision["confidence"], 0.9)
+        self.assertEqual(decision["confidence"], 0.79)
+        self.assertEqual(
+            decision["_review_board"]["independent_evidence_strength"], 0.6
+        )
 
 
 class RegionVerifierTests(unittest.TestCase):

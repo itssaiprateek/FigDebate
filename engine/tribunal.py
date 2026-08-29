@@ -11,6 +11,7 @@ from engine.evidence_ledger import (
     attach_evidence_audit,
 )
 from engine.review_board import attach_final_review, review_revision
+from engine.relation_semantics import is_missing_evidence_only
 
 
 TRIBUNAL_SCHEMA_VERSION = "1.0"
@@ -101,6 +102,7 @@ def apply_tribunal_resolution(
         "accepted": False,
         "changed_decision": False,
         "previous_label": current_decision.get("label"),
+        "previous_confidence": current_decision.get("confidence"),
         "proposed_label": review.get("provisional_verdict"),
         "reason": "",
         "acceptance_checks": [],
@@ -154,9 +156,15 @@ def apply_tribunal_resolution(
          "tribunal_cited_no_current_image_evidence"),
         (bool(review.get("visual_observations")),
          "tribunal_reported_no_visual_observation"),
-        (bool((claim_contract or {}).get("safe_for_directional_reasoning", False)),
+        (bool((claim_contract or {}).get(
+            "safe_for_tribunal_reasoning",
+            (claim_contract or {}).get("safe_for_directional_reasoning", False),
+        )),
          "claim_contract_not_safe"),
-        (directional_frame_is_defined, "claim_direction_not_well_defined"),
+        (bool(
+            directional_frame_is_defined
+            or (claim_contract or {}).get("safe_for_tribunal_reasoning", False)
+        ), "claim_direction_not_well_defined"),
         (bool(agent2_requirements_valid), "agent2_requirements_invalid"),
     )
     for passed, reason in checks:
@@ -187,7 +195,18 @@ def apply_tribunal_resolution(
         return reject("tribunal_citations_not_grounded")
 
     proposed_label = review["provisional_verdict"]
+    if proposed_label == current_decision.get("label"):
+        metadata["confirmation_valid"] = True
+        return reject("same_label_confirmation_not_revision", verified_ledger)
     relation = RELATION_FOR_LABEL[proposed_label]
+    if relation == "CONFLICT" and (
+        is_missing_evidence_only(review.get("reason"))
+        or all(
+            is_missing_evidence_only(item)
+            for item in (review.get("visual_observations", []) or [])
+        )
+    ):
+        return reject("conflict_based_only_on_missing_evidence", verified_ledger)
     # A mediator may select and explain existing proof, but its prose alone is
     # never evidence. Resolution uses either an existing verified relation or
     # the three-source relation constructed above from a current visual

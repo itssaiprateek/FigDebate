@@ -8,6 +8,10 @@ import re
 from typing import Dict, List
 
 from engine.relation_schema import build_claim_relation, nominate_visual_relations
+from engine.structured_evidence import (
+    build_structured_observations,
+    structural_summary,
+)
 
 
 THEMES = {
@@ -176,6 +180,10 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
         caption, language_output
     )
     claim_contract = claim_relation.get("claim_contract", {}) or {}
+    structured_observations = build_structured_observations(visual_output)
+    structured_observation_summary = structural_summary(
+        structured_observations
+    )
     relation_candidates = nominate_visual_relations(visual_output, claim_relation)
     grounded_object_text = normalize(" ".join(
         objects + visual_facts + visual_relations
@@ -264,8 +272,17 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
     )
     relation_binding_observed = bool(
         relation_binding_required
-        and has_explicit_region_pair
-        and len(visible_text_terms.intersection(relation_terms)) >= 2
+        and (
+            (
+                has_explicit_region_pair
+                and len(visible_text_terms.intersection(relation_terms)) >= 2
+            )
+            or any(
+                item.get("record_type") == "OCR_REGION_BINDING"
+                and item.get("binding_complete", False)
+                for item in structured_observations
+            )
+        )
     )
     # Region verification is schema-driven and may be used for any explicit
     # comparison/outcome relation.  It is never selected from object names.
@@ -487,6 +504,8 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
         "relation_binding_required": relation_binding_required,
         "relation_binding_observed": relation_binding_observed,
         "region_pair_verifier_eligible": region_pair_verifier_eligible,
+        "structured_observations": structured_observations,
+        "structured_observation_summary": structured_observation_summary,
         "alignment_score": round(
             len(direct_terms) / max(1, len(content_terms(claim_text))),
             2,

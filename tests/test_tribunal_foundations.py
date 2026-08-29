@@ -16,6 +16,12 @@ from comparators.evidence_comparator import compare
 from engine.claim_contract import attach_claim_contract
 from engine.relation_schema import attach_claim_relation
 from engine.question_router import build_question_plan, compile_visual_question
+from engine.reasoning_schema import (
+    attach_reasoning_profile,
+    mechanism_candidates,
+)
+from engine.review_board import decision_grade_strength
+from engine.structured_evidence import build_structured_observations
 from engine.review_board import review_revision
 from engine.tribunal import (
     apply_tribunal_resolution,
@@ -24,11 +30,117 @@ from engine.tribunal import (
     record_tribunal_round,
 )
 from engine.batch_runner import StagewiseRunner
+from engine.debate import DebateEngine
+from engine.pre_hearing import build_pre_hearing_audit
+from engine.relation_semantics import (
+    is_missing_evidence_only,
+    relation_from_evidence_status,
+)
 from utils.judge_parser import parse_tribunal_review_response
 import json
 
 
 class TypedClaimContractTests(unittest.TestCase):
+    def test_missing_evidence_is_neutral_in_shared_semantics(self):
+        self.assertTrue(is_missing_evidence_only("No evidence is visible."))
+        self.assertFalse(
+            is_missing_evidence_only("No upward line is shown, but the line falls.")
+        )
+        self.assertEqual(
+            relation_from_evidence_status("INSUFFICIENT_VISUAL_EVIDENCE"),
+            "NEUTRAL",
+        )
+
+    def test_pre_hearing_closes_grounded_high_confidence_case(self):
+        audit = build_pre_hearing_audit(
+            {
+                "label": "ENTAILS", "confidence": 0.82,
+                "_review_board": {"directionally_grounded": True},
+            },
+            {
+                "claim_contract": {"safe_for_directional_reasoning": True},
+                "required_evidence_status": "SUPPORTED",
+                "relation_binding_required": False,
+            },
+            {"trigger": False, "signals": []},
+        )
+        self.assertFalse(audit["requires_live_hearing"])
+
+    def test_pre_hearing_escalates_unresolved_binding_without_gold(self):
+        audit = build_pre_hearing_audit(
+            {"label": "ENTAILS", "confidence": 0.6},
+            {
+                "claim_contract": {"safe_for_directional_reasoning": True},
+                "required_evidence_status": "SEMANTIC_REVIEW_REQUIRED",
+                "relation_binding_required": True,
+                "relation_binding_observed": False,
+            },
+            {"trigger": True, "signals": ["unresolved_text_relation_semantics"]},
+        )
+        self.assertTrue(audit["requires_live_hearing"])
+        self.assertNotIn("phenomenon", audit)
+
+    def test_explicit_ocr_region_binding_is_typed_without_direction(self):
+        records = build_structured_observations({
+            "visible_text": ["left bottle => BEFORE", "right bottle => AFTER"],
+            "visual_relations": [], "visual_facts": [],
+        })
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all(
+            item["record_type"] == "OCR_REGION_BINDING" for item in records
+        ))
+        self.assertTrue(all(item["binding_complete"] for item in records))
+        self.assertTrue(all(not item["directional"] for item in records))
+
+    def test_panel_event_is_typed_but_not_promoted(self):
+        records = build_structured_observations({
+            "visible_text": [],
+            "visual_relations": [
+                "In the first panel a man pushes a vase; in the second panel it falls."
+            ],
+            "visual_facts": [],
+        })
+        self.assertEqual(records[0]["record_type"], "PANEL_EVENT_OR_COMPARISON")
+        self.assertFalse(records[0]["directional"])
+
+    def test_heading_contamination_cannot_be_direction_safe(self):
+        caption = "The new product is preferred."
+        contract = audit_claim_contract(caption, {
+            "caption_proposition": caption,
+            "claim_subject": "the new product",
+            "claim_predicate": "is preferred",
+            "expected_visual_state": (
+                "the product is chosen Opposite Visual State: the product is rejected"
+            ),
+            "opposite_visual_state": "the product is rejected",
+        })
+        self.assertFalse(contract["safe_for_directional_reasoning"])
+        self.assertIn("expected_visual_state", contract["contaminated_fields"])
+
+    def test_absence_only_opposite_is_not_direction_safe(self):
+        caption = "The relationship is volatile."
+        contract = audit_claim_contract(caption, {
+            "caption_proposition": caption,
+            "claim_subject": "the relationship",
+            "claim_predicate": "is volatile",
+            "expected_visual_state": "the couple appears tense and distressed",
+            "opposite_visual_state": "no signs of volatility are visible",
+        })
+        self.assertFalse(contract["opposite_state_is_affirmative"])
+        self.assertFalse(contract["safe_for_directional_reasoning"])
+
+    def test_generic_predicate_is_rejected_when_generated(self):
+        caption = "The meeting is calm."
+        contract = audit_claim_contract(caption, {
+            "caption_proposition": caption,
+            "claim_subject": "the meeting",
+            "claim_predicate": "took place",
+            "expected_visual_state": "people are calm and relaxed",
+            "opposite_visual_state": "people are tense and distressed",
+        })
+        self.assertFalse(contract["predicate_specific"])
+        self.assertFalse(contract["safe_for_directional_reasoning"])
+
     def test_typed_subject_binds_short_opposing_states(self):
         audit = audit_relation_pair("rotten", "healthy", "the heart")
         self.assertTrue(audit["valid"])
@@ -95,6 +207,28 @@ class DecisionTraceTests(unittest.TestCase):
 
 
 class EvidenceLifecycleTests(unittest.TestCase):
+    def test_shared_witness_root_is_not_double_counted(self):
+        ledger = [
+            {
+                "id": "DW001", "source": "debate_visual_witness",
+                "relation": "NEUTRAL", "grounded": True,
+                "decision_grade": False, "derived_from_ids": [],
+            },
+            {
+                "id": "AV001", "source": "cross_agent_relation_verifier",
+                "relation": "SUPPORT", "grounded": True,
+                "decision_grade": True, "reliability": 0.78,
+                "derived_from_ids": ["DW001"],
+            },
+            {
+                "id": "IV001", "source": "tribunal_relation_verifier",
+                "relation": "SUPPORT", "grounded": True,
+                "decision_grade": True, "reliability": 0.74,
+                "derived_from_ids": ["DW001"],
+            },
+        ]
+        self.assertEqual(decision_grade_strength(ledger, "SUPPORT"), 0.78)
+
     def test_normative_relation_requires_three_source_corroboration(self):
         ledger = [
             {
@@ -289,6 +423,58 @@ class EvidenceLifecycleTests(unittest.TestCase):
 
 
 class QuestionRoutingTests(unittest.TestCase):
+    def test_mechanism_candidates_do_not_use_dataset_phenomenon(self):
+        output = attach_reasoning_profile({
+            "figurative_type": "literal",
+            "polarity_reversal": "yes, praise reverses to criticism",
+            "phenomenon": "metaphor",
+        })
+        self.assertEqual(
+            output["reasoning_profile"]["primary_figurative_mechanism"],
+            "SARCASM_POLARITY",
+        )
+        self.assertFalse(output["reasoning_profile"]["uses_gold_phenomenon"])
+
+    def test_temporal_causal_route_asks_for_ordered_actions(self):
+        plan = build_question_plan({
+            "claim_contract": {
+                "safe_for_directional_reasoning": True,
+                "structural_reasoning_type": "TEMPORAL_CAUSAL_SEQUENCE",
+            },
+            "claim_relation": {"subject": "the character"},
+        })
+        self.assertEqual(plan.issue_type, "TEMPORAL_CAUSAL_SEQUENCE")
+        self.assertIn("panel", plan.agent1_question.casefold())
+        self.assertIn("action", plan.agent1_question.casefold())
+
+    def test_sarcasm_route_separates_referent_and_polarity(self):
+        plan = build_question_plan({
+            "claim_contract": {
+                "safe_for_directional_reasoning": True,
+                "structural_reasoning_type": "AFFECTIVE_SCENE",
+            },
+            "claim_relation": {
+                "subject": "the design",
+                "figurative_mechanism": "sarcasm",
+            },
+        })
+        self.assertEqual(plan.issue_type, "SARCASM_POLARITY")
+        self.assertIn("polarity", plan.agent2_question.casefold())
+
+    def test_metaphor_route_keeps_source_observation_literal(self):
+        plan = build_question_plan({
+            "claim_contract": {
+                "safe_for_directional_reasoning": True,
+                "structural_reasoning_type": "DIRECT_STATE",
+            },
+            "claim_relation": {
+                "subject": "introverts",
+                "figurative_mechanism": "metaphor",
+            },
+        })
+        self.assertEqual(plan.issue_type, "METAPHOR_MAPPING")
+        self.assertIn("source entity", plan.agent1_question.casefold())
+
     def test_outcome_claim_asks_about_actions_and_results(self):
         plan = build_question_plan({
             "claim_contract": {"safe_for_directional_reasoning": True},
@@ -619,6 +805,79 @@ class TribunalControllerTests(unittest.TestCase):
 
 
 class TribunalBatchIntegrationTests(unittest.TestCase):
+    def test_tribunal_hearing_records_witnesses_without_calling_arbiter(self):
+        class FakeVisualAgent:
+            def __init__(self, _runtime):
+                pass
+
+            @staticmethod
+            def critique(_image, prompt):
+                self.assertIn("TRIBUNAL_VISUAL_WITNESS_ONLY", prompt)
+                return {
+                    "_format_valid": True,
+                    "response_status": "VALID_OBSERVATION",
+                    "observed_entity": "line", "observed_state": "line falls",
+                    "image_region": "chart", "specific_evidence": True,
+                    "recommendation": "ABSTAIN", "claim_relation": "UNRESOLVED",
+                    "question_id": "Q1", "reason": "The line falls.",
+                    "witness_contract": {
+                        "question_id": "Q1", "answer_status": "OBSERVED",
+                        "observation": "line falls", "region": "chart",
+                        "direction_assigned": False,
+                    },
+                }
+
+        class FakeAgent2:
+            @staticmethod
+            def critique(_caption, _prompt):
+                return {
+                    "stance": "ENDORSE", "_format_valid": True,
+                    "requirements_valid": True,
+                    "support_requirement": "line rises",
+                    "conflict_requirement": "line falls",
+                    "reason": "The caption asserts a rising line.",
+                }
+
+        class ForbiddenArbiter:
+            @staticmethod
+            def analyze(*_args, **_kwargs):
+                raise AssertionError("tribunal hearing must not call the old arbiter")
+
+        contract = {
+            "safe_for_directional_reasoning": True,
+            "safe_for_automatic_directional_reasoning": True,
+        }
+        case = {
+            "key": "case", "caption": "The line rises.", "image": object(),
+            "visual_output": {}, "language_output": {"claim_contract": contract},
+            "comparison": {"claim_contract": contract, "claim_relation": {}},
+            "decision": {"label": "ENTAILS", "confidence": 0.55},
+            "evidence_ledger": [], "debate_level": 2,
+            "tribunal_hearing": True, "force_visual_review": True,
+            "mediation_plan": {
+                "_usable": True,
+                "agent1_questions": ["What direction does the line move?"],
+            },
+        }
+        engine = DebateEngine()
+        with (
+            patch("engine.debate.Qwen3VLVisionModel", return_value=object()),
+            patch("engine.debate.VisualGroundingAgent", FakeVisualAgent),
+            patch("engine.debate.GPUManager.clear"),
+        ):
+            result = engine.run_debate_batch(
+                [case],
+                language_runtime={
+                    "agent2": FakeAgent2(), "arbiter": ForbiddenArbiter(),
+                },
+            )["case"]
+        self.assertEqual(result["label"], "ENTAILS")
+        self.assertEqual(
+            result["_debate"]["architecture"],
+            "tribunal_targeted_hearing",
+        )
+        self.assertFalse(result["_debate"]["revision_accepted"])
+
     def test_one_review_round_resolves_and_records_state(self):
         class FakeMediator:
             def __init__(self, _runtime):

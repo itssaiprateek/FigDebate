@@ -1,8 +1,9 @@
 # Independent multimodal judge
 
-The judge is optional. Shadow and appellate use it after debate; mediated mode
-uses it as a label-blind planner; tribunal mode uses it as a bounded overseer
-before, between, and after agent responses. It never replaces
+The judge is optional. Shadow and appellate use it after legacy debate; mediated
+mode uses it as a label-blind planner. Tribunal mode uses a deterministic
+pre-hearing audit and Qwen as the single bounded relation mediator after agent
+testimony. It never replaces
 Agent 1, Agent 2, the comparator, the Arbiter, the evidence verifier, or the
 deterministic Review Board.
 
@@ -106,12 +107,16 @@ Without these conditions, the original equal-evidence rejection remains.
 
 ## Tribunal execution order
 
-1. The initial pipeline selects a case for debate without consulting the judge.
-2. A label-blind mediation plan asks each agent one role-specific question.
-3. Agent 1 returns a typed visual witness statement without a label vote.
-4. Agent 2 returns the caption proposition, polarity, and opposing requirements.
-5. The Arbiter's raw proposal is recorded before evidence constraints are applied.
-6. Qwen reviews the original image, both responses, comparator candidates, and
+1. The normal caption-blind grounding, claim audit, comparator, verifier, and
+   initial Arbiter produce a checkpointed baseline decision.
+2. A deterministic, label-blind pre-hearing audit records the structural issue
+   and closes cases that already have adequate auditable evidence.
+3. Escalated cases receive one issue-specific question per agent. No model vote
+   is produced at Level 1.
+4. Agent 1 returns a typed observation-only visual witness statement.
+5. Agent 2 audits the immutable caption, polarity, roles, and opposing conditions.
+6. The legacy debate Arbiter is not called in tribunal mode. Qwen reviews the
+   original image, both responses, comparator candidates, and
    complete current ledger.
 7. Qwen returns `RESOLVE`, `FOLLOW_UP`, or `ABSTAIN` under a strict JSON schema.
 8. `FOLLOW_UP` creates at most one further neutral question for each agent.
@@ -122,7 +127,11 @@ Without these conditions, the original equal-evidence rejection remains.
     relation judgment; Qwen cannot promote its own statement by itself.
 11. The deterministic Review Board compares reliability by independent
     provenance root and accepts only an adequately grounded revision.
-12. The final record exports every decision checkpoint, round, stop reason, and
+12. Same-label confirmations are diagnostic only: they cannot mutate confidence
+    or count as accepted revisions.
+13. Confidence is capped by independently rooted verified evidence; derived
+    restatements sharing a witness root are counted once.
+14. The final record exports every decision checkpoint, round, stop reason, and
     accepted or rejected verification ID.
 
 Questions containing entailment, contradiction, support, conflict, prediction,

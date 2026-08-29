@@ -24,7 +24,7 @@ from models.vision_model import VISION_MODEL_ID, VISION_MODEL_REVISION
 
 LANGUAGE_MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.2"
 LANGUAGE_MODEL_REVISION = "63a8b081895390a26e140280378bc85ec8bce07a"
-EVIDENCE_LEDGER_VERSION = "11.0"
+EVIDENCE_LEDGER_VERSION = "12.0"
 
 
 FIELDNAMES = [
@@ -100,18 +100,24 @@ FIELDNAMES = [
     "claim_contract_entity_frame_preserved", "claim_contract_warnings",
     "claim_relation_pair_valid", "claim_reasoning_requirement",
     "claim_safe_for_automatic_directional_reasoning",
-    "structured_relation_candidate_count",
+    "claim_safe_for_tribunal_reasoning",
+    "structured_relation_candidate_count", "structural_reasoning_type",
+    "figurative_mechanism_candidates", "literal_polarity",
+    "intended_polarity", "comparison_direction", "evaluation_target",
+    "time_or_panel_scope", "structured_observation_summary",
+    "pre_hearing_required", "pre_hearing_reasons", "pre_hearing_issue_type",
     "review_board_status", "review_board_binary_valid",
     "review_board_directionally_grounded", "review_board_source_grounded",
     "review_board_confidence_cap_applied",
     "review_board_confidence_before", "review_board_confidence_after",
     "judge_mode", "judge_scope", "judge_requested", "judge_status",
-    "pre_judge_prediction",
+    "pre_judge_prediction", "pre_judge_confidence",
     "judge_trigger_reasons", "judge_verdict", "judge_confidence",
     "judge_format_valid", "judge_format_error", "judge_evidence_ids",
     "judge_invalid_evidence_ids", "judge_visual_observations", "judge_reason",
     "judge_agreed_with_pre_judge_decision", "judge_revision_accepted",
-    "judge_revision_reason", "judge_changed_decision", "judge_model",
+    "judge_revision_reason", "judge_changed_decision",
+    "judge_confirmation_valid", "judge_model",
     "judge_model_revision", "judge_feedback_candidate_recorded",
     "judge_feedback_role", "judge_feedback_memory_update_applied",
     "mediator_status", "mediator_provisional_verdict", "mediator_confidence",
@@ -303,7 +309,9 @@ def pipeline_source_checksum():
         "engine/region_verifier.py", "engine/review_board.py",
         "engine/judge_review.py", "agents/multimodal_judge.py",
         "engine/decision_trace.py", "engine/question_router.py",
-        "engine/tribunal.py",
+        "engine/tribunal.py", "engine/pre_hearing.py",
+        "engine/reasoning_schema.py", "engine/structured_evidence.py",
+        "engine/relation_semantics.py",
         "engine/sampling.py", "engine/run_integrity.py",
         "engine/feedback_loop.py", "evaluation/build_feedback_memory.py",
         "evaluation/audit_evidence_provenance.py",
@@ -426,6 +434,7 @@ def build_record(index, raw, result, elapsed):
         or {}
     )
     judge_feedback = judge.get("feedback_candidate", {}) or {}
+    pre_hearing = result.get("pre_hearing", {}) or {}
     debate_visual_evidence = [
         item for item in ledger
         if item.get("source") == "debate_visual_reinspection"
@@ -682,9 +691,32 @@ def build_record(index, raw, result, elapsed):
         "claim_safe_for_automatic_directional_reasoning": claim_contract.get(
             "safe_for_automatic_directional_reasoning", False
         ),
+        "claim_safe_for_tribunal_reasoning": claim_contract.get(
+            "safe_for_tribunal_reasoning", False
+        ),
         "structured_relation_candidate_count": len(
             comparison.get("structured_relation_candidates", []) or []
         ),
+        "structural_reasoning_type": claim_contract.get(
+            "structural_reasoning_type", "UNRESOLVED"
+        ),
+        "figurative_mechanism_candidates": text_list(
+            claim_contract.get("figurative_mechanism_candidates", [])
+        ),
+        "literal_polarity": claim_contract.get("literal_polarity", ""),
+        "intended_polarity": claim_contract.get("intended_polarity", ""),
+        "comparison_direction": claim_contract.get("comparison_direction", ""),
+        "evaluation_target": claim_contract.get("evaluation_target", ""),
+        "time_or_panel_scope": claim_contract.get("time_or_panel_scope", ""),
+        "structured_observation_summary": json.dumps(
+            comparison.get("structured_observation_summary", {}),
+            sort_keys=True,
+        ),
+        "pre_hearing_required": pre_hearing.get(
+            "requires_live_hearing", False
+        ),
+        "pre_hearing_reasons": text_list(pre_hearing.get("reasons", [])),
+        "pre_hearing_issue_type": pre_hearing.get("issue_type", ""),
         "review_board_status": review_board.get("status"),
         "review_board_binary_valid": review_board.get("binary_valid", False),
         "review_board_directionally_grounded": review_board.get(
@@ -707,6 +739,10 @@ def build_record(index, raw, result, elapsed):
         "judge_requested": judge.get("requested", False),
         "judge_status": judge.get("status", "disabled"),
         "pre_judge_prediction": judge_review.get("previous_label", prediction),
+        "pre_judge_confidence": judge_review.get(
+            "previous_confidence",
+            result.get("round2_confidence", result.get("round1_confidence")),
+        ),
         "judge_trigger_reasons": text_list(judge.get("trigger_reasons")),
         "judge_verdict": judgment.get(
             "verdict", tribunal_review.get("provisional_verdict", "")
@@ -748,6 +784,9 @@ def build_record(index, raw, result, elapsed):
         "judge_revision_accepted": judge_review.get("accepted", False),
         "judge_revision_reason": judge_review.get("reason", ""),
         "judge_changed_decision": judge_review.get("changed_decision", False),
+        "judge_confirmation_valid": judge_review.get(
+            "confirmation_valid", False
+        ),
         "judge_model": judgment.get(
             "_model_id", tribunal_review.get("_model_id", "")
         ),
@@ -963,6 +1002,7 @@ def build_record(index, raw, result, elapsed):
             "feedback_candidate_decision": feedback_candidate,
             "evidence_verification": evidence_verification,
             "judge": judge,
+            "pre_hearing": pre_hearing,
         },
     }
 
@@ -973,6 +1013,15 @@ def append_record(path, record):
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def write_json_atomic(path, payload):
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_path, path)
 
 
 def write_predictions(path, records):
@@ -1144,6 +1193,7 @@ def main():
     os.makedirs(os.path.join(run_dir, "paper_assets"), exist_ok=True)
     records_path = os.path.join(run_dir, "records.jsonl")
     predictions_path = os.path.join(run_dir, "predictions.csv")
+    progress_path = os.path.join(run_dir, "progress.json")
     if os.path.exists(records_path) and not args.resume:
         raise ValueError(
             "The run directory already contains records.jsonl. Use --resume "
@@ -1200,15 +1250,23 @@ def main():
         },
         "debate_policy": {
             "routing": "auditable_need_score",
-            "level_1": "independent_decision_grade_evidence_deliberation",
-            "level_2": "adaptive_regrounding_then_independent_multimodal_reinspection",
+            "level_1": (
+                "deterministic_pre_hearing_audit"
+                if args.judge_mode == "tribunal"
+                else "legacy_independent_evidence_deliberation"
+            ),
+            "level_2": (
+                "tribunal_targeted_witness_hearing"
+                if args.judge_mode == "tribunal"
+                else "legacy_adaptive_multimodal_reinspection"
+            ),
             "revision_gate": "deterministic_review_board_requires_stronger_current_image_evidence",
         },
         "judge_policy": {
             "position": (
                 "inside_debate_before_agent_reviews"
                 if args.judge_mode == "mediated"
-                else "bounded_mediator_before_between_and_after_agent_reviews"
+                else "pre_hearing_then_bounded_targeted_tribunal"
                 if args.judge_mode == "tribunal"
                 else "after_existing_arbiter_and_debate"
             ),
@@ -1248,10 +1306,29 @@ def main():
     with open(os.path.join(run_dir, "run_config.json"), "w", encoding="utf-8") as handle:
         json.dump(run_config, handle, indent=2)
 
+    progress = {
+        "status": "running",
+        "requested_samples": len(selected),
+        "completed_samples": len(existing),
+        "completed_ids": sorted(existing),
+        "last_completed_id": None,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "resume_command_required_after_interruption": True,
+    }
+    write_json_atomic(progress_path, progress)
+
     def record_result(index, raw, result, elapsed):
         record = build_record(index, raw, result, elapsed)
         existing[raw["id"]] = record
         append_record(records_path, record)
+        write_predictions(predictions_path, list(existing.values()))
+        progress.update({
+            "completed_samples": len(existing),
+            "completed_ids": sorted(existing),
+            "last_completed_id": raw["id"],
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        write_json_atomic(progress_path, progress)
         print(f"Saved checkpoint for {raw['id']} ({elapsed:.2f} sec)")
 
     run_started = time.time()
@@ -1302,6 +1379,13 @@ def main():
     debate_jsonl, debate_csv = write_debate_logs(run_dir, records)
     feedback_jsonl, feedback_csv = write_feedback_decision_logs(run_dir, records)
     metrics = evaluate_predictions(predictions_path, run_dir)
+    progress.update({
+        "status": "complete",
+        "completed_samples": len(records),
+        "completed_ids": sorted(existing),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    write_json_atomic(progress_path, progress)
     valid = sum(record["final_decision_valid"] for record in records)
     correct = sum(record["correct"] for record in records)
     print("\nFIGDEBATE RUN COMPLETE")

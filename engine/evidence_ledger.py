@@ -115,6 +115,31 @@ def evidence_reliability(item):
     )
 
 
+def evidence_provenance_roots(ledger, item_or_id):
+    """Return transitive source roots for independence-aware aggregation."""
+    by_id = {item.get("id"): item for item in (ledger or []) if item.get("id")}
+    item = by_id.get(item_or_id, {}) if isinstance(item_or_id, str) else (
+        item_or_id or {}
+    )
+
+    def visit(current, trail):
+        current_id = current.get("id")
+        if current_id in trail:
+            return {current_id} if current_id else set()
+        parents = [
+            parent for parent in (current.get("derived_from_ids", []) or [])
+            if parent in by_id
+        ]
+        if not parents:
+            return {current_id} if current_id else set()
+        roots = set()
+        for parent in parents:
+            roots.update(visit(by_id[parent], trail | {current_id}))
+        return roots
+
+    return sorted(visit(item, set()))
+
+
 def promote_verified_relation(
     ledger, *, source, text, relation, method, derived_from_ids=None,
     reliability=None, question_id=None,
@@ -280,8 +305,17 @@ def add_tribunal_corroborated_relation(
         return output, {"promoted": False, "reason": "tribunal_relation_unresolved"}
     if not review.get("_format_valid", False):
         return output, {"promoted": False, "reason": "tribunal_contract_invalid"}
-    if not contract.get("safe_for_directional_reasoning", False):
+    if not contract.get(
+        "safe_for_tribunal_reasoning",
+        contract.get("safe_for_directional_reasoning", False),
+    ):
         return output, {"promoted": False, "reason": "claim_contract_not_safe"}
+    if visual.get("response_status") and visual.get("response_status") not in {
+        "VALID_OBSERVATION", "VALID_DIRECTIONAL_ANSWER"
+    }:
+        return output, {
+            "promoted": False, "reason": "visual_witness_response_invalid"
+        }
     if not (
         claim.get("_format_valid", False)
         and claim.get("requirements_valid", False)
@@ -403,6 +437,24 @@ def build_evidence_ledger(visual_output, language_output, comparison):
         _append(
             entries, "VU", "agent1", "uncertain_observation", text,
             grounded=False,
+        )
+
+    for record in comparison.get("structured_observations", []) or []:
+        if not record.get("text"):
+            continue
+        _append(
+            entries,
+            "SB",
+            "structured_observation_builder",
+            str(record.get("record_type", "binding")).casefold(),
+            record.get("text"),
+            relation="ANCHOR",
+            grounded=True,
+            decision_grade=False,
+            verification_method="deterministic_observation_typing",
+            evidence_level="BINDING",
+            derived_from_ids=[],
+            reliability=0.55 if record.get("binding_complete") else 0.35,
         )
 
     _append(

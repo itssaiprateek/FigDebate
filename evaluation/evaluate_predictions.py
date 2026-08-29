@@ -302,6 +302,9 @@ def evaluate_predictions(input_path, output_dir=None):
         "tribunal_review_status", "tribunal_revision_accepted",
         "tribunal_revision_reason", "tribunal_corroboration_reason",
         "tribunal_acceptance_checks", "tribunal_verified_evidence_id",
+        "pre_hearing_required", "pre_hearing_reasons",
+        "pre_hearing_issue_type", "pre_judge_confidence",
+        "judge_changed_decision", "judge_confirmation_valid",
     )
     judge_df = df[[name for name in judge_columns if name in df]].copy()
     if {"pre_judge_prediction", "judge_verdict"}.issubset(df.columns):
@@ -340,6 +343,15 @@ def evaluate_predictions(input_path, output_dir=None):
             "judge_counterfactual_outcome", pd.Series(dtype=str)
         ).eq("harmed").sum()
     ) if not judge_comparable.empty else 0
+    corrective_proposal_indexes = set()
+    harmful_proposal_indexes = set()
+    if not judge_comparable.empty:
+        corrective_proposal_indexes = set(judge_comparable.index[
+            judge_comparable["judge_counterfactual_outcome"].eq("corrected")
+        ])
+        harmful_proposal_indexes = set(judge_comparable.index[
+            judge_comparable["judge_counterfactual_outcome"].eq("harmed")
+        ])
     if not judge_comparable.empty:
         judge_df["judge_counterfactual_outcome"] = judge_comparable[
             "judge_counterfactual_outcome"
@@ -348,6 +360,25 @@ def evaluate_predictions(input_path, output_dir=None):
     judge_accepted_mask = (
         as_bool(df["judge_revision_accepted"])
         if "judge_revision_accepted" in df else pd.Series(False, index=df.index)
+    )
+    judge_changed_mask = (
+        as_bool(df["judge_changed_decision"])
+        if "judge_changed_decision" in df
+        else (
+            judge_accepted_mask
+            & df.get(
+                "pre_judge_prediction", pd.Series("", index=df.index)
+            ).ne(df["prediction"])
+        )
+    )
+    judge_confirmation_mask = (
+        as_bool(df["judge_confirmation_valid"])
+        if "judge_confirmation_valid" in df
+        else (
+            df.get(
+                "judge_revision_reason", pd.Series("", index=df.index)
+            ).fillna("").str.startswith("accepted_evidence_backed_confirmation:")
+        )
     )
     judge_accepted = df[
         judge_accepted_mask
@@ -370,6 +401,28 @@ def evaluate_predictions(input_path, output_dir=None):
     else:
         judge_accepted_corrections = 0
         judge_accepted_harms = 0
+
+    confidence_harm_mask = pd.Series(False, index=df.index)
+    confidence_benefit_mask = pd.Series(False, index=df.index)
+    before_confidence_column = (
+        "pre_judge_confidence" if "pre_judge_confidence" in df
+        else "round2_confidence" if "round2_confidence" in df
+        else "round1_confidence" if "round1_confidence" in df
+        else None
+    )
+    if before_confidence_column and "final_confidence" in df:
+        before_confidence = numeric(df[before_confidence_column])
+        after_confidence = numeric(df["final_confidence"])
+        final_correct = df["prediction"].eq(df["ground_truth"])
+        comparable_confidence = before_confidence.notna() & after_confidence.notna()
+        confidence_harm_mask = (
+            judge_requested_mask & comparable_confidence & ~final_correct
+            & after_confidence.gt(before_confidence)
+        )
+        confidence_benefit_mask = (
+            judge_requested_mask & comparable_confidence & final_correct
+            & after_confidence.gt(before_confidence)
+        )
 
     confidence, confidence_df = confidence_metrics(valid)
     explanation, explanation_df = explanation_metrics(valid)
@@ -519,6 +572,7 @@ def evaluate_predictions(input_path, output_dir=None):
         "claim_relations": {
             "resolved_rate": float(as_bool(df["claim_relation_resolved"]).mean()) if "claim_relation_resolved" in df else None,
             "contract_valid_rate": float(as_bool(df["claim_contract_valid"]).mean()) if "claim_contract_valid" in df else None,
+            "tribunal_contract_valid_rate": float(as_bool(df["claim_safe_for_tribunal_reasoning"]).mean()) if "claim_safe_for_tribunal_reasoning" in df else None,
             "proposition_preserved_rate": float(as_bool(df["claim_contract_proposition_preserved"]).mean()) if "claim_contract_proposition_preserved" in df else None,
             "entity_frame_preserved_rate": float(as_bool(df["claim_contract_entity_frame_preserved"]).mean()) if "claim_contract_entity_frame_preserved" in df else None,
             "contract_warning_distribution": distribution(df.loc[df["claim_contract_warnings"].fillna("").ne(""), "claim_contract_warnings"]) if "claim_contract_warnings" in df else {},
@@ -527,6 +581,8 @@ def evaluate_predictions(input_path, output_dir=None):
             "structured_candidate_count": int(numeric(df["structured_relation_candidate_count"]).sum()) if "structured_relation_candidate_count" in df else 0,
             "retry_rate": float(as_bool(df["claim_retry_attempted"]).mean()) if "claim_retry_attempted" in df else None,
             "retry_success_rate": float(as_bool(df.loc[as_bool(df["claim_retry_attempted"]), "claim_retry_success"]).mean()) if "claim_retry_attempted" in df and as_bool(df["claim_retry_attempted"]).any() else None,
+            "structural_type_distribution": distribution(df["structural_reasoning_type"]) if "structural_reasoning_type" in df else {},
+            "figurative_mechanism_candidate_distribution": distribution(df["figurative_mechanism_candidates"]) if "figurative_mechanism_candidates" in df else {},
         },
         "confidence": confidence,
         "explanations": explanation,
@@ -586,6 +642,9 @@ def evaluate_predictions(input_path, output_dir=None):
             "mediator_usable_rate": float(as_bool(df.loc[mediated_requested_mask, "mediator_usable"]).mean()) if mediated_requested_mask.any() and "mediator_usable" in df else None,
             "mediated_tiebreak_count": int(as_bool(df["mediator_tiebreak_used"]).sum()) if "mediator_tiebreak_used" in df else 0,
             "tribunal_requested_count": int(tribunal_requested_mask.sum()),
+            "pre_hearing_live_count": int(as_bool(df["pre_hearing_required"]).sum()) if "pre_hearing_required" in df else 0,
+            "pre_hearing_closed_count": int((judge_requested_mask & ~as_bool(df["pre_hearing_required"])).sum()) if "pre_hearing_required" in df else 0,
+            "pre_hearing_issue_distribution": distribution(df.loc[as_bool(df["pre_hearing_required"]), "pre_hearing_issue_type"]) if "pre_hearing_required" in df else {},
             "tribunal_state_distribution": distribution(df.loc[tribunal_requested_mask, "tribunal_state"]) if tribunal_requested_mask.any() and "tribunal_state" in df else {},
             "tribunal_review_status_distribution": distribution(df.loc[tribunal_requested_mask, "tribunal_review_status"]) if tribunal_requested_mask.any() and "tribunal_review_status" in df else {},
             "tribunal_revision_reason_distribution": distribution(df.loc[tribunal_requested_mask, "tribunal_revision_reason"]) if tribunal_requested_mask.any() and "tribunal_revision_reason" in df else {},
@@ -596,10 +655,18 @@ def evaluate_predictions(input_path, output_dir=None):
             "counterfactual_corrections": judge_counterfactual_corrections,
             "counterfactual_harms": judge_counterfactual_harms,
             "counterfactual_net_correct": judge_counterfactual_corrections - judge_counterfactual_harms,
-            "accepted_revisions": int(judge_accepted_mask.sum()),
+            "counterfactual_proposal_accuracy": float(judge_comparable["judge_counterfactual_correct"].mean()) if not judge_comparable.empty else None,
+            "corrective_proposal_acceptance_rate": float(judge_accepted_mask.loc[list(corrective_proposal_indexes)].mean()) if corrective_proposal_indexes else None,
+            "harmful_proposal_acceptance_rate": float(judge_accepted_mask.loc[list(harmful_proposal_indexes)].mean()) if harmful_proposal_indexes else None,
+            "accepted_review_records": int(judge_accepted_mask.sum()),
+            "accepted_revisions": int(judge_changed_mask.sum()),
+            "accepted_label_changes": int(judge_changed_mask.sum()),
+            "valid_same_label_confirmations": int(judge_confirmation_mask.sum()),
             "accepted_corrections": judge_accepted_corrections,
             "accepted_harms": judge_accepted_harms,
             "accepted_net_correct": judge_accepted_corrections - judge_accepted_harms,
+            "confidence_harms": int(confidence_harm_mask.sum()),
+            "confidence_benefits": int(confidence_benefit_mask.sum()),
             "feedback_review_candidates": int(as_bool(df["judge_feedback_candidate_recorded"]).sum()) if "judge_feedback_candidate_recorded" in df else 0,
             "feedback_memory_updates": int(as_bool(df["judge_feedback_memory_update_applied"]).sum()) if "judge_feedback_memory_update_applied" in df else 0,
         },
@@ -738,7 +805,7 @@ def evaluate_predictions(input_path, output_dir=None):
         )
         handle.write(f"Region OCR Reviews: {metrics['debate']['region_ocr_review_count']}\nTargeted Region Verifier Attempts: {metrics['debate']['targeted_region_verifier_attempt_count']}\nTargeted Region Verifier Accepted: {metrics['debate']['targeted_region_verifier_accepted_count']}\nTargeted Region Proposal Accuracy: {metrics['debate']['targeted_region_verifier_proposal_accuracy']}\nTargeted Region Accepted Accuracy: {metrics['debate']['targeted_region_verifier_accuracy']}\n")
         handle.write(f"Feedback Role Distribution: {metrics['feedback']['role_distribution']}\nFeedback Matched Samples: {metrics['feedback']['memory_active_samples']}\nFeedback Match Rate: {metrics['feedback']['memory_match_rate']}\nFeedback Matched Rule Distribution: {metrics['feedback']['matched_rule_distribution']}\nFeedback Revision Acceptances: {metrics['feedback']['revision_acceptance_count']}\nFeedback Corrections: {metrics['feedback']['correction_count']}\nFeedback Harms: {metrics['feedback']['harm_count']}\nFeedback Net Correct Decisions: {metrics['feedback']['net_correct_decisions']}\nFeedback Candidates: {metrics['feedback']['candidate_count']}\nFeedback Updates: {metrics['feedback']['update_count']}\n\n")
-        handle.write(f"Judge/Mediator Requested: {metrics['judge']['requested_count']}\nJudge/Mediator Contract Valid Rate: {metrics['judge']['contract_valid_rate']}\nJudge/Mediator Verdict Distribution: {metrics['judge']['verdict_distribution']}\nMediator Usable Rate: {metrics['judge']['mediator_usable_rate']}\nMediated Tie-breaks: {metrics['judge']['mediated_tiebreak_count']}\nJudge Counterfactual Corrections: {metrics['judge']['counterfactual_corrections']}\nJudge Counterfactual Harms: {metrics['judge']['counterfactual_harms']}\nJudge Counterfactual Net Correct: {metrics['judge']['counterfactual_net_correct']}\nJudge Accepted Revisions: {metrics['judge']['accepted_revisions']}\nJudge Accepted Corrections: {metrics['judge']['accepted_corrections']}\nJudge Accepted Harms: {metrics['judge']['accepted_harms']}\nJudge Accepted Net Correct: {metrics['judge']['accepted_net_correct']}\nJudge Feedback Review Candidates: {metrics['judge']['feedback_review_candidates']}\nJudge Feedback Memory Updates: {metrics['judge']['feedback_memory_updates']}\n\n")
+        handle.write(f"Judge/Mediator Requested: {metrics['judge']['requested_count']}\nJudge/Mediator Contract Valid Rate: {metrics['judge']['contract_valid_rate']}\nJudge/Mediator Verdict Distribution: {metrics['judge']['verdict_distribution']}\nMediator Usable Rate: {metrics['judge']['mediator_usable_rate']}\nMediated Tie-breaks: {metrics['judge']['mediated_tiebreak_count']}\nJudge Counterfactual Corrections: {metrics['judge']['counterfactual_corrections']}\nJudge Counterfactual Harms: {metrics['judge']['counterfactual_harms']}\nJudge Counterfactual Net Correct: {metrics['judge']['counterfactual_net_correct']}\nJudge Accepted Revisions: {metrics['judge']['accepted_revisions']}\nJudge Accepted Label Changes: {metrics['judge']['accepted_label_changes']}\nJudge Valid Same-label Confirmations: {metrics['judge']['valid_same_label_confirmations']}\nJudge Accepted Corrections: {metrics['judge']['accepted_corrections']}\nJudge Accepted Harms: {metrics['judge']['accepted_harms']}\nJudge Accepted Net Correct: {metrics['judge']['accepted_net_correct']}\nJudge Confidence Benefits: {metrics['judge']['confidence_benefits']}\nJudge Confidence Harms: {metrics['judge']['confidence_harms']}\nJudge Feedback Review Candidates: {metrics['judge']['feedback_review_candidates']}\nJudge Feedback Memory Updates: {metrics['judge']['feedback_memory_updates']}\n\n")
         handle.write("Paper artifacts: confusion_matrix.csv, phenomenon_breakdown.csv, decision_method_breakdown.csv, comparator_analysis.csv, debate_analysis.csv, debate_log.csv, debate_log.jsonl, feedback_analysis.csv, feedback_decision_log.csv, feedback_decision_log.jsonl, judge_analysis.csv, evidence_provenance_analysis.csv, confidence_analysis.csv, explanation_analysis.csv, runtime_profile.csv, agent_grounding_analysis.csv, error_analysis.csv.\n")
     print(f"Saved metrics and paper artifacts to {output_dir}")
     return metrics

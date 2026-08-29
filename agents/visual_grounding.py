@@ -1478,7 +1478,12 @@ Text Binding: exact visible phrase -> attached visible entity, or None
             "_raw_response": "Claim Relation: UNRESOLVED",
         }
         relation_retry_raw = ""
-        if answer.get("valid") and observation_status == "OBSERVED":
+        witness_only = "TRIBUNAL_VISUAL_WITNESS_ONLY" in str(critique_prompt)
+        if (
+            answer.get("valid")
+            and observation_status == "OBSERVED"
+            and not witness_only
+        ):
             relation_prompt = f"""
 Inspect the image and use the factual observation below. Compare it with the
 immutable caption conditions. Do not use absence as conflict and do not guess.
@@ -1537,6 +1542,12 @@ UNRESOLVED means neither direction is directly established.
         response_status = self._response_status(
             observation_contract, relation_parsed, relation_diagnostics
         )
+        if witness_only and answer.get("valid"):
+            response_status = (
+                "VALID_OBSERVATION"
+                if observation_status == "OBSERVED"
+                else "VALID_ABSTENTION"
+            )
         format_valid = bool(
             answer.get("valid") and relation_parsed.get("_format_valid", False)
         )

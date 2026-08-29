@@ -67,15 +67,15 @@ Current reasoning flow
           -> deterministic Agent 1 evidence schema
     caption -> structured intended claim and relation
     relation candidates -> generic NLI diagnostic routing (never visual proof)
-    initial Arbiter -> debate-need score
-    Level 1 -> independent decision-grade evidence deliberation
-    Level 2 -> independent targeted multimodal reinspection
+    initial Arbiter -> label-blind evidence-risk score
+    tribunal Level 1 -> deterministic pre-hearing dossier (no model vote)
+    tribunal Level 2 -> targeted Agent 1/Agent 2 witness hearing
     procedural feedback -> diagnostic question and debate routing, never a label
     deterministic Review Board -> accept only stronger current-image evidence
     optional Qwen judge -> independent raw-image and full-debate audit
     appellate gate -> require stronger cited decision-grade ledger evidence
     mediated mode -> Qwen issue map -> targeted agent checks -> verified gate
-    tribunal mode -> issue map -> both witnesses -> review -> optional follow-up
+    tribunal mode -> pre-hearing -> both witnesses -> review -> optional follow-up
                   -> independent verification -> deterministic Review Board
     final binary decision -> complete audit and paper artifacts
 
@@ -94,7 +94,7 @@ validates each answer, permits one simplified retry, and assembles the public
 schema. Model self-confidence is deliberately not accepted as calibrated
 evidence. The same Agent 1 works when debate and the judge are disabled.
 
-Level 2 review now asks Agent 1 one visual question at a time. Agent 1 records a
+Tribunal Level 2 asks Agent 1 one visual question at a time. Agent 1 records a
 typed visual observation but never classifies it as entailment or contradiction.
 Formatting failures, token-limit truncation, genuine absence, and valid
 observations are logged as distinct outcomes. Only the failed field is retried.
@@ -130,7 +130,10 @@ questions; Qwen's provisional vote and rationale remain hidden from them:
 
     python run_figdebate.py --num-samples 10 --judge-mode mediated --judge-scope escalated
 
-Tribunal mode adds post-response review and at most one targeted follow-up:
+Tribunal mode replaces the active two-level model debate with a deterministic
+pre-hearing audit and one targeted witness hearing. The legacy debate remains
+available in non-tribunal modes for controlled ablation. Tribunal permits at
+most one targeted follow-up:
 
     python run_figdebate.py --num-samples 10 --judge-mode tribunal --judge-scope escalated
 
@@ -139,8 +142,10 @@ cannot become evidence by itself. A proposed label change is accepted only if
 the response is valid JSON, confidence is at least 0.75, every citation belongs
 to the current sample, and the judge cites independently verified evidence whose
 provenance-weighted strength exceeds the current direction. The validated Agent
-1/Agent 2 exchange can add one cross-agent verified relation before tribunal
-resolution; the judge itself cannot add evidence. The ordinary Review Board
+1 observation, Agent 2 caption audit, and tribunal relation can jointly create
+one provenance-linked verified relation; judge prose alone cannot add visual
+evidence. Same-label confirmations are logged separately and cannot raise
+confidence or count as accepted revisions. The ordinary Review Board
 still rejects the proposal when opposing verified evidence is stronger. See `docs/judge_architecture.md` and
 `docs/tribunal_implementation.md` for the contracts and rollout protocol.
 
@@ -150,6 +155,8 @@ Run integrity
 An existing run directory cannot be reused accidentally. `--resume` verifies
 the dataset, seed, modes, model revisions, feedback checksum, source checksum,
 and evidence-ledger version before processing any missing samples.
+`progress.json` and `predictions.csv` are atomically refreshed after every
+completed sample, so an interrupted run clearly reports its last durable result.
 
 Paired ablation comparison
 --------------------------

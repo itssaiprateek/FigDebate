@@ -255,6 +255,27 @@ def build_claim_relation(caption, language_output):
         "expected_visual_cues": expected,
         "opposite_visual_cues": opposite,
         "figurative_mechanism": str(language_output.get("figurative_type", "unknown")).lower(),
+        "figurative_mechanism_candidates": list(
+            language_output.get("figurative_mechanism_candidates", []) or []
+        ),
+        "structural_reasoning_type": str(
+            language_output.get("structural_reasoning_type") or "UNRESOLVED"
+        ),
+        "literal_polarity": str(
+            language_output.get("literal_polarity") or "unclear"
+        ).lower(),
+        "intended_polarity": str(
+            language_output.get("intended_polarity") or "unclear"
+        ).lower(),
+        "comparison_direction": str(
+            language_output.get("comparison_direction") or ""
+        ),
+        "evaluation_target": str(
+            language_output.get("evaluation_target") or ""
+        ),
+        "time_or_panel_scope": str(
+            language_output.get("time_or_panel_scope") or ""
+        ),
         "expected_visual_state": expected_state,
         "opposite_visual_state": opposite_state,
         "claim_contract": contract,

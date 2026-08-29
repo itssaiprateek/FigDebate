@@ -446,8 +446,9 @@ class SemanticDebateRegressionTests(unittest.TestCase):
                 "reason": "The man is visibly smiling in the center.",
             },
         )
-        self.assertTrue(accepted)
-        self.assertIn("accepted_evidence_backed_confirmation", reason)
+        self.assertFalse(accepted)
+        self.assertEqual(reason, "same_label_confirmation_not_revision")
+        self.assertTrue(audit["confirmation_valid"])
         self.assertTrue(audit["valid"])
 
     def test_unopposed_visual_evidence_controls_revision_proposal(self):

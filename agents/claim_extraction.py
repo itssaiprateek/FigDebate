@@ -7,6 +7,7 @@ except ImportError:
 
 from utils.claim_parser import parse_claim_response
 from engine.claim_contract import attach_claim_contract
+from engine.reasoning_schema import attach_reasoning_profile
 from engine.relation_schema import normalize_relation_family
 
 
@@ -56,6 +57,16 @@ target; otherwise None
 Incongruity: for sarcasm or humor, the exact expectation/reality mismatch;
 otherwise None
 Caption Polarity: positive, negative, neutral, mixed, or unclear
+Literal Polarity: positive, negative, neutral, mixed, or unclear
+Intended Polarity: positive, negative, neutral, mixed, or unclear
+Figurative Mechanism Candidates: up to two of literal, metaphor, sarcasm,
+humor, or unresolved, ordered most likely first
+Structural Reasoning Type: direct_state, ocr_region_binding,
+comparative_layout, temporal_causal_sequence, quoted_statement_and_reaction,
+affective_scene, symbol_attachment, background_required, or unresolved
+Comparison Direction: the exact A-versus-B direction, or None
+Evaluation Target: what is praised, criticized, preferred, or rejected, or None
+Time or Panel Scope: the relevant moment, panel, or ordering constraint, or None
 Alternative Interpretation: one plausible competing reading, or None
 Relation Family: trajectory, pace, outcome, sentiment, safety, trust,
 association, quantity, or other
@@ -71,7 +82,10 @@ Confidence: one decimal from 0 to 1
         "claim_object", "claim_source", "claim_target",
         "asserted_property", "relation_family", "expected_visual_state",
         "opposite_visual_state", "reasoning_requirement",
-        "background_knowledge",
+        "background_knowledge", "structural_reasoning_type",
+        "figurative_mechanism_candidates", "literal_polarity",
+        "intended_polarity", "comparison_direction", "evaluation_target",
+        "time_or_panel_scope",
     )
 
     def __init__(self, mistral_model, tokenizer):
@@ -278,6 +292,13 @@ Asserted Property:
 Relation Family:
 Expected Visual State:
 Opposite Visual State:
+Structural Reasoning Type:
+Figurative Mechanism Candidates:
+Literal Polarity:
+Intended Polarity:
+Comparison Direction:
+Evaluation Target:
+Time or Panel Scope:
 Reasoning Requirement:
 Background Knowledge:
 
@@ -380,6 +401,17 @@ Caption: {caption}
             "reasoning_requirement": parsed.get(
                 "reasoning_requirement", ""
             ),
+            "structural_reasoning_type": parsed.get(
+                "structural_reasoning_type", ""
+            ),
+            "figurative_mechanism_candidates": parsed.get(
+                "figurative_mechanism_candidates", ""
+            ),
+            "literal_polarity": parsed.get("literal_polarity", ""),
+            "intended_polarity": parsed.get("intended_polarity", ""),
+            "comparison_direction": parsed.get("comparison_direction", ""),
+            "evaluation_target": parsed.get("evaluation_target", ""),
+            "time_or_panel_scope": parsed.get("time_or_panel_scope", ""),
             "explicit_claims": explicit_claims,
             "implicit_claims": parsed.get("implicit_claims", []) or [],
             "linguistic_notes": parsed.get("linguistic_notes", []) or [],
@@ -550,12 +582,12 @@ Caption:
 
         parsed = parse_claim_response(response)
 
-        spec_output = attach_claim_contract(
+        spec_output = attach_reasoning_profile(attach_claim_contract(
             self._preserve_source_caption(
                 self._to_spec_schema(parsed, response), caption
             ),
             caption,
-        )
+        ))
         spec_output["_claim_retry_attempted"] = False
         spec_output["_claim_retry_success"] = False
         spec_output["_claim_retry_seconds"] = 0.0
@@ -577,7 +609,7 @@ Caption:
                     spec_output, retry_parsed, caption
                 )
                 if self._claim_frame_quality(repaired) > primary_quality:
-                    spec_output = repaired
+                    spec_output = attach_reasoning_profile(repaired)
                     spec_output["_claim_retry_success"] = True
                     spec_output["_claim_retry_repaired_fields"] = repaired_fields
                     spec_output["_claim_retry_directionally_safe"] = bool(
@@ -615,6 +647,7 @@ Caption:
                     "_figurative_type_resolution_confidence": resolution_confidence,
                     "_figurative_type_resolution_scores": resolution_scores,
                 })
+                spec_output = attach_reasoning_profile(spec_output)
                 print(
                     "[Agent2] Figurative-type recovery scores: "
                     + ", ".join(

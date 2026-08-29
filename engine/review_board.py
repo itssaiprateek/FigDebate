@@ -2,7 +2,11 @@
 
 import re
 
-from engine.evidence_ledger import audit_decision, evidence_reliability
+from engine.evidence_ledger import (
+    audit_decision,
+    evidence_provenance_roots,
+    evidence_reliability,
+)
 
 
 VALID_LABELS = {"ENTAILS", "CONTRADICTS"}
@@ -26,9 +30,9 @@ def _grade_ids(ledger, relation):
 
 
 def _grade_strength(ledger, relation, allowed_ids=None):
-    """Combine independent provenance roots, not repeated descriptions."""
+    """Combine independent provenance components, not repeated descriptions."""
     allowed = set(allowed_ids) if allowed_ids is not None else None
-    by_root = {}
+    candidates = []
     for item in ledger or []:
         if (
             not item.get("grounded", False)
@@ -37,13 +41,33 @@ def _grade_strength(ledger, relation, allowed_ids=None):
             or (allowed is not None and item.get("id") not in allowed)
         ):
             continue
-        roots = tuple(sorted(
-            item.get("derived_from_ids", []) or [item.get("id")]
-        ))
-        by_root[roots] = max(
-            by_root.get(roots, 0.0), evidence_reliability(item)
-        )
-    return round(sum(by_root.values()), 6)
+        roots = set(evidence_provenance_roots(ledger, item))
+        if not roots and item.get("id"):
+            roots = {item["id"]}
+        candidates.append({
+            "roots": roots,
+            "strength": evidence_reliability(item),
+        })
+    # Any shared transitive source root places records in one component. This
+    # prevents a witness statement, its cross-agent restatement, and the
+    # tribunal's restatement from being counted as three independent facts.
+    components = []
+    for candidate in candidates:
+        overlaps = [
+            index for index, component in enumerate(components)
+            if candidate["roots"] & component["roots"]
+        ]
+        if not overlaps:
+            components.append(dict(candidate))
+            continue
+        merged_roots = set(candidate["roots"])
+        merged_strength = candidate["strength"]
+        for index in reversed(overlaps):
+            component = components.pop(index)
+            merged_roots.update(component["roots"])
+            merged_strength = max(merged_strength, component["strength"])
+        components.append({"roots": merged_roots, "strength": merged_strength})
+    return round(sum(item["strength"] for item in components), 6)
 
 
 def decision_grade_strength(ledger, relation, evidence_ids=None):
@@ -104,11 +128,17 @@ def _mediated_tie_is_safe(
 def audit_final_decision(decision, ledger, claim_contract=None):
     evidence = audit_decision(decision, ledger)
     contract = claim_contract or {}
+    contract_valid = contract.get("safe_for_directional_reasoning")
+    if (
+        decision.get("decision_method") == "bounded_multimodal_tribunal"
+        and contract.get("safe_for_tribunal_reasoning", False)
+    ):
+        contract_valid = True
     if decision.get("label") not in VALID_LABELS:
         status = "INVALID_BINARY_DECISION"
     elif evidence.get("valid"):
         status = "DIRECTIONALLY_GROUNDED"
-    elif contract and not contract.get("safe_for_directional_reasoning", False):
+    elif contract and not contract_valid:
         status = "CLAIM_CONTRACT_REVIEW_REQUIRED"
     else:
         status = "BINARY_DECISION_WITHOUT_DIRECTIONAL_PROOF"
@@ -119,7 +149,7 @@ def audit_final_decision(decision, ledger, claim_contract=None):
         "source_grounded": bool(evidence.get("source_valid")),
         "evidence_audit": evidence,
         "claim_contract_valid": (
-            contract.get("safe_for_directional_reasoning")
+            contract_valid
             if contract else None
         ),
         "claim_contract_warnings": list(contract.get("warnings", []) or []),
@@ -138,6 +168,18 @@ def attach_final_review(decision, ledger, claim_contract=None):
             cap = 0.55 if review["source_grounded"] else 0.35
         if review.get("claim_contract_valid") is False:
             cap = min(cap if cap is not None else 1.0, 0.55)
+        if review["directionally_grounded"]:
+            audit = review.get("evidence_audit", {}) or {}
+            strength = _grade_strength(
+                ledger,
+                RELATION_FOR_LABEL.get(output.get("label")),
+                allowed_ids=audit.get("cited_evidence_ids", []),
+            )
+            # Confidence is bounded by independently rooted verified evidence.
+            evidence_cap = min(0.93, 0.55 + 0.40 * min(strength, 0.95))
+            cap = min(cap if cap is not None else 1.0, evidence_cap)
+            review["independent_evidence_strength"] = strength
+            review["evidence_derived_confidence_cap"] = evidence_cap
         if cap is not None and confidence > cap:
             output["confidence"] = cap
     review.update({
@@ -256,6 +298,26 @@ def review_revision(
         checked("citation_matches_candidate_direction", False)
         return reject("revision_citation_not_decision_grade", candidate_audit)
     checked("citation_matches_candidate_direction", True)
+
+    # Agreement is useful diagnostic corroboration, but it is not a revision.
+    # Keeping it outside the mutation path prevents a fallible judge from
+    # raising confidence on an already-wrong label merely by repeating it.
+    if same_label:
+        candidate_audit["candidate_evidence_strength"] = _grade_strength(
+            ledger, candidate_relation, allowed_ids=cited_ids
+        )
+        candidate_audit["original_evidence_strength"] = _grade_strength(
+            ledger, original_relation
+        )
+        candidate_audit["confirmation_valid"] = True
+        checked("proposal_changes_label", False, "same_label_confirmation")
+        return reject(
+            "same_label_confirmation_not_revision",
+            candidate_audit,
+            failed_invariant="proposal_does_not_change_label",
+        )
+    checked("proposal_changes_label", True)
+
     mediated_tie_break = False
     if (
         not same_label
@@ -326,13 +388,9 @@ def review_revision(
     return (
         True,
         (
-            "accepted_evidence_backed_confirmation:"
-            if same_label
-            else (
-                "accepted_mediated_verified_tiebreak:"
-                if mediated_tie_break
-                else "accepted_stronger_current_image_evidence:"
-            )
+            "accepted_mediated_verified_tiebreak:"
+            if mediated_tie_break
+            else "accepted_stronger_current_image_evidence:"
         ) + accepted_ids,
         candidate_audit,
     )

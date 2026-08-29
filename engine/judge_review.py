@@ -95,6 +95,7 @@ def apply_judge_review(
         "accepted": False,
         "changed_decision": False,
         "previous_label": current_decision.get("label"),
+        "previous_confidence": current_decision.get("confidence"),
         "proposed_label": judgment.get("verdict"),
         "reason": "",
         "candidate_evidence_audit": {},

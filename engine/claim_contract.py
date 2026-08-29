@@ -30,6 +30,24 @@ PLACEHOLDER_VALUES = {
     "unknown", "unspecified", "unclear", "implicit", "implicitly",
 }
 
+FIELD_HEADING_RE = re.compile(
+    r"\b(?:caption proposition|claim subject|claim predicate|claim object|"
+    r"claim source|claim target|asserted property|expected visual state|"
+    r"opposite visual state|reasoning requirement|background knowledge|"
+    r"structural reasoning type|literal polarity|intended polarity|"
+    r"comparison direction|evaluation target|time or panel scope)\s*:",
+    flags=re.IGNORECASE,
+)
+GENERIC_PREDICATES = {
+    "is", "are", "was", "were", "be", "being", "exists", "happened",
+    "happens", "occurred", "occurs", "took place",
+}
+ABSENCE_PREFIX_RE = re.compile(
+    r"^(?:no\b|not visible\b|nothing\b|none\b|absence\b|absent\b|"
+    r"missing\b|without\b|there (?:is|are) no\b)",
+    flags=re.IGNORECASE,
+)
+
 # General English state oppositions used only to validate whether Agent 2 has
 # supplied a genuinely directional pair. These are semantic relation classes,
 # never image-, dataset-, or sample-specific rules.
@@ -191,6 +209,25 @@ def _normative_required(language_output):
     return bool(_tokens(text) & NORMATIVE_CUES)
 
 
+def _field_contamination(language_output):
+    contaminated = []
+    for key in (
+        "caption_proposition", "claim_subject", "claim_predicate",
+        "claim_object", "claim_source", "claim_target",
+        "asserted_property", "expected_visual_state",
+        "opposite_visual_state", "comparison_direction",
+        "evaluation_target", "time_or_panel_scope",
+    ):
+        if FIELD_HEADING_RE.search(str(language_output.get(key) or "")):
+            contaminated.append(key)
+    return contaminated
+
+
+def _affirmative_opposite(value):
+    normalized = " ".join(str(value or "").split()).strip()
+    return bool(normalized) and not ABSENCE_PREFIX_RE.match(normalized)
+
+
 def audit_relation_pair(expected_state, opposite_state, subject=""):
     """Conservatively validate a generated support/conflict state pair."""
     expected = _normalize(expected_state)
@@ -333,6 +370,12 @@ def audit_claim_contract(caption, language_output):
         )
 
     warnings = []
+    contaminated_fields = _field_contamination(language_output)
+    if contaminated_fields:
+        warnings.extend(
+            f"field_heading_contamination:{field}"
+            for field in contaminated_fields
+        )
     if not proposition:
         warnings.append("missing_caption_proposition")
     if source_numbers and not set(source_numbers).issubset(proposition_numbers):
@@ -372,6 +415,15 @@ def audit_claim_contract(caption, language_output):
         entity_fields.get("claim_subject", ""),
     )
     relation_pair_complete = relation_pair["complete"]
+    opposite_is_affirmative = _affirmative_opposite(
+        language_output.get("opposite_visual_state")
+    )
+    if relation_pair_complete and not opposite_is_affirmative:
+        warnings.append("opposite_state_is_absence_only")
+    predicate = _normalize(language_output.get("claim_predicate", ""))
+    predicate_specific = None if not predicate else predicate not in GENERIC_PREDICATES
+    if predicate_specific is False:
+        warnings.append("claim_predicate_too_generic")
     background_required = _background_required(language_output)
     normative_required = _normative_required(language_output)
     declared_reasoning = _normalize(
@@ -389,9 +441,22 @@ def audit_claim_contract(caption, language_output):
         and entity_frame_preserved
         and relation_pair_complete
         and relation_pair["valid"]
+        and not contaminated_fields
+        and predicate_specific is not False
+        and opposite_is_affirmative
+    )
+    tribunal_safe = bool(
+        proposition_preserved
+        and entity_frame_preserved
+        and relation_pair_complete
+        and relation_pair["distinct"]
+        and relation_pair["anchor_preserved"]
+        and not contaminated_fields
+        and predicate_specific is not False
+        and opposite_is_affirmative
     )
     return {
-        "schema_version": "2.0",
+        "schema_version": "3.0",
         "source_caption": source_caption,
         "caption_proposition": proposition,
         "source_numbers": source_numbers,
@@ -404,10 +469,35 @@ def audit_claim_contract(caption, language_output):
         "relation_pair_complete": relation_pair_complete,
         "relation_pair_valid": relation_pair["valid"],
         "relation_pair_audit": relation_pair,
+        "opposite_state_is_affirmative": opposite_is_affirmative,
+        "predicate_specific": predicate_specific,
+        "contaminated_fields": contaminated_fields,
+        "structural_reasoning_type": str(
+            language_output.get("structural_reasoning_type") or "UNRESOLVED"
+        ),
+        "figurative_mechanism_candidates": language_output.get(
+            "figurative_mechanism_candidates", []
+        ),
+        "literal_polarity": str(
+            language_output.get("literal_polarity") or "unclear"
+        ),
+        "intended_polarity": str(
+            language_output.get("intended_polarity") or "unclear"
+        ),
+        "comparison_direction": str(
+            language_output.get("comparison_direction") or ""
+        ),
+        "evaluation_target": str(
+            language_output.get("evaluation_target") or ""
+        ),
+        "time_or_panel_scope": str(
+            language_output.get("time_or_panel_scope") or ""
+        ),
         "reasoning_requirement": declared_reasoning,
         "requires_background_knowledge": background_required,
         "requires_normative_reasoning": normative_required,
         "safe_for_directional_reasoning": source_safe,
+        "safe_for_tribunal_reasoning": tribunal_safe,
         "safe_for_automatic_directional_reasoning": bool(
             source_safe and not background_required and not normative_required
         ),

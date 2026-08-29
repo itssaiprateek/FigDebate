@@ -61,6 +61,20 @@ HEADINGS = {
 
     "reasoning_requirement": ["Reasoning Requirement"],
 
+    "structural_reasoning_type": ["Structural Reasoning Type"],
+
+    "figurative_mechanism_candidates": ["Figurative Mechanism Candidates"],
+
+    "literal_polarity": ["Literal Polarity"],
+
+    "intended_polarity": ["Intended Polarity"],
+
+    "comparison_direction": ["Comparison Direction"],
+
+    "evaluation_target": ["Evaluation Target"],
+
+    "time_or_panel_scope": ["Time or Panel Scope"],
+
     "implicit_claims": [
         "Implicit Claims",
     ],
@@ -335,6 +349,20 @@ def parse_claim_response(response):
         "opposite_visual_state": "",
 
         "reasoning_requirement": "",
+
+        "structural_reasoning_type": "",
+
+        "figurative_mechanism_candidates": "",
+
+        "literal_polarity": "",
+
+        "intended_polarity": "",
+
+        "comparison_direction": "",
+
+        "evaluation_target": "",
+
+        "time_or_panel_scope": "",
 
         "implicit_claims": [],
 

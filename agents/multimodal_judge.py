@@ -57,7 +57,21 @@ def _language_packet(output):
             "safe_for_directional_reasoning": contract.get(
                 "safe_for_directional_reasoning"
             ),
+            "safe_for_tribunal_reasoning": contract.get(
+                "safe_for_tribunal_reasoning"
+            ),
             "warnings": _list(contract.get("warnings")),
+            "structural_reasoning_type": contract.get(
+                "structural_reasoning_type"
+            ),
+            "figurative_mechanism_candidates": _list(
+                contract.get("figurative_mechanism_candidates")
+            ),
+            "literal_polarity": contract.get("literal_polarity"),
+            "intended_polarity": contract.get("intended_polarity"),
+            "comparison_direction": contract.get("comparison_direction"),
+            "evaluation_target": contract.get("evaluation_target"),
+            "time_or_panel_scope": contract.get("time_or_panel_scope"),
         },
     }
 
@@ -76,6 +90,9 @@ def _comparison_packet(output):
         "claim_direction": output.get("claim_direction"),
         "direct_support_count": output.get("direct_support_count", 0),
         "direct_conflict_count": output.get("direct_conflict_count", 0),
+        "structured_observations": list(
+            output.get("structured_observations", []) or []
+        )[:12],
     }
 
 
@@ -97,6 +114,15 @@ def _critique_packet(debate):
                 "observed_state": _text(critique.get("observed_state")),
                 "image_region": _text(critique.get("image_region")),
                 "specific_evidence": critique.get("specific_evidence"),
+                "response_status": _text(critique.get("response_status")),
+                "witness_contract": critique.get("witness_contract", {}),
+                "support_requirement": _text(
+                    critique.get("support_requirement"), 600
+                ),
+                "conflict_requirement": _text(
+                    critique.get("conflict_requirement"), 600
+                ),
+                "requirements_valid": critique.get("requirements_valid"),
             })
     return packets
 
@@ -238,7 +264,19 @@ Rules:
 6. Relation means the relation between the cited observation and the preserved
    caption proposition: SUPPORT, CONFLICT, or UNRESOLVED. Never output a dataset label.
 7. In round 2, FOLLOW_UP is forbidden; choose RESOLVE or ABSTAIN.
-8. Return exactly one JSON object and no extra fields:
+8. First resolve the structural evidence type (OCR binding, comparison,
+   event order, reaction target, affect, or symbol attachment), then apply the
+   figurative mechanism. Do not let "humor" erase criticism or polarity.
+9. For metaphor, keep literal source observations separate from the caption
+   target and verify the transferred property explicitly.
+10. For sarcasm, keep literal wording, intended polarity, evaluation target,
+    and visible referent separate.
+11. For multi-panel scenes, verify actor, action, immediate effect, later
+    outcome, and blamed target in order. Temporal order alone is not causation.
+12. A CONFLICT resolution requires an affirmative observed opposite, never a
+    missing expected feature. A SUPPORT resolution requires an affirmative
+    observed match.
+13. Return exactly one JSON object and no extra fields:
 {{"status":"RESOLVE|FOLLOW_UP|ABSTAIN","relation":"SUPPORT|CONFLICT|UNRESOLVED","confidence":0.0,"evidence_ids":["ID"],"visual_observations":["direct observation"],"issue":"unresolved issue","agent1_question":"question or empty","agent2_question":"question or empty","verification_request":"verification or empty","reason":"short evidence audit"}}
 
 CASE PACKET:

@@ -26,6 +26,7 @@ from engine.evidence_ledger import (
 from engine.gpu_manager import GPUManager
 from engine.review_board import attach_final_review, review_revision
 from engine.question_router import build_question_plan, compile_visual_question
+from engine.relation_semantics import is_missing_evidence_only
 from engine.decision_trace import (
     append_decision_checkpoint,
     attach_decision_trace,
@@ -488,19 +489,7 @@ class DebateEngine:
 
     @staticmethod
     def _is_absence_based(reason):
-        text = str(reason or "").lower()
-        return any(
-            phrase in text
-            for phrase in (
-                "no clear indication",
-                "no evidence",
-                "not shown",
-                "not visible",
-                "cannot be determined",
-                "does not directly support",
-                "does not directly contradict",
-            )
-        )
+        return is_missing_evidence_only(reason)
 
     @staticmethod
     def _accept_revision(
@@ -610,6 +599,7 @@ class DebateEngine:
                     if (
                         int(case.get("debate_level", 2)) >= 2
                         and "tribunal_follow_up" not in debate_signals
+                        and not case.get("tribunal_hearing", False)
                     ):
                         recovery_reason = next(iter(
                             debate_signals or [
@@ -684,14 +674,21 @@ class DebateEngine:
                         recovered_visual_outputs[case["key"]] = recovered_visual
                         recovered_comparisons[case["key"]] = recovered_comparison
                     critique_started = time.time()
-                    critique = agent1.critique(
-                        case["image"],
-                        self.build_agent1_challenge_prompt(
+                    challenge_prompt = self.build_agent1_challenge_prompt(
                             case["visual_output"],
                             case["decision"],
                             case.get("comparison"),
                             case.get("mediation_plan"),
-                        ),
+                        )
+                    if case.get("tribunal_hearing", False):
+                        challenge_prompt += (
+                            "\nTRIBUNAL_VISUAL_WITNESS_ONLY: Report the direct "
+                            "observation only. Do not assign its semantic relation "
+                            "to the caption; the tribunal performs that step.\n"
+                        )
+                    critique = agent1.critique(
+                        case["image"],
+                        challenge_prompt,
                     )
                     critique["_seconds"] = time.time() - critique_started
                     agent1_critiques[case["key"]] = critique
@@ -780,6 +777,82 @@ class DebateEngine:
                         ),
                     )
                 )
+                if case.get("tribunal_hearing", False):
+                    # In tribunal mode the agents are witnesses, not a hidden
+                    # first decision court. Preserve the current decision and
+                    # pass the typed testimony and any independently promoted
+                    # relation to the tribunal.
+                    decision = attach_evidence_audit(
+                        dict(case["decision"]), review_ledger
+                    )
+                    decision = attach_final_review(
+                        decision,
+                        review_ledger,
+                        (case.get("comparison") or {}).get(
+                            "claim_contract", {}
+                        ),
+                    )
+                    decision_trace = append_decision_checkpoint(
+                        case["decision"].get("_decision_trace", []),
+                        "tribunal_witness_hearing_recorded",
+                        decision,
+                        ledger=review_ledger,
+                        metadata={
+                            "agent1_response_status": agent1_critique.get(
+                                "response_status"
+                            ),
+                            "agent2_requirements_valid": agent2_critique.get(
+                                "requirements_valid", True
+                            ),
+                        },
+                    )
+                    decision = attach_decision_trace(decision, decision_trace)
+                    inference_seconds = (
+                        agent1_critique["_seconds"]
+                        + agent2_critique["_seconds"]
+                    )
+                    decision["_debate"] = {
+                        "architecture": "tribunal_targeted_hearing",
+                        "agent1_critique": agent1_critique,
+                        "agent2_critique": agent2_critique,
+                        "rounds": 1,
+                        "level": 2,
+                        "need_score": case.get("debate_score", 0),
+                        "need_signals": case.get("debate_signals", []),
+                        "inference_seconds": round(inference_seconds, 4),
+                        "revision_accepted": False,
+                        "revision_acceptance_reason": "tribunal_controls_resolution",
+                        "revision_acceptance_audit": {},
+                        "proposed_label": "",
+                        "unconstrained_proposed_label": "",
+                        "agent1_response_status": agent1_critique.get(
+                            "response_status"
+                        ),
+                        "agent2_requirements_valid": agent2_critique.get(
+                            "requirements_valid", True
+                        ),
+                        "cross_agent_verification": cross_agent_verification,
+                        "relation_status": "HEARING_PENDING_TRIBUNAL",
+                        "deficiencies": [],
+                        "evidence_lifecycle": evidence_lifecycle_summary(
+                            review_ledger
+                        ),
+                        "review_status": "hearing_recorded",
+                        "original_evidence_audit": audit_decision(
+                            case["decision"], original_ledger
+                        ),
+                        "proposed_evidence_audit": decision.get(
+                            "_evidence_audit", {}
+                        ),
+                        "evidence_ledger_before": original_ledger,
+                        "evidence_ledger_after": review_ledger,
+                        "proposed_decision": {},
+                        "mediation": mediation_plan,
+                    }
+                    decision["_evidence_ledger"] = review_ledger
+                    results[case["key"]] = decision
+                    continue
+
                 # The Arbiter must see the newly verified relation during its
                 # reasoning pass, not only after it has already selected a
                 # label.  Mediation questions remain advisory metadata.
