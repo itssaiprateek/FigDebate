@@ -137,7 +137,7 @@ class ClaimContractTests(unittest.TestCase):
         self.assertFalse(audit["safe_for_directional_reasoning"])
         self.assertIn("claim_target_not_grounded_in_caption", audit["warnings"])
 
-    def test_placeholders_and_product_aliases_do_not_break_contract(self):
+    def test_unverified_entity_aliases_do_not_make_contract_safe(self):
         caption = (
             "Products one dislikes disappear quickly, while products one "
             "loves last a long time."
@@ -156,7 +156,7 @@ class ClaimContractTests(unittest.TestCase):
                 "opposite_visual_state": "loved products disappear quickly",
             },
         )
-        self.assertTrue(audit["safe_for_directional_reasoning"])
+        self.assertFalse(audit["safe_for_directional_reasoning"])
         self.assertIsNone(audit["entity_checks"]["claim_source"])
 
     def test_human_pronoun_coreference_preserves_entity_frame(self):
@@ -264,7 +264,7 @@ class PureComparatorTests(unittest.TestCase):
         )
         self.assertEqual(result["supporting_evidence"], [])
 
-    def test_opposing_chart_directions_are_reported_as_mixed(self):
+    def test_opposing_chart_directions_are_reported_as_candidates(self):
         result = compare(
             {
                 "visual_facts": [
@@ -275,11 +275,13 @@ class PureComparatorTests(unittest.TestCase):
             self._growth_language(),
             caption="The economy is recovering.",
         )
-        self.assertTrue(result["supporting_evidence"])
-        self.assertTrue(result["contradicting_evidence"])
+        self.assertTrue(result["relation_support_candidates"])
+        self.assertTrue(result["relation_conflict_candidates"])
+        self.assertFalse(result["supporting_evidence"])
+        self.assertFalse(result["contradicting_evidence"])
         self.assertEqual(
             result["required_evidence_status"],
-            "MIXED_VERIFIED_EVIDENCE",
+            "MIXED_RELATION_CANDIDATES",
         )
 
     def test_structured_relation_nominates_explicit_opposite(self):
@@ -327,7 +329,7 @@ class PureComparatorTests(unittest.TestCase):
             [],
         )
 
-    def test_two_entity_bound_cues_become_direct_conflict(self):
+    def test_two_entity_bound_cues_become_conflict_candidate(self):
         caption = "The people move at a leisurely pace."
         language = attach_claim_contract(
             {
@@ -350,8 +352,12 @@ class PureComparatorTests(unittest.TestCase):
             language,
             caption=caption,
         )
-        self.assertEqual(result["recommendation"], "LEAN_CONTRADICTS")
-        self.assertEqual(result["required_evidence_status"], "CONFLICTING")
+        self.assertEqual(
+            result["recommendation"], "VERIFY_CONFLICT_CANDIDATE"
+        )
+        self.assertEqual(
+            result["required_evidence_status"], "CONFLICT_CANDIDATE"
+        )
 
     def test_negated_directional_cues_do_not_become_direct_evidence(self):
         caption = "The people move at a leisurely pace."
@@ -386,7 +392,7 @@ class PureComparatorTests(unittest.TestCase):
             {"visual_facts": ["A statue holds a scale."]}, relation
         ), [])
 
-    def test_descriptive_relation_family_normalizes_with_context(self):
+    def test_relation_family_normalization_does_not_bypass_invalid_pair(self):
         caption = (
             "Products one dislikes disappear quickly, while products one "
             "loves last a long time."
@@ -403,7 +409,7 @@ class PureComparatorTests(unittest.TestCase):
         )
         relation = build_claim_relation(caption, language)
         self.assertEqual(relation["relation_family"], "pace")
-        self.assertTrue(relation["resolved"])
+        self.assertFalse(relation["resolved"])
 
 
 class PureDecisionScoringTests(unittest.TestCase):
@@ -436,7 +442,7 @@ class EvidenceGradeTests(unittest.TestCase):
         )
         return build_claim_relation(caption, language)
 
-    def test_independent_reinspection_can_add_decision_grade_evidence(self):
+    def test_single_model_reinspection_is_only_a_candidate(self):
         ledger = add_visual_reinspection_evidence(
             [],
             {
@@ -452,7 +458,8 @@ class EvidenceGradeTests(unittest.TestCase):
         )
         self.assertEqual(len(ledger), 1)
         self.assertEqual(ledger[0]["id"], "DV001")
-        self.assertTrue(ledger[0]["decision_grade"])
+        self.assertFalse(ledger[0]["decision_grade"])
+        self.assertEqual(ledger[0]["evidence_level"], "RELATION_CANDIDATE")
         audit = audit_decision(
             {
                 "label": "CONTRADICTS",
@@ -460,7 +467,7 @@ class EvidenceGradeTests(unittest.TestCase):
             },
             ledger,
         )
-        self.assertTrue(audit["valid"])
+        self.assertFalse(audit["valid"])
 
     def test_weak_or_negated_reinspection_is_not_promoted(self):
         comparison = {"claim_relation": self._pace_relation()}
@@ -655,7 +662,7 @@ class RegionVerifierTests(unittest.TestCase):
         )
         self.assertFalse(result["decision_grade"])
 
-    def test_smoke_caption_preference_duration_reversal_is_conflict(self):
+    def test_unverified_cross_vocabulary_binding_abstains(self):
         caption = (
             "Products one dislikes disappear quickly, while products one "
             "loves last a long time."
@@ -693,11 +700,8 @@ class RegionVerifierTests(unittest.TestCase):
             ],
             relation,
         )
-        self.assertTrue(result["decision_grade"])
-        self.assertEqual(result["label"], "CONTRADICTS")
-        self.assertEqual(
-            result["method"], "deterministic_preference_duration_binding"
-        )
+        self.assertFalse(result["decision_grade"])
+        self.assertEqual(result["reason"], "claim_relation_unresolved")
 
 
 class PureFeedbackAttributionTests(unittest.TestCase):

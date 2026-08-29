@@ -16,7 +16,7 @@ HEADINGS = [
     "Confidence",
 ]
 
-# LLaVA occasionally renames a requested heading. Recognizing common aliases
+# The legacy structured-output path may rename a requested heading. Aliases
 # prevents a whole section from leaking into the preceding evidence field.
 HEADING_ALIASES = {
     "Visible Relations": "Visual Relations",
@@ -47,6 +47,12 @@ PLACEHOLDER_LINES = {
     "left right top bottom tilted rotated trend arrow contrast object to object",
     "actual spatial or directional relationships never yes no counts",
 }
+
+PLACEHOLDER_PATTERNS = (
+    r"^(?:region|region or object|region or attached object|attached object)\s+"
+    r"(?:exact phrase|exact printed words|text)$",
+    r"^(?:left|right|top|bottom)(?:\s+(?:left|right|top|bottom))*$",
+)
 
 ABSENCE_LINES = {
     "none",
@@ -111,7 +117,10 @@ def parse_list(text):
         if (
             normalized in ABSENCE_LINES
             and not re.search(r"[\"']", item)
-        ) or normalized in PLACEHOLDER_LINES:
+        ) or normalized in PLACEHOLDER_LINES or any(
+            re.fullmatch(pattern, normalized)
+            for pattern in PLACEHOLDER_PATTERNS
+        ):
             continue
 
         if normalized and normalized not in seen:

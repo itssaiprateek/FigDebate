@@ -4,6 +4,7 @@ from copy import deepcopy
 import time
 
 from models.nli_model import NliVerifier
+from engine.evidence_ledger import is_active_evidence
 
 
 class AtomicEvidenceVerifier:
@@ -70,7 +71,7 @@ class AtomicEvidenceVerifier:
         )
         candidates = []
         for index, item in enumerate(output):
-            if not item.get("grounded", False):
+            if not item.get("grounded", False) or not is_active_evidence(item):
                 continue
             if item.get("source") != "agent1":
                 continue
@@ -215,21 +216,26 @@ def merge_verified_evidence(comparison, ledger, verification_summary):
             "source": item.get("source"),
             "type": item.get("type"),
             "text": item.get("text", ""),
+            "relation": item.get("relation"),
             "decision_grade": bool(
                 item.get("decision_grade", False)
                 or item.get("verification", {}).get("decision_grade", False)
             ),
             "verification_method": item.get("verification_method"),
+            "lifecycle_status": item.get("lifecycle_status", "ACTIVE"),
         }
         for item in (ledger or [])
         if item.get("grounded", False)
+        and is_active_evidence(item)
         and item.get("source") in {
             "agent1", "comparator", "targeted_region_verifier"
         }
     ]
-    support = list(output.get("supporting_evidence", []) or [])
-    conflict = list(output.get("contradicting_evidence", []) or [])
+    support = []
+    conflict = []
     for item in ledger or []:
+        if not is_active_evidence(item):
+            continue
         verification = item.get("verification", {}) or {}
         if not verification.get("decision_grade", False):
             continue

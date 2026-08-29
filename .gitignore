@@ -26,3 +26,7 @@ dataset/data/processed/*.pkl
 
 .env
 *.env
+
+models/judge/
+
+models/vision/

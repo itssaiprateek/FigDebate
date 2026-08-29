@@ -287,6 +287,13 @@ Reasoning: one sentence citing [VISUAL], [CAPTION], or [COMPARATOR].
                 + "; ".join(str(item) for item in review_questions[:3])
             )
 
+        mediation_questions = comparison.get("mediation_questions", []) or []
+        if mediation_questions:
+            parts.append(
+                "Independent mediator checks (advisory; verify from debate evidence):\n"
+                + "; ".join(str(item) for item in mediation_questions[:6])
+            )
+
         feedback_warning = comparison.get("feedback_warning", {}) or {}
         diagnostic_questions = feedback_warning.get(
             "diagnostic_questions", []
@@ -492,6 +499,76 @@ insufficient for that proposition, including figurative meaning when relevant
             return []
         candidates.sort(key=lambda value: (-value[0], -value[1], value[2]))
         return [candidates[0][2]]
+
+    @staticmethod
+    def _relation_status(label, assessment, comparison, cited_evidence_ids):
+        """Return the internal three-way evidence relation and deficiencies."""
+        expected = {"ENTAILS": "SUPPORT", "CONTRADICTS": "CONFLICT"}.get(label)
+        catalog = {
+            item.get("id"): item
+            for item in ((comparison or {}).get("grounded_evidence_catalog", []) or [])
+            if item.get("id")
+            and str(item.get("lifecycle_status", "ACTIVE")).upper()
+            in {"ACTIVE", "RECONFIRMED"}
+        }
+        cited_directional = [
+            catalog[item_id]
+            for item_id in (cited_evidence_ids or [])
+            if item_id in catalog
+            and catalog[item_id].get("decision_grade", False)
+            and catalog[item_id].get("relation") == expected
+        ]
+        support = (comparison or {}).get("supporting_evidence", []) or []
+        conflict = (comparison or {}).get("contradicting_evidence", []) or []
+        status = (comparison or {}).get("required_evidence_status")
+        if cited_directional:
+            relation_status = expected
+        elif status == "SUPPORTED" and support and not conflict and expected == "SUPPORT":
+            relation_status = "SUPPORT"
+        elif status == "CONFLICTING" and conflict and not support and expected == "CONFLICT":
+            relation_status = "CONFLICT"
+        else:
+            relation_status = "INSUFFICIENT"
+
+        deficiencies = []
+        if relation_status == "INSUFFICIENT":
+            if not (comparison or {}).get("visual_schema_complete", True):
+                deficiencies.append("MISSING_VISUAL_OBSERVATION")
+            if (
+                (comparison or {}).get("relation_binding_required", False)
+                and not (comparison or {}).get("relation_binding_observed", False)
+            ):
+                deficiencies.append("UNRESOLVED_TEXT_BINDING")
+            if status == "MIXED_VERIFIED_EVIDENCE" or (support and conflict):
+                deficiencies.append("CONFLICTING_ACTIVE_EVIDENCE")
+            if (
+                (comparison or {}).get("has_symbolic_evidence", False)
+                and not support and not conflict
+            ):
+                deficiencies.append("UNRESOLVED_SYMBOL_ATTACHMENT")
+            if not deficiencies:
+                deficiencies.append("INSUFFICIENT_DIRECTIONAL_EVIDENCE")
+        return relation_status, deficiencies
+
+    @staticmethod
+    def _unopposed_verified_relation(comparison):
+        """Return a unique decision-grade direction already in the ledger."""
+        by_relation = {"SUPPORT": [], "CONFLICT": []}
+        for item in (comparison or {}).get("grounded_evidence_catalog", []) or []:
+            relation = item.get("relation")
+            if (
+                relation in by_relation
+                and item.get("decision_grade", False)
+                and str(item.get("lifecycle_status", "ACTIVE")).upper()
+                in {"ACTIVE", "RECONFIRMED"}
+                and item.get("id")
+            ):
+                by_relation[relation].append(item["id"])
+        if by_relation["SUPPORT"] and not by_relation["CONFLICT"]:
+            return "ENTAILS", by_relation["SUPPORT"]
+        if by_relation["CONFLICT"] and not by_relation["SUPPORT"]:
+            return "CONTRADICTS", by_relation["CONFLICT"]
+        return None, []
 
     @staticmethod
     def _build_citation_retry_prompt(caption, comparison_summary):
@@ -1017,6 +1094,12 @@ Binary completion rule before writing the answer:
                     "_binary_resolution_scores": scores,
                     "_binary_resolution_raw_confidence": raw_confidence,
                     "_targeted_region_verification": verification,
+                    "_relation_status": verification.get(
+                        "evidence_relation", "INSUFFICIENT"
+                    ),
+                    "_revision_status": "DIRECTIONAL_PROPOSAL",
+                    "_deficiencies": [],
+                    "_directional_proposal": True,
                     "_evidence_quality": evidence_quality,
                     "_arbiter_assessment": response,
                     "_timing": {
@@ -1097,6 +1180,31 @@ Binary completion rule before writing the answer:
             confidence = evidence_adjusted_confidence(
                 raw_confidence, evidence_quality
             )
+            semantic_scored_label = label
+            verified_label, verified_ids = self._unopposed_verified_relation(
+                comparison
+            )
+            decision_method = "position_balanced_semantic"
+            if verified_label:
+                # Scored language preferences cannot overrule an unopposed
+                # independently verified relation.  The Arbiter remains the
+                # final selector and records the exact proof it relied on.
+                label = verified_label
+                cited_evidence_ids = list(verified_ids)
+                confidence = max(confidence, 0.72)
+                decision_method = "verified_relation_arbitration"
+            relation_status, deficiencies = self._relation_status(
+                label, assessment, comparison, cited_evidence_ids
+            )
+            unconstrained_label = semantic_scored_label
+            revision_status = "DIRECTIONAL_PROPOSAL"
+            if relation_status == "INSUFFICIENT":
+                confidence = min(confidence, 0.35)
+                revision_status = "NO_REVISION_INSUFFICIENT_EVIDENCE"
+                if previous_decision and previous_decision.get("label") in {
+                    "ENTAILS", "CONTRADICTS"
+                }:
+                    label = previous_decision["label"]
             visual_support = comparison.get("supporting_evidence", []) or []
             contradictions = comparison.get("contradicting_evidence", []) or []
             explanation = assessment.strip() or (
@@ -1110,7 +1218,7 @@ Binary completion rule before writing the answer:
                 "missing_evidence": comparison.get("missing_evidence", []) or [],
                 "confidence": confidence,
                 "debate_needed": confidence < self.CONFIDENCE_THRESHOLD,
-                "decision_method": "position_balanced_semantic",
+                "decision_method": decision_method,
                 "evidence_sources": {
                     "visual_support": "visual_grounding_or_comparator",
                     "contradictions": "visual_grounding_or_comparator",
@@ -1125,6 +1233,14 @@ Binary completion rule before writing the answer:
                 "_retry_failed": False,
                 "_binary_resolution_scores": scores,
                 "_binary_resolution_raw_confidence": raw_confidence,
+                "_unconstrained_proposed_label": unconstrained_label,
+                "_verified_relation_override": bool(verified_label),
+                "_relation_status": relation_status,
+                "_revision_status": revision_status,
+                "_deficiencies": deficiencies,
+                "_directional_proposal": relation_status in {
+                    "SUPPORT", "CONFLICT"
+                },
                 "_evidence_quality": evidence_quality,
                 "_arbiter_assessment": assessment,
                 "_model_cited_evidence_ids": cited_evidence_ids,

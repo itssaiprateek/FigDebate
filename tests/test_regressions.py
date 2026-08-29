@@ -2,10 +2,14 @@ import unittest
 
 from agents.visual_grounding import VisualGroundingAgent
 from agents.claim_extraction import ClaimExtractionAgent
+from arbiter.arbiter import Arbiter
 from comparators.evidence_comparator import compare
 from engine.claim_contract import attach_claim_contract
 from engine.debate import DebateEngine
-from engine.evidence_ledger import add_visual_reinspection_evidence
+from engine.evidence_ledger import (
+    add_visual_reinspection_evidence,
+    audit_decision,
+)
 from engine.relation_schema import attach_claim_relation, build_claim_relation
 from engine.review_board import review_revision
 from utils.visual_parser import parse_visual_response
@@ -139,6 +143,162 @@ class RecoveryRoutingRegressionTests(unittest.TestCase):
 
 
 class SemanticDebateRegressionTests(unittest.TestCase):
+    def test_vflute_2850_template_ocr_is_not_evidence(self):
+        self.assertEqual(
+            parse_visual_response(
+                'Visible Text:\n- [region or object]: "exact phrase"'
+            )["visible_text"],
+            [],
+        )
+
+    def test_agent1_response_status_distinguishes_abstention_and_failure(self):
+        unclear = VisualGroundingAgent._parse_observation_response(
+            "Observation Status: UNCLEAR\nObserved Entity: None\n"
+            "Observed State: None\nImage Region: None\n"
+            "Reason: The requested attachment is unreadable."
+        )
+        unresolved = VisualGroundingAgent._parse_relation_response(
+            "Claim Relation: UNRESOLVED"
+        )
+        self.assertEqual(
+            VisualGroundingAgent._response_status(unclear, unresolved, {}),
+            "VALID_ABSTENTION",
+        )
+        self.assertEqual(
+            VisualGroundingAgent._response_status(
+                {"_raw_response": "", "_format_valid": False},
+                unresolved,
+                {},
+            ),
+            "QUESTION_NOT_ANSWERED",
+        )
+
+    def test_agent1_receives_one_atomic_mediator_question(self):
+        engine = DebateEngine.__new__(DebateEngine)
+        prompt = engine.build_agent1_challenge_prompt(
+            {},
+            {"label": "ENTAILS"},
+            {"required_evidence_status": "SEMANTIC_REVIEW_REQUIRED"},
+            {
+                "_usable": True,
+                "agent1_questions": ["Is the heart whole?", "Is it attached?"],
+                "verification_requests": ["Check its color."],
+            },
+        )
+        self.assertEqual(prompt.count("Review question:"), 1)
+        self.assertIn("Review question: Is the heart whole?", prompt)
+        self.assertNotIn("Is it attached?", prompt)
+
+    def test_vflute_2199_entity_words_do_not_become_polarity(self):
+        caption = (
+            "Police officers effectively obtain truthful information from "
+            "drivers who have been caught speeding."
+        )
+        language = attach_claim_contract({
+            "original_caption": caption,
+            "caption_proposition": caption,
+            "claim_subject": "police officers",
+            "claim_predicate": "effectively obtain truthful information",
+            "claim_object": "information from drivers",
+            "relation_family": "outcome",
+            "expected_visual_state": "drivers truthfully admit breaking the law",
+            "opposite_visual_state": "drivers evade or deny the question",
+            "intended_meaning": caption,
+            "figurative_type": "humor",
+        }, caption)
+        relation = build_claim_relation(caption, language)
+        candidates = relation and compare(
+            {
+                "visual_description": "A police officer talks to a driver.",
+                "objects": ["police officer", "driver"],
+                "visual_facts": ["The police officer writes on a ticket book."],
+                "visual_relations": ["The officer stands beside the driver."],
+            },
+            {**language, "claim_relation": relation},
+            caption,
+        )["structured_relation_candidates"]
+        self.assertEqual(candidates, [])
+
+    def test_vflute_2760_explicit_upward_recovery_remains_support(self):
+        caption = "The economy recovered relatively easily."
+        language = attach_claim_contract({
+            "original_caption": caption,
+            "caption_proposition": "The economy recovered.",
+            "claim_subject": "the economy",
+            "claim_predicate": "recovered",
+            "relation_family": "trajectory",
+            "expected_visual_state": "the economy rises and recovers",
+            "opposite_visual_state": "the economy falls and declines",
+            "intended_meaning": "The economy recovered.",
+            "figurative_type": "metaphor",
+        }, caption)
+        relation = build_claim_relation(caption, language)
+        comparison = compare(
+            {
+                "visual_description": "An economy chart with an upward arrow.",
+                "objects": ["economy chart", "arrow"],
+                "visual_facts": [],
+                "visual_relations": ["The arrow points upward on the chart."],
+            },
+            {**language, "claim_relation": relation},
+            caption,
+        )
+        self.assertTrue(comparison["relation_support_candidates"])
+        self.assertFalse(comparison["supporting_evidence"])
+        self.assertEqual(
+            comparison["required_evidence_status"], "SUPPORT_CANDIDATE"
+        )
+
+    def test_agent2_detects_dropped_truthful_outcome(self):
+        valid, errors = ClaimExtractionAgent._validate_visual_requirements(
+            "A police officer visibly asks a driver a question.",
+            "A police officer does not visibly ask a driver a question.",
+            "Claim subject: police officers\n"
+            "Expected visual state: drivers truthfully admit breaking the law\n"
+            "Opposite visual state: drivers evade or deny the question",
+        )
+        self.assertFalse(valid)
+        self.assertIn("SUPPORT_DROPPED_EXPECTED_STATE", errors)
+
+    def test_vflute_566_2199_2850_invalid_visual_review_cannot_flip(self):
+        revised = DebateEngine._enforce_revision_requirements(
+            {"label": "ENTAILS", "confidence": 0.7},
+            {"label": "CONTRADICTS", "confidence": 0.8},
+            {"response_status": "FORMAT_FAILURE", "_format_valid": False},
+            {"requirements_valid": True},
+            2,
+        )
+        self.assertEqual(revised["label"], "ENTAILS")
+        self.assertEqual(revised["_revision_status"], "NO_VISUAL_REVISION")
+        self.assertEqual(revised["_unconstrained_proposed_label"], "CONTRADICTS")
+
+    def test_arbiter_represents_missing_evidence_as_insufficient(self):
+        status, deficiencies = Arbiter._relation_status(
+            "CONTRADICTS",
+            "The requested visual relation is insufficient.",
+            {
+                "required_evidence_status": "INSUFFICIENT_VISUAL_EVIDENCE",
+                "visual_schema_complete": False,
+                "supporting_evidence": [],
+                "contradicting_evidence": [],
+            },
+            [],
+        )
+        self.assertEqual(status, "INSUFFICIENT")
+        self.assertIn("MISSING_VISUAL_OBSERVATION", deficiencies)
+
+    def test_superseded_evidence_is_not_decision_grade(self):
+        audit = audit_decision(
+            {"label": "ENTAILS", "_model_cited_evidence_ids": ["DV001"]},
+            [{
+                "id": "DV001", "source": "debate_visual_reinspection",
+                "type": "verified_reinspection_relation", "text": "old",
+                "relation": "SUPPORT", "grounded": True,
+                "decision_grade": True, "lifecycle_status": "SUPERSEDED",
+            }],
+        )
+        self.assertFalse(audit["valid"])
+
     def test_visual_critique_parser_rejects_prompt_echo(self):
         parsed = VisualGroundingAgent._parse_critique_response(
             "Observed Entity: Man\nObserved State: Heart\n"
@@ -222,7 +382,7 @@ class SemanticDebateRegressionTests(unittest.TestCase):
         )
         self.assertIn("FIGURATIVE_SYMBOL_REINSPECTION", prompt)
 
-    def test_structured_symbolic_reinspection_can_prove_conflict(self):
+    def test_structured_symbolic_reinspection_needs_independent_verification(self):
         caption = "His heart within him is fully rotten."
         language = attach_claim_contract(
             {
@@ -258,7 +418,8 @@ class SemanticDebateRegressionTests(unittest.TestCase):
         )
         self.assertEqual(len(ledger), 1)
         self.assertEqual(ledger[0]["relation"], "CONFLICT")
-        self.assertTrue(ledger[0]["decision_grade"])
+        self.assertFalse(ledger[0]["decision_grade"])
+        self.assertEqual(ledger[0]["evidence_level"], "RELATION_CANDIDATE")
 
     def test_debate_can_keep_a_label_and_strengthen_its_evidence(self):
         ledger = [{

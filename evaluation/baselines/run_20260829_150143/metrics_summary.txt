@@ -1,0 +1,123 @@
+FIGDEBATE EVALUATION SUMMARY
+========================================
+
+Samples: 20
+Valid Predictions: 20
+Invalid Predictions: 0
+Accuracy: 0.6500
+Balanced Accuracy: 0.6500
+Macro F1: 0.6419
+
+ENTAILS
+Precision: 0.6154
+Recall: 0.8000
+F1: 0.6957
+
+CONTRADICTS
+Precision: 0.7143
+Recall: 0.5000
+F1: 0.5882
+
+Primary Arbiter Valid Rate: 1.0
+Format Retry Rate: 0.0
+Citation Retry Rate: 0.0
+Binary Resolution Rate: 0.0
+Forced Label Rate: 0.0
+Decision Method Distribution: {'position_balanced_semantic': 17, 'bounded_multimodal_tribunal': 2, 'visual_reinspection_consensus': 1}
+
+Review Board Status Distribution: {'CLAIM_CONTRACT_REVIEW_REQUIRED': 10, 'BINARY_DECISION_WITHOUT_DIRECTIONAL_PROOF': 7, 'DIRECTIONALLY_GROUNDED': 3}
+Review Board Directionally Grounded Rate: 0.15
+
+Review Board Confidence Cap Rate: 0.0
+
+Prediction Distribution: {'ENTAILS': 13, 'CONTRADICTS': 7}
+ENTAILS Prediction Rate: 0.6500
+Comparator Evidence Distribution: {'GROUNDED_REVIEW_REQUIRED': 10, 'SEMANTIC_REVIEW_REQUIRED': 9, 'MIXED_RELATION_CANDIDATES': 1}
+Comparator Text Surfaces Without OCR: 0
+Agent 1 Schema Complete Rate: 0.9500
+
+Agent 1 Format Valid Rate: 0.95
+Agent 1 Factual Grounding Rate: 1.0
+Agent 1 OCR Usable Rate: 0.6
+Agent 1 Relation Binding Rate: 0.95
+Agent 1 Targeted Recovery Attempts: 10
+Agent 1 Targeted Recovery Success Rate: 1.0
+
+Agent 1 Schema Retry Rate: 0.5
+Agent 1 Schema Retry Success Rate: 0.7
+
+Agent 1 Symbolic Evidence Rate: 0.7
+Mean Visual Metaphor Items: 2.65
+
+Caption-Type/Phenomenon Agreement (diagnostic only): 0.4
+Note: the dataset phenomenon may occur in the image, caption, or both; this is not a caption-classification accuracy metric.
+Structured Claim Relation Resolved Rate: 0.5
+Immutable Claim Contract Valid Rate: 0.5
+Claim Proposition Preserved Rate: 1.0
+Claim Entity Frame Preserved Rate: 0.85
+Structured Claim Retry Rate: 0.8
+Structured Claim Retry Success Rate: 0.625
+Structured Relation Candidates: 2
+
+Explanation Token F1: 0.2662833350237893
+Explanation ROUGE-L F1: 0.16894002078033757
+
+Confidence Mean: 0.4185
+Brier Score: 0.310295
+ECE (10 bins): 0.30150000000000005
+
+Decision-Grade Directional Evidence Rate: 0.15
+Grounded Source Citation Rate: 1.0
+Evidence Status Distribution: {'GROUNDED_SOURCE_CITED': 17, 'DIRECT_GROUNDED_EVIDENCE': 3}
+
+Generic NLI Decision Promotions: 0/159 (0.0)
+
+Debate Trigger Count: 20
+Debate Trigger Rate: 1.0000
+Debate Level Distribution: {'2': 18, '1': 2}
+Debate Mean Need Score: 3.2
+Debate Revision Acceptance Rate: 0.05
+Agent 1 Critique Format Valid Rate: 1.0
+Agent 1 Critique Retry Count: 4
+Agent 1 Critique Retry Success Rate: 1.0
+Visual Evidence Consensus Proposals: 1
+Agent 2 Critique Format Valid Rate: 1.0
+Debate Review Status Distribution: {'no_change': 16, 'rejected': 3, 'accepted': 1}
+Debate Correction Rate: 0.0500
+Debate Harm Rate: 0.0000
+Debate Corrections: 1
+Debate Harms: 0
+Debate Net Correct Decisions: 1
+Decision-Grade Visual Reinspection Evidence: 0 items across 0 cases
+Region OCR Reviews: 0
+Targeted Region Verifier Attempts: 0
+Targeted Region Verifier Accepted: 0
+Targeted Region Proposal Accuracy: None
+Targeted Region Accepted Accuracy: None
+Feedback Role Distribution: {'procedural_review_routing_only': 20}
+Feedback Matched Samples: 0
+Feedback Match Rate: 0.0
+Feedback Matched Rule Distribution: {}
+Feedback Revision Acceptances: 0
+Feedback Corrections: 0
+Feedback Harms: 0
+Feedback Net Correct Decisions: 0
+Feedback Candidates: 0
+Feedback Updates: 0
+
+Judge/Mediator Requested: 20
+Judge/Mediator Contract Valid Rate: 0.95
+Judge/Mediator Verdict Distribution: {'CONTRADICTS': 11, 'ABSTAIN': 5, 'ENTAILS': 4}
+Mediator Usable Rate: None
+Mediated Tie-breaks: 0
+Judge Counterfactual Corrections: 5
+Judge Counterfactual Harms: 4
+Judge Counterfactual Net Correct: 1
+Judge Accepted Revisions: 2
+Judge Accepted Corrections: 1
+Judge Accepted Harms: 0
+Judge Accepted Net Correct: 1
+Judge Feedback Review Candidates: 0
+Judge Feedback Memory Updates: 0
+
+Paper artifacts: confusion_matrix.csv, phenomenon_breakdown.csv, decision_method_breakdown.csv, comparator_analysis.csv, debate_analysis.csv, debate_log.csv, debate_log.jsonl, feedback_analysis.csv, feedback_decision_log.csv, feedback_decision_log.jsonl, judge_analysis.csv, evidence_provenance_analysis.csv, confidence_analysis.csv, explanation_analysis.csv, runtime_profile.csv, agent_grounding_analysis.csv, error_analysis.csv.

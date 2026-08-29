@@ -187,9 +187,10 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
             for cue in SYMBOL_OBJECT_CUES
         )
     )
-    has_symbolic_evidence = bool(
-        explicit_symbolic_evidence or symbolic_object_candidate
-    )
+    # A generic object such as a heart or crown is only a possible symbol.
+    # Treat it as evidence only when Agent 1 explicitly reported an attached
+    # symbolic observation; otherwise it is a routing hypothesis.
+    has_symbolic_evidence = bool(explicit_symbolic_evidence)
 
     direct_visual_text = " ".join(
         visible_text + visual_relations + visual_facts + objects + [scene_type, visual_summary]
@@ -266,11 +267,12 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
         and has_explicit_region_pair
         and len(visible_text_terms.intersection(relation_terms)) >= 2
     )
-    # The four-crop verifier assumes a very specific graphic: two compared
-    # items across the top with their outcomes below.  Text binding can be
-    # unresolved in many other memes, but those must be reviewed full-image.
+    # Region verification is schema-driven and may be used for any explicit
+    # comparison/outcome relation.  It is never selected from object names.
     region_pair_verifier_eligible = bool(
-        claim_relation.get("relation_family") == "pace"
+        claim_relation.get("relation_family") in {
+            "pace", "outcome", "quantity", "trajectory"
+        }
         and relation_binding_required
         and has_layout_cue
         and (len(visible_text) >= 2 or has_text_surface)
@@ -285,10 +287,17 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
 
     for candidate in relation_candidates:
         if (
-            len(set(candidate.get("matched_cues", []))) < 2
+            not candidate.get("directional_cue_valid", False)
+            or not candidate.get("matched_state_cues")
             or not candidate.get("matched_entities")
-            or not claim_contract.get("safe_for_directional_reasoning", False)
+            or not claim_contract.get(
+                "safe_for_automatic_directional_reasoning", False
+            )
         ):
+            neutral_notes.append(
+                "[DIAGNOSTIC] Shared entity or lexical cues were not promoted "
+                "without an explicit subject-bound state or polarity cue."
+            )
             continue
         evidence = (
             f"[VISUAL] {candidate.get('text')} [CAPTION] Entity-bound "
@@ -379,18 +388,18 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
 
     if direct_support and direct_conflict:
         recommendation = "REVIEW_MIXED_EVIDENCE"
-        evidence_status = "MIXED_VERIFIED_EVIDENCE"
+        evidence_status = "MIXED_RELATION_CANDIDATES"
         incongruity = (
-            "Decision-grade visual support and conflict are both present."
+            "Unverified visual relation candidates exist in both directions."
         )
     elif direct_conflict:
-        recommendation = "LEAN_CONTRADICTS"
-        evidence_status = "CONFLICTING"
-        incongruity = "Direct visual evidence conflicts with an explicit caption direction."
+        recommendation = "VERIFY_CONFLICT_CANDIDATE"
+        evidence_status = "CONFLICT_CANDIDATE"
+        incongruity = "A possible conflict requires independent verification."
     elif direct_support:
-        recommendation = "LEAN_ENTAILS"
-        evidence_status = "SUPPORTED"
-        incongruity = "Direct visual facts overlap with a caption claim; figurative fit still requires Arbiter review."
+        recommendation = "VERIFY_SUPPORT_CANDIDATE"
+        evidence_status = "SUPPORT_CANDIDATE"
+        incongruity = "A possible support relation requires independent verification."
     elif grounded_anchors:
         recommendation = "REVIEW_GROUNDED_ANCHORS"
         evidence_status = "GROUNDED_REVIEW_REQUIRED"
@@ -408,11 +417,11 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
         incongruity = "Agent 1 did not provide enough observed evidence for comparison."
 
     evidence_quality = {
-        "SUPPORTED": 1.0,
-        "CONFLICTING": 1.0,
-        "MIXED_VERIFIED_EVIDENCE": 0.7,
-        "GROUNDED_REVIEW_REQUIRED": 0.8,
-        "SEMANTIC_REVIEW_REQUIRED": 0.6,
+        "SUPPORT_CANDIDATE": 0.55,
+        "CONFLICT_CANDIDATE": 0.55,
+        "MIXED_RELATION_CANDIDATES": 0.45,
+        "GROUNDED_REVIEW_REQUIRED": 0.45,
+        "SEMANTIC_REVIEW_REQUIRED": 0.45,
         "INSUFFICIENT_VISUAL_EVIDENCE": 0.25,
     }[evidence_status]
     if relation_binding_required and not relation_binding_observed:
@@ -434,6 +443,7 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
         ),
         "claim_contract_warnings": claim_contract.get("warnings", []),
         "structured_relation_candidates": relation_candidates,
+        "directional_candidates_only": bool(direct_support or direct_conflict),
         "visual_themes": visual_themes,
         "language_themes": language_themes,
         "claim_direction": claim_direction,
@@ -447,15 +457,21 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
             else "Semantic cross-modal review required." if has_visual_evidence
             else "Insufficient observed visual evidence."
         ),
-        "supporting_evidence": direct_support,
-        "contradicting_evidence": direct_conflict,
+        # Lexical/structured matches are routing candidates, not proof. Only
+        # merge_verified_evidence may populate the directional evidence lists.
+        "supporting_evidence": [],
+        "contradicting_evidence": [],
+        "relation_support_candidates": direct_support,
+        "relation_conflict_candidates": direct_conflict,
+        "direct_support_count": len(direct_support),
+        "direct_conflict_count": len(direct_conflict),
         "grounded_anchor_evidence": grounded_anchors,
         "missing_evidence": missing_evidence,
         "unsupported_inferences": [],
         "neutral_notes": neutral_notes,
         "review_questions": review_questions,
-        "supporting_points": direct_support,
-        "conflicting_points": direct_conflict,
+        "supporting_points": [],
+        "conflicting_points": [],
         "missing_visual_concepts": missing_evidence,
         "required_evidence_status": evidence_status,
         "recommendation": recommendation,

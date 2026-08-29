@@ -1,0 +1,21 @@
+{
+  "vision_model_load_seconds": 125.7769,
+  "language_model_load_seconds": 82.8486,
+  "debate_vision_model_load_seconds": 26.1122,
+  "debate_language_model_load_seconds": 41.1223,
+  "evidence_verifier_model_load_seconds": 1.7136,
+  "judge_model_load_seconds": 41.4545,
+  "feedback_mode": "disabled",
+  "debate_mode": "enabled",
+  "evidence_mode": "enabled",
+  "judge_mode": "tribunal",
+  "judge_scope": "all",
+  "judge_requested_samples": 20,
+  "judge_accepted_revisions": 2,
+  "mediated_tiebreak_revisions": 0,
+  "feedback_updates": 0,
+  "feedback_events": 0,
+  "feedback_candidates": 0,
+  "feedback_matched_samples": 0,
+  "wall_clock_seconds": 3712.5928
+}

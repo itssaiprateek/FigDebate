@@ -59,6 +59,8 @@ HEADINGS = {
 
     "opposite_visual_state": ["Opposite Visual State"],
 
+    "reasoning_requirement": ["Reasoning Requirement"],
+
     "implicit_claims": [
         "Implicit Claims",
     ],
@@ -331,6 +333,8 @@ def parse_claim_response(response):
         "expected_visual_state": "",
 
         "opposite_visual_state": "",
+
+        "reasoning_requirement": "",
 
         "implicit_claims": [],
 

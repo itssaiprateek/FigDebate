@@ -1,0 +1,103 @@
+sample,id,phenomenon,agent1_visible_text,agent1_visible_text_count,agent1_visual_fact_count,agent1_visual_relation_count,agent1_symbolic_tone,agent1_visual_metaphor_count,agent1_schema_complete,agent1_schema_format_valid,agent1_factual_grounding_present,agent1_ocr_usable,agent1_relation_binding_present,agent1_schema_issues,agent1_schema_retry_attempted,agent1_schema_retry_success,agent1_targeted_recovery_attempted,agent1_targeted_recovery_success,agent1_targeted_recovery_reason,agent1_targeted_recovery_seconds,agent1_visual_confidence,agent1_seconds,agent2_linguistic_cue,agent2_polarity_reversal,agent2_caption_proposition,claim_retry_attempted,claim_retry_success,claim_retry_seconds,agent2_language_confidence,agent2_seconds,arbiter_evidence_assessment
+0,vflute_train_3351,humor,PRODUCT YOU | HATE AND | YOU'RE TRYING | TO USE IT ALL | UP QUICKLY TO | THROW IT | AWAY | LASTS FOR | MONTHS | LOVE AND | TO RATION SO | THAT IT LASTS A | LONG TIME | GONE IN A | WEEK | top region contains text: PRODUCT YOU; HATE AND; YOU'RE TRYING; TO USE IT ALL; UP QUICKLY TO; THROW IT; AWAY; LOVE AND; TO RATION SO; THAT IT LASTS A; LONG TIME | bottom region contains text: YOU'RE TRYING; TO USE IT ALL; UP QUICKLY TO; THROW IT; AWAY; LASTS FOR; MONTHS; LOVE AND; TO RATION SO; THAT IT LASTS A; LONG TIME; GONE IN A,17,0,8,"White bottle with black text; Red bottle with white text; Pump tops on both bottles; Text labels ""LASTS FOR MONTHS"" and ""GONE IN A WEEK"" below bottles",4,False,False,True,True,True,atomic_contract_incomplete | initial_facts:truncated_response,True,False,False,False,,0.0,,99.2553,"""Products one dislikes disappearquickly, while products one loves last along time.""",none,"Products one dislikes disappear quickly, while products one loves last a long time.",True,False,5.4227,,20.5572,"Visual Evidence: [VR001, VR002, VR004, VR005, VR006, VR007]
+Evidence IDs: VR001, VR002, VR004, VR005, VR006, VR007
+Caption Meaning: Products one dislikes disappear quickly, while products one loves last a long time.
+
+Relation Analysis:
+The"
+1,vflute_train_1540,humor,Anything in front | of it | Black hole | left region contains text: Anything in front; of it | right region contains text: Black hole,5,7,8,"Woman's head with elongated, distorted shape; Man's facial expression of confusion or disgust; Text box labeled ""Anything in front of it""; Text box labeled ""Black hole""",4,True,True,True,True,True,,False,True,True,True,grounded_anchors_low_confidence,0.9294,,24.8326,,no,A black hole will absorb anything that crosses its event horizon.,True,True,6.801,1.0,18.2232,"Visual Evidence: The text boxes ""Anything in front of it"" and ""Black hole""
+Evidence IDs: VR001, VR002
+Caption Meaning: A black hole absorbs anything that crosses its event horizon
+
+Relation Analysis:
+The text boxes do not directly support or conflict with the caption meaning. They provide contextual information about the image, but they do not necessarily indicate whether the man and woman are in front of or crossing the event horizon of a black hole. The"
+2,vflute_train_4536,metaphor,,0,7,6,Wings; Heart; Hands holding heart; Ornate chest design,4,True,True,True,False,True,,False,True,True,True,grounded_anchors_low_confidence,1.9413,,24.1087,"""His heart within him is fully rottEN."" (emphasis added)",neutral (metaphors do not reverse polarity),His heart within him is fully rotten.,False,False,0.0,0.95,12.4631,"Visual Evidence: A young male with wings and a heart in his chest revealed.
+Evidence IDs: VF001, VF002, VF003
+Caption Meaning: The man's heart is figuratively rotten.
+
+Relation Analysis:
+The image shows a man with a heart in his chest and wings, but it does not provide any visual evidence of a rotten heart. The heart is depicted as red and detailed with arteries and veins, which could be"
+3,vflute_train_2760,metaphor,,0,7,6,Man in suit on boat; Large upward arrow; Fan of money; Stock chart lines (blue and green),4,True,True,True,False,True,,False,True,True,True,structured_claim_without_verified_direction,3.04,,30.2986,"""relatively easily"" (indicates degree of ease)",none,The economy recovered relatively easily.,False,False,0.0,,10.1403,"Visual Evidence: Man holds large blue upward-pointing arrow in left hand (VF002)
+Caption Meaning: The economy recovered relatively easily
+Relation Analysis:
+The man holding a large blue upward-pointing arrow in his left hand is a figurative representation of an economic recovery. In this context, the arrow symbolizes growth and improvement, which aligns with the caption's intended meaning. Therefore, the visual evidence supports the caption meaning."
+4,vflute_train_1713,sarcasm,Burgh | Steelers | Valley | TEAM | left region contains text: BURGH; Gold; Valley | right region contains text: STEELERS,6,7,8,"Red sequined dress with sheer panels; Floral patterned pants; Gold chains and shoes; ""STEELERS"" text on hoodie",4,True,True,True,True,True,,True,True,True,True,unresolved_text_relation_semantics,5.0672,,37.8538,"""this must be a devastating day. simply an awful existence awaits himnow""","Yes, the speaker is expressing the opposite of their actual feelings towards Mike Fisher's retirement",mike fisher retires from pro hockey . this must be a devastating day . simply an awful existence awaits him now . prayers up ...,True,False,6.3611,,21.0598,"Visual Evidence: [VF001] A woman in a red sequined dress is dancing on a sidewalk.
+Evidence IDs: VF001
+Caption Meaning: Mike Fisher's retirement will be a devastating day for him.
+
+Relation Analysis:
+The visual evidence does not directly support or conflict with the caption meaning. The woman in the red sequined dress is not Mike Fisher, and there is no indication in the image that she is related to his retirement. The evidence is insufficient for"
+5,vflute_train_566,sarcasm,DRESS CODE | Men NO Shirt | NO Service | Women NO Shirt | FREE Beer! | top region contains text: DRESS CODE; Men NO Shirt; NO Service; Women NO Shirt; FREE Beer! | bottom region contains text: NO Shirt; FREE Beer!,7,6,7,,0,True,True,True,True,True,,False,True,False,False,,0.0,,23.9551,"""just gross and misogynistic""",negative (expressing disapproval),just gross and misogynistic to offer free beer to women without shirts . seriously not cool #disappointed #gross #misogynistic,False,False,0.0,0.95,12.2377,"Visual Evidence: [VF001] Person wearing a bright green t-shirt with text on back.
+Evidence IDs: VF001
+Caption Meaning: Offering free beer to women who aren't wearing shirts is disrespectful and demeaning to them.
+
+Relation Analysis:
+The visual evidence of a person wearing a shirt does not directly support or conflict with the caption meaning. The caption is discussing the behavior of offering free beer to women who aren't wearing shirts"
+6,vflute_train_2199,humor,"SIR, DO YOU HAVE ANY IDEA | HOW FAST YOU WERE GOING? | BECAUSE THIS THING IS OUT | OF BATTERY | left region contains text: SIR, DO; HOW F; BECAU; OF BAT | right region contains text: SIR, DO YOU HAVE ANY IDEA; HOW FAST YOU WERE GOING?; BECAUSE THIS THING IS OUT; OF BATTERY",6,7,8,"""byutv"" logo on steering wheel; Police badge with ""POLICE DEPT"" text; ""SIR, DO YOU HAVE ANY IDEA HOW FAST YOU WERE GOING?""; ""BECAUSE THIS THING IS OUT OF BATTERY""",4,True,True,True,True,True,,False,True,True,True,unresolved_text_relation_semantics,3.0867,,36.1291,"""The questions asked by police officers afterpulling over speeders are practical,""",no,"The questions asked by police officers after pulling over speeders are practical, as drivers will often honestly admit to breaking the law.",True,True,5.1529,,15.9337,"Visual Evidence: [VF003] Text overlay: ""SIR, DO YOU HAVE ANY IDEA HOW FAST YOU WERE GOING?""
+Caption Meaning: Police questioning is effective in obtaining honest answers from drivers.
+Relation Analysis: The text overlay is a question asked by a police officer to a driver, which aligns with the surface meaning of the caption. However, it does not directly support the figurative meaning that police questioning is effective in obtaining honest answers, as the caption also"
+7,vflute_train_2850,humor,If you ever feel useless just | think about Flash's bike: | left region contains text: If you ever feel u; think about Flash | right region contains text: feel useless just; t Flash's bike:,4,7,8,"Flash figure on a motorcycle; Red and yellow color scheme; Toy-like, plastic construction; Unusual motorcycle design with exaggerated, non-realistic features",4,True,True,True,True,True,,False,True,True,True,grounded_anchors_low_confidence,5.4636,,55.0239,"""considered a non-useful accessory""",no,Flash's bike is considered a non-useful accessory for a super hero.,True,True,4.6675,0.8,17.8455,"Visual Evidence: [VF003] Motorcycle is red and yellow with black tires
+Evidence IDs: VF003
+Caption Meaning: Flash's bike is considered a non-useful accessory for a super hero.
+Relation Analysis: The color of the motorcycle does not directly support or conflict with the caption proposition. The red and yellow color scheme is a common choice for Flash's bike and does not inherently make it useful or non-useful for a superhero."
+8,vflute_train_4315,metaphor,,0,5,6,"Bats, green suits, white faces, black background",1,True,True,True,False,True,,False,True,False,False,,0.0,,21.4076,"""The faculty meeting was calm and relaxing""",no,The faculty meeting was calm and relaxing,True,False,4.0433,,14.5845,"Visual Evidence: The individuals are dressed in formal attire, including suits and ties.
+Evidence IDs: VF004
+Caption Meaning: The faculty meeting was peaceful and stress-free.
+
+Relation Analysis:
+The individuals' formal attire supports the caption meaning as it is consistent with a peaceful and professional setting. However, the formal attire alone does not directly indicate a lack of stress or tension, so it is an insufficient piece of evidence for the figurative meaning of the caption."
+9,vflute_train_1595,metaphor,,0,6,6,,0,True,True,True,False,True,,True,True,False,False,,0.0,,9.3202,"""heart sank""",neutral,heart sank,True,True,3.8957,0.95,14.3972,"Visual Evidence: Man's open mouth with visible teeth
+Evidence IDs: VF002
+Caption Meaning: My feelings of happiness or hope decreased significantly
+
+Relation Analysis:
+The man's open mouth with visible teeth does not directly support or conflict with the caption meaning. A wide-open mouth can indicate various emotions, including surprise, shock, or sadness, which could align with the caption's metaphorical meaning. However, it is also possible that the man is speaking or express"
+10,vflute_train_872,sarcasm,,0,6,6,,0,True,True,True,False,True,,False,True,False,False,,0.0,,15.6813,"""#nothing better than #design of Convention Centers""","unclear, the use of ""nothing better than"" could suggest a positive evaluation, but the hashtags indicate a negative opinion towards design of convention centers.",nothing better than #design of convention centers #patternsrus #imdizzy #hateit #baddesign #allthethings,True,True,5.9996,,20.3413,"Visual Evidence: Checkered wallpaper with zigzag patterns on walls (VF001)
+Evidence IDs: VF001
+Caption Meaning: The speaker dislikes the design of convention centers.
+
+Relation Analysis:
+The checkered wallpaper with zigzag patterns on walls (VF001) does not directly support or conflict with the caption meaning. The presence of this pattern is not explicitly stated to be characteristic of convention center designs in the given context. Therefore, the"
+11,vflute_train_4201,sarcasm,,0,6,6,Dog with large ears and black and tan coat; Open notebook with handwritten text; Blue leash with bone pattern; Tablet with white casing partially visible behind dog's head,4,True,True,True,False,True,,False,True,False,False,,0.0,,24.0784,"""struggling with studying,"" ""keeping sits on my notes""",none,struggling with studying for a test cuz my #sdit keeps sitting on my notes lol #collegelife #working4thegpa,True,False,7.672,0.95,21.6787,"Visual Evidence: German Shepherd dog lying on a dark blanket with its head on an open notebook.
+Evidence IDs: VF002, VR001
+Caption Meaning: Studying for a test is challenging due to external distractions.
+
+Relation Analysis:
+The visual evidence supports the caption meaning as the dog's presence on the notebook can be considered an external distraction that makes studying difficult for the person."
+12,vflute_train_1940,humor,"Kanye West | ""white lives matter"" | ""death con 3"" | ""supports trump"" | ""wife leaves"" | ""George Floyd died | from fentanyl"" | why did the jews | do this to me | top region contains text: Kanye; West; ""white lives matter""; ""death con 3""; ""supports trump""; ""wife leaves"" | bottom region contains text: ""white lives matter""; ""death con 3""; ""supports trump""; ""wife leaves""; ""George Floyd died; from fentanyl""; why did the jews; do this to me",11,6,2,"""Kanye West"" text; ""white lives matter"" text; ""death con 3"" text; ""why did the jews do this to me"" text",4,True,True,True,True,True,initial_relations:truncated_response,True,False,False,False,,0.0,,51.124,"""Kanye is not responsible for cause his own problems"" (grammatical error)",no,Kanye is not responsible for causing his own problems; external factors or groups are to blame.,True,False,4.5799,0.9,17.5795,"Visual Evidence: [VF001] A man with short hair is riding a bicycle.
+Evidence IDs: VF001
+Caption Meaning: Kanye is not responsible for causing his own problems; external factors or groups are to blame.
+
+Relation Analysis:
+The visual evidence of a man riding a bicycle does not directly support or conflict with the caption proposition. It is insufficient for making a definitive conclusion about Kanye's responsibility for his problems."
+13,vflute_train_3255,humor,Dd | left region contains text: Dd,2,6,7,"Long, tilted conference table; One person sitting alone at the far end; Group of people seated on the other end, leaning forward; ""Dd"" signature in bottom left corner",4,True,True,True,True,True,,False,True,False,False,,0.0,,16.8431,_,no,Welcome to orientation.,True,True,6.917,,16.9125,"Visual Evidence: [VF001] A man sits at one end of a long table.
+Evidence IDs: VF001
+Caption Meaning: The company is providing information and training to new hires.
+
+Relation Analysis:
+The man's seating position at the end of the long table does not directly support or conflict with the caption meaning. However, it is consistent with the context of an orientation session, as this is a common setup for such events."
+14,vflute_train_1584,metaphor,123RF | left region contains text: 3RF.COM | right region contains text: 123RF,3,6,8,,0,True,True,True,True,True,,True,True,True,True,unresolved_text_relation_semantics,2.1055,,24.4498,"""a house on fire""",Neutter (The metaphor implies a destructive and intense relationship),their relationship is a house on fire,True,True,4.2128,0.9,17.1349,"or contradicts the meaning
+
+Visual Evidence: A man and a woman are sitting together, forming a heart shape with their hands.
+Evidence IDs: VF001
+Caption Meaning: their relationship is a house on fire
+Relation Analysis: The visual evidence contradicts the caption meaning as the couple is shown to be affectionate and forming a heart shape, which is the opposite of a house on fire."
+15,vflute_train_1943,metaphor,,0,6,6,,0,True,True,True,False,True,,True,True,False,False,,0.0,,16.291,"""He felt an intense anger""",none,He felt an intense anger,False,False,0.0,1.0,10.816,"Visual Evidence: Person is wearing a light yellow shirt (VF004)
+Caption Meaning: He felt an intense anger
+Relation Analysis:
+The person's clothing color does not directly support or conflict with the caption meaning. Anger is an emotional state and cannot be determined from the color of someone's clothing."
+16,vflute_train_1597,sarcasm,SUBWAY STEAK & CHEESE | What I got | Mmmmm bread | left region contains text: SUBWAY; STEAK &; CHEESE; What I g; Mmmmmm bre | right region contains text: K & CHEESE; at I got; m bread,5,7,8,"""SUBWAY STEAK & CHEESE"" text overlay; ""What I got"" text overlay; ""Mmmmm bread"" text overlay; Frowning emoji",4,True,True,True,True,True,,True,True,True,True,grounded_anchors_low_confidence,1.9732,,42.7265,"""I can't believe how close to the add my sandwich looks""","Yes, the speaker expresses disbelief but intends a negative evaluation",i can t believe how close to the add my sandwich looks . what the hell is this ?,True,True,8.0744,0.95,21.1254,"Visual Evidence: [VF003] Text overlay: ""What I got""
+Caption Meaning: The speaker finds the sandwich being too close to an ad annoying or intrusive.
+Relation Analysis:
+The text overlay ""What I got"" is not sufficient evidence to directly support or conflict with the caption meaning. It does not provide any information about the proximity of the sandwich to an advertisement or the speaker's attitude towards it. However, it could be interpreted as a sarcastic comment on the speaker"
+17,vflute_train_1312,sarcasm,,0,7,0,,0,True,True,True,False,False,initial_ocr:truncated_response | initial_region_ocr_left_region:truncated_response | initial_region_ocr_right_region:truncated_response,True,False,True,True,structured_claim_without_verified_direction,1.176,,74.2362,"""it's frustrating how markets...""","negative (""frustrating"" implies a negative emotion)",it's frustrating how markets go north for no reason and we're stuck with dumb strategies to keep it that way ! #markets #nifty #sensex,True,True,6.4357,0.85,19.5726,"Visual Evidence: A graph with upward trend lines is visible (VF004)
+Caption Meaning: Markets behave irrationally and seem to defy our attempts to control them
+Relation Analysis: The upward trend lines in the graph support the figurative meaning of the caption, as they suggest markets are rising without clear explanation or control."
+18,vflute_train_4255,humor,New Bubble Wrap Will No Longer | Pop When You Squeeze It | The Huffington Post | By Ed Mazza | Thomas had never seen such bullshit before | top region contains text: New Bubble Wrap Will No Longer; Pop When You Squeeze It; The Huffington Post | By Ed Mazza | bottom region contains text: Thomas had never seen such bullshit before,6,7,8,Twitter bird icon; Facebook 'f' logo; Email envelope icon; HTML tag symbol '<>',4,True,True,True,True,True,,True,True,True,True,directional_candidate_requires_verification,3.4018,,52.2861,"""more appealing"" (indicates a preference or liking)",no (preference is stated directly),Bubble wrap that doesn't pop when squeezed is more appealing than bubble wrap that does.,True,True,5.1248,,18.9046,"Visual Evidence: Image shows a hand squeezing bubble wrap (VF002)
+Caption Meaning: Bubble wrap that doesn't pop when squeezed is more appealing than bubble wrap that does.
+Relation Analysis:
+The visual evidence of someone squeezing bubble wrap does not directly support or conflict with the caption proposition. Squeezing bubble wrap can be a common action, and it doesn't necessarily indicate preference for unpopped or popped bubble wrap."
+19,vflute_train_4555,humor,introverts when someone | discusses a topic that | interests them | made with mematic | left region contains text: introverts when; discusses a to; interests t; made with mematic | right region contains text: when someone; es a topic that; rests them,6,6,8,"Text: ""introverts when someone discusses a topic that interests them""; Text: ""made with mematic""; Frog's eyes above water; Frog's belly below water",4,True,True,True,True,True,,True,True,False,False,,0.0,,41.6701,"""Introverts are open to conversation""",no,Introverts are open to conversation when the topic is of interest to them.,True,False,5.9064,0.9,16.1183,"Visual Evidence: [VF001] Frog's eyes are above the water surface, looking out from behind a transparent barrier.
+Evidence IDs: VF001
+Caption Meaning: Introverts are open to conversation when the topic is of interest to them.
+Relation Analysis: The visual evidence is insufficient for the caption meaning. The frog's position in the water does not directly indicate whether introverts are open to conversation or not."

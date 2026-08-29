@@ -2,6 +2,11 @@ import time
 
 from agents.visual_grounding import VisualGroundingAgent
 from agents.claim_extraction import ClaimExtractionAgent
+from agents.multimodal_judge import (
+    MultimodalJudgeAgent,
+    MultimodalMediatorAgent,
+    TribunalMediatorAgent,
+)
 from arbiter.arbiter import Arbiter
 from comparators.evidence_comparator import compare
 from engine.debate import DebateEngine
@@ -10,8 +15,26 @@ from engine.evidence_verifier import AtomicEvidenceVerifier, merge_verified_evid
 from engine.gpu_manager import GPUManager
 from engine.relation_schema import attach_claim_relation
 from engine.review_board import attach_final_review
+from engine.decision_trace import (
+    append_decision_checkpoint,
+    attach_decision_trace,
+)
+from engine.judge_review import (
+    JUDGE_MODES,
+    JUDGE_SCOPES,
+    apply_judge_review,
+    judge_feedback_candidate,
+    judge_request_reasons,
+)
+from models.judge_model import QwenJudgeModel
 from models.language_model import MistralModel
-from models.vision_model import LlavaModel
+from models.vision_model import Qwen3VLVisionModel
+from engine.tribunal import (
+    apply_tribunal_resolution,
+    followup_plan,
+    new_tribunal_session,
+    record_tribunal_round,
+)
 
 
 class StagewiseRunner:
@@ -24,6 +47,8 @@ class StagewiseRunner:
         verified_feedback_path=None,
         debate_mode="enabled",
         evidence_mode="enabled",
+        judge_mode="disabled",
+        judge_scope="escalated",
     ):
         if feedback_mode not in {"disabled", "collect", "calibrate", "verified"}:
             raise ValueError(f"Unknown feedback mode: {feedback_mode}")
@@ -31,10 +56,16 @@ class StagewiseRunner:
             raise ValueError(f"Unknown debate mode: {debate_mode}")
         if evidence_mode not in {"enabled", "disabled"}:
             raise ValueError(f"Unknown evidence mode: {evidence_mode}")
+        if judge_mode not in JUDGE_MODES:
+            raise ValueError(f"Unknown judge mode: {judge_mode}")
+        if judge_scope not in JUDGE_SCOPES:
+            raise ValueError(f"Unknown judge scope: {judge_scope}")
         self.debate = DebateEngine()
         self.feedback_mode = feedback_mode
         self.debate_mode = debate_mode
         self.evidence_mode = evidence_mode
+        self.judge_mode = judge_mode
+        self.judge_scope = judge_scope
         self.run_timing = {}
         self.feedback_events = []
         if feedback_log_path:
@@ -104,6 +135,8 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             "format_retry_seconds": arbiter_timing.get("format_retry_seconds", 0.0),
             "binary_resolution_seconds": arbiter_timing.get("binary_resolution_seconds", 0.0),
             "debate_seconds": 0.0,
+            "judge_seconds": 0.0,
+            "mediator_seconds": 0.0,
         }
         return {
             "visual_output": visual_output,
@@ -147,6 +180,12 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 ),
                 "debate_signals": results[sample["index"]].get(
                     "debate_need_signals", []
+                ),
+                "mediation_plan": results[sample["index"]].get(
+                    "mediation_plan", {}
+                ),
+                "force_visual_review": results[sample["index"]].get(
+                    "force_visual_review", False
                 ),
             }
             for sample in samples
@@ -271,6 +310,106 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             result["feedback"] = feedback_record
             self.feedback_events.append({**metadata, **feedback_record})
 
+    def _run_tribunal_review_round(
+        self, samples, results, round_number
+    ):
+        """Run one mediator review after both agents have answered."""
+        followups = []
+        load_seconds = 0.0
+        if not samples:
+            return followups, load_seconds
+        judge_runtime = None
+        reviewer = None
+        try:
+            load_started = time.time()
+            judge_runtime = QwenJudgeModel()
+            load_seconds = time.time() - load_started
+            reviewer = TribunalMediatorAgent(judge_runtime)
+            for sample in samples:
+                result = results[sample["index"]]
+                debate = result.get("debate_details", {}) or {}
+                review = reviewer.review(
+                    sample["image"],
+                    sample["caption"],
+                    result.get("visual_output", {}),
+                    result.get("language_output", {}),
+                    result.get("comparison", {}),
+                    result.get("evidence_ledger", []),
+                    debate,
+                    round_number=round_number,
+                )
+                result["timing"]["mediator_seconds"] = round(
+                    float(result["timing"].get("mediator_seconds", 0.0))
+                    + float(review.get("_generation_seconds", 0.0)),
+                    4,
+                )
+                judge = result.setdefault("judge", {})
+                session = judge.get("tribunal_session") or new_tribunal_session(
+                    judge.get("mediation", {})
+                )
+                session = record_tribunal_round(session, review, debate)
+                judge["tribunal_session"] = session
+                judge.setdefault("tribunal_reviews", []).append(review)
+
+                if session.get("state") == "FOLLOW_UP_REQUIRED":
+                    plan = followup_plan(review)
+                    if plan.get("_usable", False):
+                        result["mediation_plan"] = plan
+                        result["debate_level"] = 2
+                        result["debate_need_signals"] = [
+                            "tribunal_follow_up"
+                        ]
+                        followups.append(sample)
+                        judge["status"] = "tribunal_follow_up_planned"
+                        continue
+
+                resolved, verified_ledger, resolution = (
+                    apply_tribunal_resolution(
+                        result.get("decision", {}),
+                        review,
+                        result.get("evidence_ledger", []),
+                        result.get("language_output", {}).get(
+                            "claim_contract", {}
+                        ),
+                        agent2_requirements_valid=debate.get(
+                            "agent2_requirements_valid", True
+                        ),
+                        agent1_critique=debate.get("agent1_critique", {}),
+                        agent2_critique=debate.get("agent2_critique", {}),
+                    )
+                )
+                result["decision"] = resolved
+                result["evidence_ledger"] = verified_ledger
+                judge["tribunal_resolution"] = resolution
+                session = dict(judge.get("tribunal_session", {}) or {})
+                prior_state = session.get("state")
+                if resolution.get("accepted"):
+                    session["state"] = "RESOLVED"
+                elif review.get("status") == "ABSTAIN" or prior_state == "ABSTAINED":
+                    session["state"] = "ABSTAINED"
+                else:
+                    session["state"] = "PRESERVED"
+                session["stop_reason"] = (
+                    session.get("stop_reason")
+                    if prior_state == "ABSTAINED" and session.get("stop_reason")
+                    else resolution.get("reason", "")
+                )
+                judge["tribunal_session"] = session
+                judge["status"] = (
+                    "tribunal_revision_accepted"
+                    if resolution.get("accepted")
+                    else "tribunal_abstained"
+                    if session.get("state") == "ABSTAINED"
+                    else "tribunal_revision_rejected"
+                )
+        finally:
+            if reviewer is not None:
+                del reviewer
+            if judge_runtime is not None:
+                del judge_runtime
+            GPUManager.clear()
+        return followups, load_seconds
+
     def run_samples(self, samples, on_result):
         run_started = time.time()
         load_totals = {
@@ -279,6 +418,7 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             "debate_vision_model_load_seconds": 0.0,
             "debate_language_model_load_seconds": 0.0,
             "evidence_verifier_model_load_seconds": 0.0,
+            "judge_model_load_seconds": 0.0,
         }
         # Calibrated memory is collected only after inference. Verified memory
         # is immutable and matched per case, so results do not depend on sample order.
@@ -287,22 +427,25 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             context = self._feedback_context(batch_index)
             visual_outputs = {}
             print(f"\nSTAGE 1: visual grounding (batch {batch_index})")
-            llava = None
+            vision_runtime = None
             agent1 = None
             try:
                 load_started = time.time()
-                llava = LlavaModel()
+                vision_runtime = Qwen3VLVisionModel()
                 load_totals["vision_model_load_seconds"] += time.time() - load_started
-                agent1 = VisualGroundingAgent(llava)
+                agent1 = VisualGroundingAgent(vision_runtime)
                 for sample in batch:
                     visual_outputs[sample["index"]] = agent1.analyze(
                         sample["image"], feedback=None
                     )
+                    # Preserve decoded evidence in system RAM while releasing
+                    # only temporary CUDA allocations before the next image.
+                    vision_runtime.release_generation_memory()
             finally:
                 if agent1 is not None:
                     del agent1
-                if llava is not None:
-                    del llava
+                if vision_runtime is not None:
+                    del vision_runtime
                 GPUManager.clear()
 
             results = {}
@@ -379,6 +522,13 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                         baseline_decision,
                         evidence_ledger,
                         language_output.get("claim_contract", {}),
+                    )
+                    baseline_trace = append_decision_checkpoint(
+                        [], "initial_arbiter", baseline_decision,
+                        ledger=evidence_ledger,
+                    )
+                    baseline_decision = attach_decision_trace(
+                        baseline_decision, baseline_trace
                     )
                     decision = baseline_decision
                     feedback_candidate = None
@@ -491,7 +641,9 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     sample for sample in debate_candidates
                     if results[sample["index"]].get("debate_level", 1) == 1
                 ]
-                if level1_candidates:
+                if level1_candidates and self.judge_mode not in {
+                    "mediated", "tribunal"
+                }:
                     print(
                         f"\nSTAGE 2B: Level 1 debate with loaded Mistral "
                         f"({len(level1_candidates)} cases)"
@@ -516,8 +668,107 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     del mistral
                 GPUManager.clear()
 
+            if self.judge_mode in {"mediated", "tribunal"}:
+                candidate_indexes = {
+                    sample["index"] for sample in debate_candidates
+                }
+                for sample in batch:
+                    result = results[sample["index"]]
+                    reasons = judge_request_reasons(result, self.judge_scope)
+                    requested = bool(reasons)
+                    # Tribunal eligibility is independent from the ordinary
+                    # debate router.  Invalid claim contracts and ungrounded
+                    # decisions must still receive agent questions rather
+                    # than silently skipping the tribunal.
+                    if (
+                        requested
+                        and sample["index"] not in candidate_indexes
+                        and self.debate_mode == "enabled"
+                    ):
+                        debate_candidates.append(sample)
+                        candidate_indexes.add(sample["index"])
+                        result["debate_level"] = 2
+                        result["debate_need_signals"] = list(dict.fromkeys(
+                            list(result.get("debate_need_signals", []) or [])
+                            + ["tribunal_escalation"]
+                        ))
+                        result["debate_trigger_reason"] = (
+                            result.get("debate_trigger_reason")
+                            or "tribunal_requires_agent_responses"
+                        )
+                    results[sample["index"]]["judge"] = {
+                        "mode": self.judge_mode,
+                        "scope": self.judge_scope,
+                        "requested": requested,
+                        "trigger_reasons": reasons,
+                        "status": "pending" if requested else "not_escalated",
+                    }
+                if debate_candidates:
+                    print(
+                        f"\nSTAGE 2C: label-blind debate mediation "
+                        f"({len(debate_candidates)} cases)"
+                    )
+                    judge_runtime = None
+                    mediator_agent = None
+                    try:
+                        load_started = time.time()
+                        judge_runtime = QwenJudgeModel()
+                        load_totals["judge_model_load_seconds"] += (
+                            time.time() - load_started
+                        )
+                        mediator_agent = MultimodalMediatorAgent(judge_runtime)
+                        for sample in debate_candidates:
+                            result = results[sample["index"]]
+                            mediation = mediator_agent.analyze(
+                                sample["image"],
+                                sample["caption"],
+                                result["visual_output"],
+                                result["language_output"],
+                                result["comparison"],
+                                result["evidence_ledger"],
+                            )
+                            result["mediation_plan"] = mediation
+                            result["timing"]["mediator_seconds"] = mediation.get(
+                                "_generation_seconds", 0.0
+                            )
+                            result["judge"]["mediation"] = mediation
+                            if (
+                                self.judge_mode == "tribunal"
+                                or (
+                                    mediation.get("_usable", False)
+                                    and mediation.get("agent1_questions")
+                                )
+                            ):
+                                # A tribunal visual question must be answered
+                                # from the current image even when ordinary
+                                # debate routing selected lightweight Level 1.
+                                result["force_visual_review"] = True
+                            if not mediation.get("_format_valid", False):
+                                result["judge"]["status"] = "invalid_mediation_contract"
+                            elif mediation.get("_invalid_evidence_ids"):
+                                result["judge"]["status"] = (
+                                    "invalid_mediation_evidence_ids"
+                                )
+                            elif mediation.get("status") == "ABSTAIN":
+                                result["judge"]["status"] = "mediation_abstained"
+                            else:
+                                result["judge"]["status"] = "mediation_planned"
+                    finally:
+                        if mediator_agent is not None:
+                            del mediator_agent
+                        if judge_runtime is not None:
+                            del judge_runtime
+                        GPUManager.clear()
+
             if debate_candidates:
-                print(f"\nSTAGE 3: Level 2 debate revisions (batch {batch_index})")
+                stage_name = (
+                    "tribunal-guided debate revisions"
+                    if self.judge_mode == "tribunal"
+                    else "mediated debate revisions"
+                    if self.judge_mode == "mediated"
+                    else "Level 2 debate revisions"
+                )
+                print(f"\nSTAGE 3: {stage_name} (batch {batch_index})")
                 debate_cases = self._build_debate_cases(
                     debate_candidates, results
                 )
@@ -531,6 +782,159 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 self._merge_debate_results(
                     debate_candidates, results, debate_results
                 )
+                if self.judge_mode in {"mediated", "tribunal"}:
+                    for sample in debate_candidates:
+                        result = results[sample["index"]]
+                        debate = result.get("debate_details", {}) or {}
+                        accepted = bool(debate.get("revision_accepted", False))
+                        result["judge"]["mediation_review"] = {
+                            "accepted": accepted,
+                            "changed_decision": accepted and (
+                                result.get("initial_decision", {}).get("label")
+                                != result.get("decision", {}).get("label")
+                            ),
+                            "previous_label": result.get(
+                                "initial_decision", {}
+                            ).get("label"),
+                            "proposed_label": debate.get("proposed_label"),
+                            "reason": debate.get("revision_acceptance_reason", ""),
+                        }
+                        if result["judge"].get("status") == "mediation_planned":
+                            result["judge"]["status"] = (
+                                "mediated_revision_accepted"
+                                if accepted else "mediated_revision_rejected"
+                            )
+
+            if self.judge_mode == "tribunal" and debate_candidates:
+                print(
+                    f"\nSTAGE 4: tribunal reviews both agent responses "
+                    f"({len(debate_candidates)} cases)"
+                )
+                followups, tribunal_load = self._run_tribunal_review_round(
+                    debate_candidates, results, 1
+                )
+                load_totals["judge_model_load_seconds"] += tribunal_load
+                if followups:
+                    print(
+                        f"\nSTAGE 5: bounded tribunal follow-up "
+                        f"({len(followups)} cases)"
+                    )
+                    prior_debate_seconds = {
+                        sample["index"]: results[sample["index"]]["timing"].get(
+                            "debate_seconds", 0.0
+                        )
+                        for sample in followups
+                    }
+                    followup_results = self.debate.run_debate_batch(
+                        self._build_debate_cases(followups, results)
+                    )
+                    load_totals["debate_vision_model_load_seconds"] += (
+                        self.debate.last_batch_timing.get(
+                            "vision_model_load_seconds", 0.0
+                        )
+                    )
+                    load_totals["debate_language_model_load_seconds"] += (
+                        self.debate.last_batch_timing.get(
+                            "language_model_load_seconds", 0.0
+                        )
+                    )
+                    self._merge_debate_results(
+                        followups, results, followup_results
+                    )
+                    for sample in followups:
+                        result = results[sample["index"]]
+                        result["timing"]["debate_seconds"] = round(
+                            prior_debate_seconds[sample["index"]]
+                            + result["timing"].get("debate_seconds", 0.0),
+                            4,
+                        )
+                    print(
+                        f"\nSTAGE 6: final tribunal review "
+                        f"({len(followups)} cases)"
+                    )
+                    _, final_load = self._run_tribunal_review_round(
+                        followups, results, 2
+                    )
+                    load_totals["judge_model_load_seconds"] += final_load
+
+            if self.judge_mode in {"shadow", "appellate"}:
+                judge_candidates = []
+                for sample in batch:
+                    result = results[sample["index"]]
+                    reasons = judge_request_reasons(result, self.judge_scope)
+                    result["judge"] = {
+                        "mode": self.judge_mode,
+                        "scope": self.judge_scope,
+                        "requested": bool(reasons),
+                        "trigger_reasons": reasons,
+                        "status": "pending" if reasons else "not_escalated",
+                    }
+                    if reasons:
+                        judge_candidates.append(sample)
+
+                if judge_candidates:
+                    print(
+                        f"\nSTAGE 4: independent multimodal judge "
+                        f"({len(judge_candidates)} cases, {self.judge_mode} mode)"
+                    )
+                    judge_runtime = None
+                    judge_agent = None
+                    try:
+                        load_started = time.time()
+                        judge_runtime = QwenJudgeModel()
+                        load_totals["judge_model_load_seconds"] += (
+                            time.time() - load_started
+                        )
+                        judge_agent = MultimodalJudgeAgent(judge_runtime)
+                        for sample in judge_candidates:
+                            result = results[sample["index"]]
+                            judgment = judge_agent.analyze(
+                                sample["image"],
+                                sample["caption"],
+                                result["visual_output"],
+                                result["language_output"],
+                                result["comparison"],
+                                result["evidence_ledger"],
+                                result.get("debate_details", {}),
+                            )
+                            reviewed_decision, appellate_review = apply_judge_review(
+                                result["decision"],
+                                judgment,
+                                result["evidence_ledger"],
+                                result["language_output"].get(
+                                    "claim_contract", {}
+                                ),
+                                mode=self.judge_mode,
+                            )
+                            result["decision"] = reviewed_decision
+                            result["timing"]["judge_seconds"] = judgment.get(
+                                "_generation_seconds", 0.0
+                            )
+                            if not judgment.get("_format_valid", False):
+                                judge_status = "invalid_contract"
+                            elif judgment.get("verdict") == "ABSTAIN":
+                                judge_status = "abstained"
+                            elif appellate_review.get("accepted"):
+                                judge_status = "appellate_revision_accepted"
+                            elif self.judge_mode == "shadow":
+                                judge_status = "shadow_completed"
+                            else:
+                                judge_status = "appellate_revision_rejected"
+                            result["judge"].update({
+                                "status": judge_status,
+                                "judgment": judgment,
+                                "appellate_review": appellate_review,
+                                "feedback_candidate": judge_feedback_candidate(
+                                    judgment,
+                                    appellate_review.get("previous_label"),
+                                ),
+                            })
+                    finally:
+                        if judge_agent is not None:
+                            del judge_agent
+                        if judge_runtime is not None:
+                            del judge_runtime
+                        GPUManager.clear()
 
             self._apply_feedback(batch, results, context)
             for sample in batch:
@@ -546,6 +950,36 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             "feedback_mode": self.feedback_mode,
             "debate_mode": self.debate_mode,
             "evidence_mode": self.evidence_mode,
+            "judge_mode": self.judge_mode,
+            "judge_scope": self.judge_scope,
+            "judge_requested_samples": sum(
+                bool(result.get("judge", {}).get("requested"))
+                for result in results.values()
+            ),
+            "judge_accepted_revisions": sum(
+                bool(
+                    (
+                        result.get("judge", {}).get(
+                            "tribunal_resolution", {}
+                        )
+                        if self.judge_mode == "tribunal"
+                        else result.get("judge", {}).get(
+                            "mediation_review", {}
+                        )
+                        if self.judge_mode == "mediated"
+                        else result.get("judge", {}).get("appellate_review", {})
+                    ).get("accepted")
+                )
+                for result in results.values()
+            ),
+            "mediated_tiebreak_revisions": sum(
+                str(
+                    result.get("judge", {})
+                    .get("mediation_review", {})
+                    .get("reason", "")
+                ).startswith("accepted_mediated_verified_tiebreak:")
+                for result in results.values()
+            ),
             "feedback_updates": sum(
                 event.get("update_applied", False)
                 for event in self.feedback_events
