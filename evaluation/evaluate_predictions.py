@@ -25,6 +25,28 @@ except ImportError:
 
 
 LABELS = ("ENTAILS", "CONTRADICTS")
+NO_ANSWER = "__NO_ANSWER__"
+
+
+def classification_summary(frame):
+    """Score all delivered cases, independently of evidence/contract validity."""
+    if frame.empty or not frame["ground_truth"].isin(LABELS).all():
+        raise ValueError("Evaluation requires nonempty cases with binary gold labels")
+    truth = frame["ground_truth"]
+    prediction = frame["prediction"].where(frame["prediction"].isin(LABELS), NO_ANSWER)
+    precision, recall, f1, support = precision_recall_fscore_support(
+        truth, prediction, labels=LABELS, zero_division=0)
+    return {
+        "accuracy": float(accuracy_score(truth, prediction)),
+        "balanced_accuracy": float(sum(r for r, n in zip(recall, support) if n) / sum(n > 0 for n in support)),
+        "macro_f1": float(f1_score(truth, prediction, labels=LABELS, average="macro", zero_division=0)),
+        "per_label": {label: {"precision": float(precision[i]), "recall": float(recall[i]),
+                             "f1": float(f1[i]), "support": int(support[i])}
+                      for i, label in enumerate(LABELS)},
+        "confusion_matrix": {"gold_labels": list(LABELS), "prediction_labels": [*LABELS, NO_ANSWER],
+                             "matrix": [[int(((truth == gold) & (prediction == pred)).sum())
+                                         for pred in (*LABELS, NO_ANSWER)] for gold in LABELS]},
+    }
 
 
 def parse_args():
@@ -42,6 +64,26 @@ def numeric(series):
     return pd.to_numeric(series, errors="coerce")
 
 
+def evaluated_boolean_rate(series):
+    """Exclude NOT_RUN/UNKNOWN, without treating absent audit results as FAIL."""
+    known = series.astype(str).str.strip().str.lower().isin(("true", "false", "1", "0", "yes", "no"))
+    return float(as_bool(series[known]).mean()) if known.any() else None
+
+
+def generation_diagnostic_flag(value, key):
+    try:
+        payload = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if isinstance(payload, dict):
+        if bool(payload.get(key, False)):
+            return True
+        return any(generation_diagnostic_flag(item, key) for item in payload.values())
+    if isinstance(payload, list):
+        return any(generation_diagnostic_flag(item, key) for item in payload)
+    return False
+
+
 def distribution(series):
     return {str(key): int(value) for key, value in series.fillna("missing").value_counts().items()}
 
@@ -49,18 +91,14 @@ def distribution(series):
 def metric_row(group, group_name, value):
     valid = group[group["_valid"]]
     row = {group_name: value, "samples": int(len(group)), "valid_predictions": int(len(valid))}
-    if valid.empty:
+    if group.empty:
         return {**row, "accuracy": None, "balanced_accuracy": None, "macro_f1": None}
-    balanced = None
-    if valid["ground_truth"].nunique() == len(LABELS):
-        balanced = float(
-            balanced_accuracy_score(valid["ground_truth"], valid["prediction"])
-        )
+    scores = classification_summary(group)
     return {
         **row,
-        "accuracy": float(accuracy_score(valid["ground_truth"], valid["prediction"])),
-        "balanced_accuracy": balanced,
-        "macro_f1": float(f1_score(valid["ground_truth"], valid["prediction"], labels=LABELS, average="macro", zero_division=0)),
+        "accuracy": scores["accuracy"],
+        "balanced_accuracy": scores["balanced_accuracy"] if group["ground_truth"].nunique() == len(LABELS) else None,
+        "macro_f1": scores["macro_f1"],
     }
 
 
@@ -68,12 +106,14 @@ def confidence_metrics(valid):
     if "final_confidence" not in valid.columns:
         return {"samples": 0, "mean": None, "median": None, "p95": None, "brier_score": None, "ece_10_bin": None}, pd.DataFrame()
     values = numeric(valid["final_confidence"])
+    if (valid["final_confidence"].notna() & values.isna()).any():
+        raise ValueError("Non-numeric evidence score")
+    if (values.notna() & ~values.between(0, 1)).any():
+        raise ValueError("Evidence scores must be finite and between zero and one")
     usable = valid.loc[values.notna()].copy()
-    usable["confidence"] = values.loc[usable.index].clip(0, 1)
+    usable["confidence"] = values.loc[usable.index]
     if usable.empty:
         return {"samples": 0, "mean": None, "median": None, "p95": None, "brier_score": None, "ece_10_bin": None}, pd.DataFrame()
-    usable["p_entails"] = usable["confidence"].where(usable["prediction"] == "ENTAILS", 1 - usable["confidence"])
-    usable["entails_target"] = (usable["ground_truth"] == "ENTAILS").astype(float)
     usable["correct"] = usable["prediction"] == usable["ground_truth"]
     usable["confidence_bin"] = pd.cut(usable["confidence"], bins=[0, .1, .2, .3, .4, .5, .6, .7, .8, .9, 1.0], include_lowest=True)
     rows, ece = [], 0.0
@@ -82,11 +122,15 @@ def confidence_metrics(valid):
             continue
         mean_confidence, empirical_accuracy = float(group["confidence"].mean()), float(group["correct"].mean())
         ece += (len(group) / len(usable)) * abs(mean_confidence - empirical_accuracy)
-        rows.append({"confidence_band": str(band), "samples": int(len(group)), "mean_confidence": mean_confidence, "accuracy": empirical_accuracy, "calibration_gap": abs(mean_confidence - empirical_accuracy)})
+        rows.append({"confidence_band": str(band), "samples": int(len(group)), "mean_confidence": mean_confidence, "accuracy": empirical_accuracy, "score_accuracy_gap": abs(mean_confidence - empirical_accuracy)})
     return {
         "samples": int(len(usable)), "mean": float(usable["confidence"].mean()),
+        "scope": "contract_valid_predictions_with_numeric_scores_only",
         "median": float(usable["confidence"].median()), "p95": float(usable["confidence"].quantile(.95)),
-        "brier_score": float(((usable["p_entails"] - usable["entails_target"]) ** 2).mean()), "ece_10_bin": float(ece),
+        "brier_score": None, "ece_10_bin": None,
+        "score_accuracy_gap_10_bin": float(ece),
+        "semantics": "uncalibrated_evidence_score_not_probability",
+        "note": "Probability metrics withheld: final_confidence can be evidence-capped. Use a separately validated calibrator.",
     }, pd.DataFrame(rows)
 
 
@@ -103,6 +147,8 @@ def runtime_profile(df):
 
 
 def _explanation_tokens(value):
+    if value is None or pd.isna(value):
+        return []
     return re.findall(r"[a-z0-9]+", str(value or "").casefold())
 
 
@@ -121,7 +167,7 @@ def _lcs_length(first, second):
 
 
 def explanation_metrics(df):
-    if not {"reference_explanation", "final_reason"}.issubset(df.columns):
+    if df.empty or not {"reference_explanation", "final_reason"}.issubset(df.columns):
         return {
             "samples": 0, "mean_token_f1": None, "mean_rouge_l_f1": None,
             "note": "Reference explanations were unavailable.",
@@ -130,7 +176,10 @@ def explanation_metrics(df):
     for index, row in df.iterrows():
         reference = _explanation_tokens(row.get("reference_explanation"))
         generated = _explanation_tokens(row.get("final_reason"))
-        if not reference or not generated:
+        if not reference:
+            token_f1 = float("nan")
+            rouge_l = float("nan")
+        elif not generated:
             token_f1 = 0.0
             rouge_l = 0.0
         else:
@@ -163,8 +212,13 @@ def explanation_metrics(df):
     output = pd.DataFrame(rows)
     return {
         "samples": int(len(output)),
-        "mean_token_f1": float(output["token_f1"].mean()),
-        "mean_rouge_l_f1": float(output["rouge_l_f1"].mean()),
+        "reference_available_count": int(output["token_f1"].notna().sum()),
+        "reference_missing_count": int(output["token_f1"].isna().sum()),
+        "mean_token_f1": float(output["token_f1"].mean()) if output["token_f1"].notna().any() else None,
+        "mean_rouge_l_f1": float(output["rouge_l_f1"].mean()) if output["rouge_l_f1"].notna().any() else None,
+        "automatic_semantic_verification": False,
+        "faithfulness_verified": None,
+        "metric_role": "lexical_reference_diagnostic_not_an_acceptance_gate",
         "note": (
             "Lexical diagnostics against V-FLUTE reference explanations; "
             "they are not substitutes for human faithfulness review."
@@ -177,6 +231,10 @@ def evaluate_predictions(input_path, output_dir=None):
     # Consolidate the wide run table before adding audit columns. This avoids
     # pandas fragmentation warnings without changing any metric values.
     df = pd.read_csv(input_path).copy()
+    from evaluation.input_coverage import reconcile
+    df, input_coverage = reconcile(df, input_path)
+    if "id" in df and df["id"].astype(str).str.startswith(("capcon_", "mmsd2_")).any():
+        raise ValueError("Legacy CapCon/MMSD2 labels are not qualified visual-entailment gold; evaluate their native tasks separately")
     missing = {"ground_truth", "prediction", "phenomenon"} - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {sorted(missing)}")
@@ -186,16 +244,10 @@ def evaluate_predictions(input_path, output_dir=None):
     if "final_decision_valid" in df:
         df["_valid"] &= as_bool(df["final_decision_valid"])
     valid, invalid = df[df["_valid"]].copy(), df[~df["_valid"]].copy()
-    if valid.empty:
-        raise ValueError("No valid ENTAILS or CONTRADICTS predictions were produced.")
-
-    y_true, y_pred = valid["ground_truth"], valid["prediction"]
-    precision, recall, f1, support = precision_recall_fscore_support(y_true, y_pred, labels=LABELS, zero_division=0)
-    per_label = {label: {"precision": float(precision[i]), "recall": float(recall[i]), "f1": float(f1[i]), "support": int(support[i])} for i, label in enumerate(LABELS)}
-    cm = confusion_matrix(y_true, y_pred, labels=LABELS)
-    accuracy = float(accuracy_score(y_true, y_pred))
-    macro_f1 = float(f1_score(y_true, y_pred, labels=LABELS, average="macro", zero_division=0))
-    balanced_accuracy = float(balanced_accuracy_score(y_true, y_pred))
+    classification = classification_summary(df)
+    accuracy, balanced_accuracy, macro_f1 = (classification[key] for key in ("accuracy", "balanced_accuracy", "macro_f1"))
+    per_label = classification["per_label"]
+    cm = classification["confusion_matrix"]["matrix"]
 
     debate_mask = as_bool(df["debate_triggered"]) if "debate_triggered" in df else pd.Series(False, index=df.index)
     # Debate ends before any judge/tribunal stage.  Compare the initial
@@ -282,6 +334,39 @@ def evaluate_predictions(input_path, output_dir=None):
         effective_verdict.loc[mediated_requested_mask] = df.loc[
             mediated_requested_mask, "mediator_provisional_verdict"
         ]
+    execution_status = df.get(
+        "judge_execution_status", pd.Series("", index=df.index)
+    ).fillna("").astype(str)
+    legacy_failure = df.get(
+        "judge_format_error", pd.Series("", index=df.index)
+    ).fillna("").astype(str).str.contains("generation_failed:", regex=False)
+    execution_failed_mask = judge_requested_mask & (
+        execution_status.eq("FAILED") | legacy_failure
+    )
+    eligible_review_mask = (
+        judge_requested_mask & effective_contract_valid & ~execution_failed_mask
+        & ~execution_status.eq("NOT_RUN")
+    )
+    semantic_abstention_mask = (
+        tribunal_requested_mask & as_bool(df["tribunal_semantic_abstained"])
+        if "tribunal_semantic_abstained" in df
+        else tribunal_requested_mask & effective_verdict.eq("ABSTAIN")
+    )
+    semantic_valid_mask = (
+        tribunal_requested_mask
+        & as_bool(df["tribunal_semantic_judgment_valid"])
+        if "tribunal_semantic_judgment_valid" in df
+        else tribunal_requested_mask & effective_verdict.isin(LABELS)
+    )
+    semantic_abstention_mask &= eligible_review_mask
+    semantic_valid_mask &= eligible_review_mask
+    computed_admissibility = df.get(
+        "tribunal_computed_admissibility",
+        pd.Series("", index=df.index, dtype=object),
+    ).fillna("").astype(str)
+    procedural_rejection_mask = (
+        semantic_valid_mask & computed_admissibility.eq("REJECTED")
+    )
     judge_columns = (
         "sample", "id", "phenomenon", "ground_truth", "pre_judge_prediction",
         "prediction", "judge_mode", "judge_scope", "judge_requested",
@@ -291,6 +376,17 @@ def evaluate_predictions(input_path, output_dir=None):
         "judge_revision_accepted", "judge_revision_reason", "judge_seconds",
         "judge_feedback_candidate_recorded", "judge_feedback_role",
         "judge_feedback_memory_update_applied",
+        "tribunal_best_semantic_judgment", "tribunal_admissibility",
+        "tribunal_semantic_judgment_valid", "tribunal_semantic_abstained",
+        "tribunal_computed_admissibility", "tribunal_contract_normalizations",
+        "tribunal_claim_dependency_reason", "judge_normalized_evidence_ids",
+        "supervisor_dossier_schema", "supervisor_checkpoint",
+        "supervisor_memory_mode", "supervisor_model_residency",
+        "semantic_bridge_mode", "semantic_bridge_type",
+        "semantic_bridge_relation", "semantic_bridge_verification_status",
+        "semantic_bridge_corroborated", "semantic_bridge_evidence_id",
+        "semantic_bridge_failed_checks", "semantic_bridge_counter_strength",
+        "semantic_bridge_confidence", "semantic_bridge_requested_follow_up",
         "mediator_status", "mediator_provisional_verdict",
         "mediator_confidence", "mediator_format_valid",
         "mediator_evidence_ids", "mediator_invalid_evidence_ids",
@@ -307,9 +403,37 @@ def evaluate_predictions(input_path, output_dir=None):
         "judge_changed_decision", "judge_confirmation_valid",
     )
     judge_df = df[[name for name in judge_columns if name in df]].copy()
+    bridge_df = pd.DataFrame(columns=[
+        "bridge_proposal_correct", "bridge_counterfactual_outcome",
+        "semantic_bridge_corroborated", "semantic_bridge_verification_status",
+        "semantic_bridge_type",
+    ])
+    if "semantic_bridge_relation" in df:
+        bridge_mask = df["semantic_bridge_relation"].isin(["SUPPORT", "CONFLICT"])
+        bridge_df = df.loc[bridge_mask, [
+            name for name in (
+                "sample", "id", "phenomenon", "ground_truth", "pre_judge_prediction",
+                "prediction", "semantic_bridge_mode", "semantic_bridge_type",
+                "semantic_bridge_relation", "semantic_bridge_verification_status",
+                "semantic_bridge_corroborated", "semantic_bridge_confidence",
+                "semantic_bridge_counter_strength", "semantic_bridge_failed_checks",
+                "tribunal_best_semantic_judgment", "tribunal_admissibility",
+                "tribunal_revision_accepted",
+            ) if name in df
+        ]].copy()
+        bridge_df["bridge_proposed_label"] = df.loc[bridge_mask, "semantic_bridge_relation"].map(
+            {"SUPPORT": "ENTAILS", "CONFLICT": "CONTRADICTS"}
+        )
+        bridge_df["bridge_proposal_correct"] = (
+            bridge_df["bridge_proposed_label"] == bridge_df["ground_truth"]
+        )
+        bridge_df["bridge_counterfactual_outcome"] = "unchanged"
+        pre_correct = bridge_df["pre_judge_prediction"] == bridge_df["ground_truth"]
+        bridge_df.loc[~pre_correct & bridge_df["bridge_proposal_correct"], "bridge_counterfactual_outcome"] = "corrected"
+        bridge_df.loc[pre_correct & ~bridge_df["bridge_proposal_correct"], "bridge_counterfactual_outcome"] = "harmed"
     if {"pre_judge_prediction", "judge_verdict"}.issubset(df.columns):
         judge_comparable = df[
-            judge_requested_mask
+            eligible_review_mask
             & df["pre_judge_prediction"].isin(LABELS)
             & df["judge_verdict"].isin(LABELS)
         ].copy()
@@ -425,14 +549,58 @@ def evaluate_predictions(input_path, output_dir=None):
         )
 
     confidence, confidence_df = confidence_metrics(valid)
-    explanation, explanation_df = explanation_metrics(valid)
+    explanation, explanation_df = explanation_metrics(df)
     phenomenon_df = pd.DataFrame([metric_row(group, "phenomenon", name) for name, group in df.groupby("phenomenon", dropna=False)])
+    source_df = (pd.DataFrame([metric_row(group, "source_dataset", name) for name, group in
+                 df.groupby("verified_source_dataset", dropna=False)]) if "verified_source_dataset" in df else pd.DataFrame())
     if "figurative_type_predicted" in df:
         type_accuracy = df.assign(_correct_type=df["figurative_type_predicted"].astype(str).str.lower() == df["phenomenon"].astype(str).str.lower()).groupby("phenomenon")["_correct_type"].mean()
         phenomenon_df["caption_type_phenomenon_agreement"] = phenomenon_df["phenomenon"].map(type_accuracy)
     decision_method_df = pd.DataFrame([metric_row(group, "decision_method", name) for name, group in df.groupby("decision_method", dropna=False)]) if "decision_method" in df else pd.DataFrame()
     comparator_df = pd.DataFrame([metric_row(group, "comparator_evidence_status", name) for name, group in df.groupby("comparator_evidence_status", dropna=False)]) if "comparator_evidence_status" in df else pd.DataFrame()
     runtime_df = runtime_profile(df)
+    position_rows = []
+    ordered = df.sort_values("sample").copy() if "sample" in df else df.copy()
+    if not ordered.empty:
+        ordered["position_decile"] = [
+            min(10, int(index * 10 / len(ordered)) + 1)
+            for index in range(len(ordered))
+        ]
+        for decile, group in ordered.groupby("position_decile"):
+            row = metric_row(group, "position_decile", decile)
+            row["mean_runtime_seconds"] = (
+                float(numeric(group["runtime_seconds"]).mean())
+                if "runtime_seconds" in group and numeric(group["runtime_seconds"]).notna().any() else None
+            )
+            row["accepted_revisions"] = (
+                int(as_bool(group["judge_revision_accepted"]).sum())
+                if "judge_revision_accepted" in group else 0
+            )
+            accepted = as_bool(group.get(
+                "judge_revision_accepted", pd.Series(False, index=group.index)
+            ))
+            initially_correct = group.get(
+                "pre_judge_prediction", pd.Series("", index=group.index)
+            ).eq(group["ground_truth"])
+            row["accepted_harms"] = int((
+                accepted & initially_correct
+                & group["prediction"].ne(group["ground_truth"])
+            ).sum())
+            for key in (
+                "oom_recovery_used", "resolution_reduced", "hit_token_limit",
+            ):
+                row[key + "_count"] = int(sum(
+                    generation_diagnostic_flag(value, key)
+                    for column in (
+                        "agent1_generation_diagnostics",
+                        "agent2_generation_diagnostics",
+                        "judge_generation_diagnostics",
+                    )
+                    if column in group
+                    for value in group[column]
+                ))
+            position_rows.append(row)
+    position_df = pd.DataFrame(position_rows)
     errors = df[df["ground_truth"] != df["prediction"]].copy()
     error_columns = ("sample", "id", "phenomenon", "ground_truth", "prediction", "final_confidence", "semantic_entails_score", "semantic_contradicts_score", "semantic_neutral_score", "semantic_verifier_model", "decision_method", "comparator_evidence_status", "comparator_recommendation", "debate_triggered", "debate_trigger_reason", "debate_revision_accepted", "debate_revision_reason", "debate_failed_invariant", "debate_acceptance_checks", "debate_unconstrained_proposed_label", "debate_relation_status", "debate_deficiencies", "agent1_critique_method", "agent1_critique_response_status", "agent1_critique_parser_errors", "agent1_critique_observed_entity", "agent1_critique_observed_state", "agent1_critique_claim_relation", "agent1_region_pairs", "agent2_critique_format_valid", "agent2_requirements_valid", "agent2_requirement_errors", "arbiter_relation_status", "arbiter_deficiencies", "claim_retry_attempted", "claim_retry_success", "feedback_mode", "feedback_memory_active", "figurative_type_predicted", "agent1_visible_text", "agent1_symbolic_tone", "agent1_schema_complete", "agent1_schema_issues", "agent1_targeted_recovery_attempted", "agent1_targeted_recovery_success", "tribunal_revision_reason", "tribunal_corroboration_reason", "tribunal_acceptance_checks", "arbiter_evidence_assessment", "final_reason")
     errors = errors[[name for name in error_columns if name in errors]].copy()
@@ -537,12 +705,25 @@ def evaluate_predictions(input_path, output_dir=None):
         ).sum()
     ) if not feedback_comparable.empty else 0
     run_timing = {}
-    run_timing_path = os.path.join(output_dir, "run_timing.json")
+    run_timing_path = os.path.join(os.path.dirname(os.path.abspath(input_path)), "run_timing.json")
     if os.path.exists(run_timing_path):
         with open(run_timing_path, "r", encoding="utf-8") as handle:
             run_timing = json.load(handle)
 
     total = int(len(df))
+    delivered_total = input_coverage["delivered_rows"]
+    completion = {"requested_samples": None, "recorded_samples": delivered_total,
+                  "complete": None, "note": "Requested sample count unavailable; scores describe this file only."}
+    config_path = os.path.join(os.path.dirname(os.path.abspath(input_path)), "run_config.json")
+    if os.path.exists(config_path):
+        with open(config_path, encoding="utf-8") as handle:
+            requested = json.load(handle).get("requested_samples")
+        if isinstance(requested, int) and requested > 0:
+            if delivered_total > requested:
+                raise ValueError("More prediction records than requested samples")
+            completion = {"requested_samples": requested, "recorded_samples": delivered_total,
+                          "complete": delivered_total == requested, "completion_rate": delivered_total / requested,
+                          "note": "Incomplete runs cannot support a complete-run accuracy claim."}
     type_agreement = float((df["figurative_type_predicted"].astype(str).str.lower() == df["phenomenon"].astype(str).str.lower()).mean()) if "figurative_type_predicted" in df else None
     prediction_distribution = distribution(df["prediction"])
     entails_prediction_rate = float((df["prediction"] == "ENTAILS").mean())
@@ -557,19 +738,47 @@ def evaluate_predictions(input_path, output_dir=None):
     targeted_nli_attempt_mask = df["debate_proposed_decision_method"].fillna("").eq("targeted_region_verifier") if "debate_proposed_decision_method" in df else targeted_nli_accepted_mask
     grounding_schema = as_bool(df["agent1_schema_complete"]) if "agent1_schema_complete" in df else pd.Series(False, index=df.index)
     metrics = {
+        "input_coverage": input_coverage,
+        "publication_qualified": False,
         "samples": total, "valid_prediction_count": int(len(valid)), "invalid_prediction_count": int(len(invalid)), "invalid_prediction_rate": float(len(invalid) / total),
         "accuracy": accuracy, "balanced_accuracy": balanced_accuracy, "macro_f1": macro_f1, "per_label": per_label,
-        "confusion_matrix": {"labels": list(LABELS), "matrix": cm.tolist()},
+        "primary_denominator": ("all_intended_samples_including_missing_outputs" if input_coverage["status"] == "RECONCILED"
+                                else "delivered_records_only_intended_coverage_unverified"),
+        "run_completion": completion,
+        "contract_valid_subset_accuracy": float((valid["prediction"] == valid["ground_truth"]).mean()) if len(valid) else None,
+        "binary_answer_count": int(df["prediction"].isin(LABELS).sum()),
+        "unanswered_count": int((~df["prediction"].isin(LABELS)).sum()),
+        "confusion_matrix": classification["confusion_matrix"],
         "ground_truth_distribution": distribution(df["ground_truth"]), "prediction_distribution": prediction_distribution,
+        "source_breakdown": source_df.astype(object).where(pd.notna(source_df), None).to_dict(orient="records"),
+        "dataset_majority_class_baseline": float(df["ground_truth"].value_counts().max() / total),
+        "balance_note": "Natural prevalence is retained. Report per-label, per-phenomenon and per-source results; balanced accuracy does not certify freedom from bias.",
         "label_balance": {
             "entails_prediction_rate": entails_prediction_rate,
-            "contradicts_prediction_rate": 1.0 - entails_prediction_rate,
+            "contradicts_prediction_rate": float(df["prediction"].eq("CONTRADICTS").mean()),
             "absolute_prediction_imbalance": abs(entails_prediction_rate - 0.5),
         },
         "caption_type_distribution": distribution(df["figurative_type_predicted"]) if "figurative_type_predicted" in df else {},
         "caption_type_phenomenon_agreement": type_agreement,
         "caption_type_note": "Diagnostic agreement only: the dataset phenomenon may occur in the image, caption, or both.",
         "claim_relations": {
+            "hearing_information_exchange": {
+                "scope": "Explicit latest-hearing counters; full earlier hearings remain in the final artifact. Missing legacy counters are unavailable, not zero.",
+                "counts": {key: (float(pd.to_numeric(df["agent2_" + key], errors="coerce").sum(min_count=1))
+                                 if "agent2_" + key in df and pd.to_numeric(df["agent2_" + key], errors="coerce").notna().any() else None)
+                           for key in ("questions_requested", "questions_delivered", "questions_answered",
+                                       "questions_unresolved", "questions_failed", "citation_identity_valid")},
+                "semantic_accuracy": None,
+                "semantic_accuracy_note": "Transport, formatting and citation identity do not establish correct caption understanding."},
+            "validity_note": "Contract validity checks representation/source integrity, not correct interpretation or image truth. Full-caption fallback is not qualified decomposition.",
+            "semantic_qualified_rate": float(as_bool(df["claim_semantic_qualified"]).mean()) if "claim_semantic_qualified" in df else None,
+            "semantic_model_comparisons_total": float(pd.to_numeric(df["claim_semantic_model_comparisons"], errors="coerce").sum(min_count=1)) if "claim_semantic_model_comparisons" in df else None,
+            "deterministic_projections_total": float(pd.to_numeric(df["claim_deterministic_projections"], errors="coerce").sum(min_count=1)) if "claim_deterministic_projections" in df else None,
+            "audit_status_distribution": distribution(df["claim_semantic_audit_status"]) if "claim_semantic_audit_status" in df else {},
+            "semantic_checks_executed_rate": float(as_bool(df["claim_semantic_checks_executed"]).mean()) if "claim_semantic_checks_executed" in df else None,
+            "evaluated_proposition_pass_rate": evaluated_boolean_rate(df["claim_semantic_proposition_pass"]) if "claim_semantic_proposition_pass" in df else None,
+            "representation_distribution": distribution(df["claim_graph_representation"]) if "claim_graph_representation" in df else {},
+            "decomposition_status_distribution": distribution(df["claim_decomposition_status"]) if "claim_decomposition_status" in df else {},
             "resolved_rate": float(as_bool(df["claim_relation_resolved"]).mean()) if "claim_relation_resolved" in df else None,
             "contract_valid_rate": float(as_bool(df["claim_contract_valid"]).mean()) if "claim_contract_valid" in df else None,
             "tribunal_contract_valid_rate": float(as_bool(df["claim_safe_for_tribunal_reasoning"]).mean()) if "claim_safe_for_tribunal_reasoning" in df else None,
@@ -587,6 +796,10 @@ def evaluate_predictions(input_path, output_dir=None):
         "confidence": confidence,
         "explanations": explanation,
         "decision_reliability": {
+            "judge_verification_status_distribution": distribution(df["judge_verification_status"]) if "judge_verification_status" in df else {},
+            "judge_context_status_distribution": distribution(df["judge_context_status"]) if "judge_context_status" in df else {},
+            "judge_graph_visible_rate": evaluated_boolean_rate(df["judge_graph_visible"]) if "judge_graph_visible" in df else None,
+            "independent_verification_attempted_rate": evaluated_boolean_rate(df["independent_verification_attempted"]) if "independent_verification_attempted" in df else None,
             "primary_arbiter_valid_rate": float(as_bool(df["primary_decision_valid"]).mean()) if "primary_decision_valid" in df else None,
             "format_retry_rate": float(as_bool(df["format_retry_used"]).mean()) if "format_retry_used" in df else None,
             "citation_retry_rate": float(as_bool(df["citation_retry_used"]).mean()) if "citation_retry_used" in df else None,
@@ -636,8 +849,18 @@ def evaluate_predictions(input_path, output_dir=None):
             "mode_distribution": distribution(df["judge_mode"]) if "judge_mode" in df else {},
             "requested_count": int(judge_requested_mask.sum()),
             "requested_rate": float(judge_requested_mask.mean()),
+            "execution_failure_count": int(execution_failed_mask.sum()),
+            "execution_failure_rate": float(execution_failed_mask[judge_requested_mask].mean()) if judge_requested_mask.any() else None,
+            "semantic_eligible_count": int(eligible_review_mask.sum()),
             "status_distribution": distribution(df.loc[judge_requested_mask, "judge_status"]) if "judge_status" in df else {},
             "contract_valid_rate": float(effective_contract_valid[judge_requested_mask].mean()) if judge_requested_mask.any() else None,
+            "format_error_distribution": distribution(df.loc[judge_requested_mask & ~effective_contract_valid, "judge_format_error"]) if judge_requested_mask.any() and "judge_format_error" in df else {},
+            "format_retry_rate": float(as_bool(df.loc[judge_requested_mask, "judge_format_retry_used"]).mean()) if judge_requested_mask.any() and "judge_format_retry_used" in df else None,
+            "format_retry_success_rate": float(as_bool(df.loc[judge_requested_mask & as_bool(df["judge_format_retry_used"]), "judge_format_retry_success"]).mean()) if judge_requested_mask.any() and "judge_format_retry_used" in df and as_bool(df.loc[judge_requested_mask, "judge_format_retry_used"]).any() else None,
+            "token_limit_rate": float(pd.Series([
+                generation_diagnostic_flag(value, "hit_token_limit")
+                for value in df.loc[judge_requested_mask, "judge_generation_diagnostics"]
+            ]).mean()) if judge_requested_mask.any() and "judge_generation_diagnostics" in df else None,
             "verdict_distribution": distribution(effective_verdict[judge_requested_mask]),
             "mediator_usable_rate": float(as_bool(df.loc[mediated_requested_mask, "mediator_usable"]).mean()) if mediated_requested_mask.any() and "mediator_usable" in df else None,
             "mediated_tiebreak_count": int(as_bool(df["mediator_tiebreak_used"]).sum()) if "mediator_tiebreak_used" in df else 0,
@@ -651,6 +874,18 @@ def evaluate_predictions(input_path, output_dir=None):
             "tribunal_corroboration_reason_distribution": distribution(df.loc[tribunal_requested_mask, "tribunal_corroboration_reason"]) if tribunal_requested_mask.any() and "tribunal_corroboration_reason" in df else {},
             "tribunal_mean_rounds": float(numeric(df.loc[tribunal_requested_mask, "tribunal_round_count"]).mean()) if tribunal_requested_mask.any() and "tribunal_round_count" in df else None,
             "tribunal_verified_relation_count": int(df.loc[tribunal_requested_mask, "tribunal_verified_evidence_id"].fillna("").ne("").sum()) if tribunal_requested_mask.any() and "tribunal_verified_evidence_id" in df else 0,
+            "semantic_binary_judgment_count": int(semantic_valid_mask.sum()),
+            "semantic_abstention_count": int(semantic_abstention_mask.sum()),
+            "semantic_abstention_rate": float(semantic_abstention_mask.loc[tribunal_requested_mask & eligible_review_mask].mean()) if (tribunal_requested_mask & eligible_review_mask).any() else None,
+            "computed_admissibility_distribution": distribution(computed_admissibility.loc[tribunal_requested_mask]) if tribunal_requested_mask.any() else {},
+            "procedural_rejection_after_binary_judgment_count": int(procedural_rejection_mask.sum()),
+            "procedural_rejection_reason_distribution": distribution(df.loc[procedural_rejection_mask, "tribunal_revision_reason"]) if procedural_rejection_mask.any() and "tribunal_revision_reason" in df else {},
+            "contract_normalized_count": int((tribunal_requested_mask & df.get("tribunal_contract_normalizations", pd.Series("", index=df.index)).fillna("").astype(str).str.strip().ne("")).sum()),
+            "contract_normalization_distribution": distribution(df.loc[tribunal_requested_mask & df.get("tribunal_contract_normalizations", pd.Series("", index=df.index)).fillna("").astype(str).str.strip().ne(""), "tribunal_contract_normalizations"]) if tribunal_requested_mask.any() and "tribunal_contract_normalizations" in df else {},
+            "claim_dependency_reason_distribution": distribution(df.loc[tribunal_requested_mask, "tribunal_claim_dependency_reason"]) if tribunal_requested_mask.any() and "tribunal_claim_dependency_reason" in df else {},
+            "repair_followup_attempt_count": int(as_bool(df["tribunal_repair_followup_attempted"]).sum()) if "tribunal_repair_followup_attempted" in df else 0,
+            "repair_followup_acceptance_count": int((as_bool(df.get("tribunal_repair_followup_attempted", pd.Series(False, index=df.index))) & judge_accepted_mask).sum()),
+            "repair_reason_distribution": distribution(df.loc[as_bool(df["tribunal_repair_followup_attempted"]), "tribunal_repair_reasons"]) if "tribunal_repair_followup_attempted" in df and "tribunal_repair_reasons" in df else {},
             "comparable_binary_judgments": int(len(judge_comparable)),
             "counterfactual_corrections": judge_counterfactual_corrections,
             "counterfactual_harms": judge_counterfactual_harms,
@@ -665,17 +900,44 @@ def evaluate_predictions(input_path, output_dir=None):
             "accepted_corrections": judge_accepted_corrections,
             "accepted_harms": judge_accepted_harms,
             "accepted_net_correct": judge_accepted_corrections - judge_accepted_harms,
+            "acceptance_precision": (
+                judge_accepted_corrections
+                / (judge_accepted_corrections + judge_accepted_harms)
+                if judge_accepted_corrections + judge_accepted_harms else None
+            ),
+            "useful_correction_recall": (
+                judge_accepted_corrections / judge_counterfactual_corrections
+                if judge_counterfactual_corrections else None
+            ),
+            "corrective_proposals_rejected": max(
+                0, judge_counterfactual_corrections - judge_accepted_corrections
+            ),
+            "harmful_proposals_rejected": max(
+                0, judge_counterfactual_harms - judge_accepted_harms
+            ),
+            "true_abstention_count": int((eligible_review_mask & effective_verdict.eq("ABSTAIN")).sum()),
             "confidence_harms": int(confidence_harm_mask.sum()),
             "confidence_benefits": int(confidence_benefit_mask.sum()),
             "feedback_review_candidates": int(as_bool(df["judge_feedback_candidate_recorded"]).sum()) if "judge_feedback_candidate_recorded" in df else 0,
             "feedback_memory_updates": int(as_bool(df["judge_feedback_memory_update_applied"]).sum()) if "judge_feedback_memory_update_applied" in df else 0,
+            "semantic_bridge": {
+                "proposal_count": int(len(bridge_df)),
+                "proposal_accuracy": float(bridge_df["bridge_proposal_correct"].mean()) if not bridge_df.empty else None,
+                "counterfactual_corrections": int(bridge_df["bridge_counterfactual_outcome"].eq("corrected").sum()) if not bridge_df.empty else 0,
+                "counterfactual_harms": int(bridge_df["bridge_counterfactual_outcome"].eq("harmed").sum()) if not bridge_df.empty else 0,
+                "corroborated_count": int(as_bool(bridge_df["semantic_bridge_corroborated"]).sum()) if not bridge_df.empty and "semantic_bridge_corroborated" in bridge_df else 0,
+                "verification_distribution": distribution(bridge_df["semantic_bridge_verification_status"]) if not bridge_df.empty and "semantic_bridge_verification_status" in bridge_df else {},
+                "family_distribution": distribution(bridge_df["semantic_bridge_type"]) if not bridge_df.empty and "semantic_bridge_type" in bridge_df else {},
+            },
         },
         "runtime": runtime_df.set_index("stage").to_dict(orient="index") if not runtime_df.empty else {},
+        "position_diagnostics": position_df.astype(object).where(pd.notna(position_df), None).to_dict(orient="records"),
         "run_timing": run_timing,
     }
 
-    pd.DataFrame(cm, index=LABELS, columns=LABELS).rename_axis("ground_truth").to_csv(os.path.join(output_dir, "confusion_matrix.csv"))
+    pd.DataFrame(cm, index=LABELS, columns=(*LABELS, NO_ANSWER)).rename_axis("ground_truth").to_csv(os.path.join(output_dir, "confusion_matrix.csv"))
     phenomenon_df.to_csv(os.path.join(output_dir, "phenomenon_breakdown.csv"), index=False)
+    source_df.to_csv(os.path.join(output_dir, "source_breakdown.csv"), index=False)
     decision_method_df.to_csv(os.path.join(output_dir, "decision_method_breakdown.csv"), index=False)
     comparator_df.to_csv(os.path.join(output_dir, "comparator_analysis.csv"), index=False)
     debated.to_csv(os.path.join(output_dir, "debate_analysis.csv"), index=False)
@@ -684,15 +946,17 @@ def evaluate_predictions(input_path, output_dir=None):
     )
     feedback_df.to_csv(os.path.join(output_dir, "feedback_analysis.csv"), index=False)
     judge_df.to_csv(os.path.join(output_dir, "judge_analysis.csv"), index=False)
+    bridge_df.to_csv(os.path.join(output_dir, "semantic_bridge_analysis.csv"), index=False)
     confidence_df.to_csv(os.path.join(output_dir, "confidence_analysis.csv"), index=False)
     explanation_df.to_csv(os.path.join(output_dir, "explanation_analysis.csv"), index=False)
     runtime_df.to_csv(os.path.join(output_dir, "runtime_profile.csv"), index=False)
+    position_df.to_csv(os.path.join(output_dir, "position_breakdown.csv"), index=False)
     grounding_df.to_csv(os.path.join(output_dir, "agent_grounding_analysis.csv"), index=False)
     evidence_df.to_csv(os.path.join(output_dir, "evidence_provenance_analysis.csv"), index=False)
     errors.to_csv(os.path.join(output_dir, "error_analysis.csv"), index=False)
     invalid.to_csv(os.path.join(output_dir, "invalid_decisions.csv"), index=False)
     with open(os.path.join(output_dir, "metrics.json"), "w", encoding="utf-8") as handle:
-        json.dump(metrics, handle, indent=2)
+        json.dump(metrics, handle, indent=2, allow_nan=False)
     with open(os.path.join(output_dir, "metrics_summary.txt"), "w", encoding="utf-8") as handle:
         handle.write("FIGDEBATE EVALUATION SUMMARY\n" + "=" * 40 + "\n\n")
         handle.write(f"Samples: {total}\nValid Predictions: {len(valid)}\nInvalid Predictions: {len(invalid)}\n")
@@ -764,7 +1028,10 @@ def evaluate_predictions(input_path, output_dir=None):
         handle.write(
             f"Structured Claim Relation Resolved Rate: {metrics['claim_relations']['resolved_rate']}\n"
             f"Immutable Claim Contract Valid Rate: {metrics['claim_relations']['contract_valid_rate']}\n"
-            f"Claim Proposition Preserved Rate: {metrics['claim_relations']['proposition_preserved_rate']}\n"
+            f"Effective Claim Proposition Guard Pass Rate: {metrics['claim_relations']['proposition_preserved_rate']}\n"
+            f"Semantic Audit Statuses: {metrics['claim_relations']['audit_status_distribution']}\n"
+            f"Evaluated-Only Proposition Pass Rate: {metrics['claim_relations']['evaluated_proposition_pass_rate']}\n"
+            f"Judge Context Statuses: {metrics['decision_reliability']['judge_context_status_distribution']}\n"
             f"Claim Entity Frame Preserved Rate: {metrics['claim_relations']['entity_frame_preserved_rate']}\n"
             f"Structured Claim Retry Rate: {metrics['claim_relations']['retry_rate']}\n"
             f"Structured Claim Retry Success Rate: {metrics['claim_relations']['retry_success_rate']}\n"
@@ -805,8 +1072,8 @@ def evaluate_predictions(input_path, output_dir=None):
         )
         handle.write(f"Region OCR Reviews: {metrics['debate']['region_ocr_review_count']}\nTargeted Region Verifier Attempts: {metrics['debate']['targeted_region_verifier_attempt_count']}\nTargeted Region Verifier Accepted: {metrics['debate']['targeted_region_verifier_accepted_count']}\nTargeted Region Proposal Accuracy: {metrics['debate']['targeted_region_verifier_proposal_accuracy']}\nTargeted Region Accepted Accuracy: {metrics['debate']['targeted_region_verifier_accuracy']}\n")
         handle.write(f"Feedback Role Distribution: {metrics['feedback']['role_distribution']}\nFeedback Matched Samples: {metrics['feedback']['memory_active_samples']}\nFeedback Match Rate: {metrics['feedback']['memory_match_rate']}\nFeedback Matched Rule Distribution: {metrics['feedback']['matched_rule_distribution']}\nFeedback Revision Acceptances: {metrics['feedback']['revision_acceptance_count']}\nFeedback Corrections: {metrics['feedback']['correction_count']}\nFeedback Harms: {metrics['feedback']['harm_count']}\nFeedback Net Correct Decisions: {metrics['feedback']['net_correct_decisions']}\nFeedback Candidates: {metrics['feedback']['candidate_count']}\nFeedback Updates: {metrics['feedback']['update_count']}\n\n")
-        handle.write(f"Judge/Mediator Requested: {metrics['judge']['requested_count']}\nJudge/Mediator Contract Valid Rate: {metrics['judge']['contract_valid_rate']}\nJudge/Mediator Verdict Distribution: {metrics['judge']['verdict_distribution']}\nMediator Usable Rate: {metrics['judge']['mediator_usable_rate']}\nMediated Tie-breaks: {metrics['judge']['mediated_tiebreak_count']}\nJudge Counterfactual Corrections: {metrics['judge']['counterfactual_corrections']}\nJudge Counterfactual Harms: {metrics['judge']['counterfactual_harms']}\nJudge Counterfactual Net Correct: {metrics['judge']['counterfactual_net_correct']}\nJudge Accepted Revisions: {metrics['judge']['accepted_revisions']}\nJudge Accepted Label Changes: {metrics['judge']['accepted_label_changes']}\nJudge Valid Same-label Confirmations: {metrics['judge']['valid_same_label_confirmations']}\nJudge Accepted Corrections: {metrics['judge']['accepted_corrections']}\nJudge Accepted Harms: {metrics['judge']['accepted_harms']}\nJudge Accepted Net Correct: {metrics['judge']['accepted_net_correct']}\nJudge Confidence Benefits: {metrics['judge']['confidence_benefits']}\nJudge Confidence Harms: {metrics['judge']['confidence_harms']}\nJudge Feedback Review Candidates: {metrics['judge']['feedback_review_candidates']}\nJudge Feedback Memory Updates: {metrics['judge']['feedback_memory_updates']}\n\n")
-        handle.write("Paper artifacts: confusion_matrix.csv, phenomenon_breakdown.csv, decision_method_breakdown.csv, comparator_analysis.csv, debate_analysis.csv, debate_log.csv, debate_log.jsonl, feedback_analysis.csv, feedback_decision_log.csv, feedback_decision_log.jsonl, judge_analysis.csv, evidence_provenance_analysis.csv, confidence_analysis.csv, explanation_analysis.csv, runtime_profile.csv, agent_grounding_analysis.csv, error_analysis.csv.\n")
+        handle.write(f"Judge/Mediator Requested: {metrics['judge']['requested_count']}\nJudge/Mediator Contract Valid Rate: {metrics['judge']['contract_valid_rate']}\nJudge Format Error Distribution: {metrics['judge']['format_error_distribution']}\nJudge Format Retry Rate: {metrics['judge']['format_retry_rate']}\nJudge Format Retry Success Rate: {metrics['judge']['format_retry_success_rate']}\nJudge Token Limit Rate: {metrics['judge']['token_limit_rate']}\nJudge/Mediator Verdict Distribution: {metrics['judge']['verdict_distribution']}\nTrue Tribunal Abstentions: {metrics['judge']['true_abstention_count']}\nTribunal Semantic Binary Judgments: {metrics['judge']['semantic_binary_judgment_count']}\nTribunal Semantic Abstentions: {metrics['judge']['semantic_abstention_count']}\nTribunal Semantic Abstention Rate: {metrics['judge']['semantic_abstention_rate']}\nTribunal Computed Admissibility: {metrics['judge']['computed_admissibility_distribution']}\nProcedural Rejections After Binary Judgment: {metrics['judge']['procedural_rejection_after_binary_judgment_count']}\nProcedural Rejection Reasons: {metrics['judge']['procedural_rejection_reason_distribution']}\nNormalized Judge Contracts: {metrics['judge']['contract_normalized_count']}\nContract Normalization Distribution: {metrics['judge']['contract_normalization_distribution']}\nClaim Dependency Results: {metrics['judge']['claim_dependency_reason_distribution']}\nTribunal Repair Follow-ups: {metrics['judge']['repair_followup_attempt_count']}\nTribunal Repair Acceptances: {metrics['judge']['repair_followup_acceptance_count']}\nTribunal Repair Reason Distribution: {metrics['judge']['repair_reason_distribution']}\nMediator Usable Rate: {metrics['judge']['mediator_usable_rate']}\nMediated Tie-breaks: {metrics['judge']['mediated_tiebreak_count']}\nJudge Counterfactual Corrections: {metrics['judge']['counterfactual_corrections']}\nJudge Counterfactual Harms: {metrics['judge']['counterfactual_harms']}\nJudge Counterfactual Net Correct: {metrics['judge']['counterfactual_net_correct']}\nJudge Accepted Revisions: {metrics['judge']['accepted_revisions']}\nJudge Accepted Label Changes: {metrics['judge']['accepted_label_changes']}\nJudge Valid Same-label Confirmations: {metrics['judge']['valid_same_label_confirmations']}\nJudge Accepted Corrections: {metrics['judge']['accepted_corrections']}\nJudge Accepted Harms: {metrics['judge']['accepted_harms']}\nJudge Accepted Net Correct: {metrics['judge']['accepted_net_correct']}\nJudge Acceptance Precision: {metrics['judge']['acceptance_precision']}\nUseful Correction Recall: {metrics['judge']['useful_correction_recall']}\nCorrective Proposals Rejected: {metrics['judge']['corrective_proposals_rejected']}\nHarmful Proposals Rejected: {metrics['judge']['harmful_proposals_rejected']}\nJudge Confidence Benefits: {metrics['judge']['confidence_benefits']}\nJudge Confidence Harms: {metrics['judge']['confidence_harms']}\nJudge Feedback Review Candidates: {metrics['judge']['feedback_review_candidates']}\nJudge Feedback Memory Updates: {metrics['judge']['feedback_memory_updates']}\n\n")
+        handle.write("Paper artifacts: confusion_matrix.csv, phenomenon_breakdown.csv, position_breakdown.csv, decision_method_breakdown.csv, comparator_analysis.csv, debate_analysis.csv, debate_log.csv, debate_log.jsonl, feedback_analysis.csv, feedback_decision_log.csv, feedback_decision_log.jsonl, judge_analysis.csv, evidence_provenance_analysis.csv, confidence_analysis.csv, explanation_analysis.csv, runtime_profile.csv, agent_grounding_analysis.csv, error_analysis.csv.\n")
     print(f"Saved metrics and paper artifacts to {output_dir}")
     return metrics
 

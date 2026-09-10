@@ -118,21 +118,23 @@ Without these conditions, the original equal-evidence rejection remains.
 6. The legacy debate Arbiter is not called in tribunal mode. Qwen reviews the
    original image, both responses, comparator candidates, and
    complete current ledger.
-7. Qwen returns `RESOLVE`, `FOLLOW_UP`, or `ABSTAIN` under a strict JSON schema.
-8. `FOLLOW_UP` creates at most one further neutral question for each agent.
-9. A second review is the hard final round; another follow-up becomes abstention.
-10. A resolved direction must cite either an existing matching decision-grade
+7. Qwen performs one post-hearing review and reports its semantic judgment
+   separately from its opinion about admissibility.
+8. A request for more evidence is logged as semantic uncertainty and preserves
+   the existing decision; it does not start another model round.
+9. A resolved direction must cite either an existing matching decision-grade
     relation or a newly constructed three-source relation. The latter requires
     the current Agent 1 witness, Agent 2's valid claim audit, and Qwen's independent
     relation judgment; Qwen cannot promote its own statement by itself.
-11. The deterministic Review Board compares reliability by independent
+10. The deterministic Review Board compares reliability by independent
     provenance root and accepts only an adequately grounded revision.
-12. Same-label confirmations are diagnostic only: they cannot mutate confidence
+11. Same-label confirmations are diagnostic only: they cannot mutate confidence
     or count as accepted revisions.
-13. Confidence is capped by independently rooted verified evidence; derived
+12. Confidence is capped by independently rooted verified evidence; derived
     restatements sharing a witness root are counted once.
-14. The final record exports every decision checkpoint, round, stop reason, and
-    accepted or rejected verification ID.
+13. The final record separately exports semantic abstention, computed
+    admissibility, contract normalization, claim-dependency result, every
+    checkpoint, stop reason, and accepted or rejected verification ID.
 
 Questions containing entailment, contradiction, support, conflict, prediction,
 verdict, or final-label wording are rejected before they reach an agent.

@@ -1,9 +1,11 @@
 """Deterministic final review for all FigDebate revision proposals."""
 
 import re
+import json
 
 from engine.evidence_ledger import (
     audit_decision,
+    is_admissible_evidence,
     evidence_provenance_roots,
     evidence_reliability,
 )
@@ -23,7 +25,8 @@ def _decision_grade(item):
 def _grade_ids(ledger, relation):
     return {
         item.get("id") for item in (ledger or [])
-        if item.get("grounded", False)
+        if is_admissible_evidence(ledger, item)
+        and item.get("grounded", False)
         and item.get("relation") == relation
         and _decision_grade(item)
     }
@@ -32,10 +35,12 @@ def _grade_ids(ledger, relation):
 def _grade_strength(ledger, relation, allowed_ids=None):
     """Combine independent provenance components, not repeated descriptions."""
     allowed = set(allowed_ids) if allowed_ids is not None else None
+    by_id = {item.get("id"): item for item in ledger or []}
     candidates = []
     for item in ledger or []:
         if (
-            not item.get("grounded", False)
+            not is_admissible_evidence(ledger, item)
+            or not item.get("grounded", False)
             or item.get("relation") != relation
             or not _decision_grade(item)
             or (allowed is not None and item.get("id") not in allowed)
@@ -44,6 +49,19 @@ def _grade_strength(ledger, relation, allowed_ids=None):
         roots = set(evidence_provenance_roots(ledger, item))
         if not roots and item.get("id"):
             roots = {item["id"]}
+        # Exact restatements with newly minted IDs do not become independent
+        # observations. Preserve explicit region/scope distinctions. This is
+        # conservative identity deduplication, not a semantic equivalence test.
+        signatures = set()
+        for root_id in roots:
+            root = by_id.get(root_id, {})
+            text = " ".join(str(root.get("text") or "").split()).casefold()
+            if text:
+                bindings = {key: root.get(key) for key in (
+                    "region", "region_id", "panel", "panel_id", "scope", "entity",
+                    "object_label", "time_or_panel_scope") if root.get(key) is not None}
+                signatures.add("content:" + json.dumps([text, bindings], sort_keys=True, default=str))
+        roots = {"id:" + str(key) for key in roots} | signatures
         candidates.append({
             "roots": roots,
             "strength": evidence_reliability(item),
@@ -107,6 +125,7 @@ def _mediated_tie_is_safe(
             "tribunal_independent_verifier",
             "cross_agent_relation_verifier",
             "tribunal_relation_verifier",
+            "semantic_bridge_verifier",
         }
         for item_id in cited
     ):
@@ -119,6 +138,7 @@ def _mediated_tie_is_safe(
             "tribunal_independent_verifier",
             "cross_agent_relation_verifier",
             "tribunal_relation_verifier",
+            "semantic_bridge_verifier",
         }
         and _decision_grade(by_id.get(item_id, {}))
         for item_id in candidate_ids
@@ -357,6 +377,7 @@ def review_revision(
             if item.get("source") in {
                 "targeted_region_verifier", "tribunal_independent_verifier",
                 "cross_agent_relation_verifier", "tribunal_relation_verifier",
+                "semantic_bridge_verifier",
                 "comparator",
             }:
                 linked = True

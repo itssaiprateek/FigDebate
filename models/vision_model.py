@@ -7,6 +7,8 @@ import math
 from pathlib import Path
 import time
 
+from engine.runtime_profile import resolve_runtime_profile
+
 
 VISION_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
 VISION_MODEL_REVISION = "ebb281ec70b05090aa6165b016eac8ec08e71b17"
@@ -55,7 +57,7 @@ class Qwen3VLVisionModel:
     model_revision = VISION_MODEL_REVISION
     quantization = "nf4_4bit_double_quant_bf16_compute"
 
-    def __init__(self):
+    def __init__(self, hardware_profile="8gb"):
         try:
             import torch
             from transformers import (
@@ -76,6 +78,7 @@ class Qwen3VLVisionModel:
                 "FigDebate runtime."
             )
 
+        self.hardware_profile = resolve_runtime_profile(hardware_profile)
         source, source_kwargs = vision_model_source()
         print(f"Loading Qwen3-VL 4B Instruct from {source} in 4-bit NF4...")
         quantization_config = BitsAndBytesConfig(
@@ -151,7 +154,12 @@ class Qwen3VLVisionModel:
         """Release only unreachable temporary tensors; model weights stay loaded."""
         gc.collect()
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            try:
+                torch.cuda.empty_cache()
+            except RuntimeError as error:
+                print(f"[Agent1][cleanup-warning] {str(error).splitlines()[0]}")
+                return False
+        return True
 
     def release_generation_memory(self):
         """Public sample-boundary cleanup used by the stagewise runner."""
@@ -187,9 +195,18 @@ class Qwen3VLVisionModel:
                 torch.cuda.reset_peak_memory_stats()
                 torch.cuda.synchronize()
             started = time.perf_counter()
+            options = {}
+            schema = getattr(self, "_active_output_schema", None)
+            if schema:
+                from transformers import StoppingCriteriaList
+                from engine.output_contracts import prefix_constraint, complete_json_stopper
+                options = {"prefix_allowed_tokens_fn": prefix_constraint(self.processor.tokenizer, schema),
+                           "stopping_criteria": StoppingCriteriaList([complete_json_stopper(
+                               self.processor.tokenizer, int(inputs["input_ids"].shape[1]), schema)])}
             with torch.inference_mode():
                 generated = self.model.generate(
                     **inputs,
+                    **options,
                     max_new_tokens=int(max_new_tokens),
                     do_sample=False,
                     use_cache=bool(use_cache),
@@ -230,13 +247,25 @@ class Qwen3VLVisionModel:
             messages = None
             self._release_cuda(torch)
 
-    def generate(self, image, prompt, max_new_tokens=96):
+    from engine.runtime_accounting import record_generation
+
+    @record_generation("Qwen3-VL-4B")
+    def generate(self, image, prompt, max_new_tokens=96, json_schema=None):
         """Generate deterministically within the measured 8 GB visual budget."""
         import torch
 
+        self._active_output_schema = json_schema
         original_size = self._image_size(image)
+        primary_max_pixels = getattr(
+            getattr(self, "hardware_profile", None),
+            "agent1_max_pixels", PRIMARY_MAX_PIXELS,
+        )
+        oom_retry_pixels = getattr(
+            getattr(self, "hardware_profile", None),
+            "oom_retry_pixels", OOM_RETRY_MAX_PIXELS,
+        )
         primary_image, primary_resized = self._fit_image_to_pixel_budget(
-            image, PRIMARY_MAX_PIXELS
+            image, primary_max_pixels
         )
         primary_mode = (
             "bounded_full_frame" if primary_resized else "full_detail"
@@ -247,7 +276,7 @@ class Qwen3VLVisionModel:
             # reducing generation-state memory. It is slower, not lower quality.
             (primary_image, False, f"{primary_mode}_cache_free"),
         ]
-        for max_pixels in OOM_RETRY_MAX_PIXELS:
+        for max_pixels in oom_retry_pixels:
             retry_image, resized = self._fit_image_to_pixel_budget(image, max_pixels)
             if resized:
                 attempts.append(
@@ -290,7 +319,10 @@ class Qwen3VLVisionModel:
                 "resolution_reduced": bool(
                     primary_resized or mode.startswith("oom_scaled_")
                 ),
-                "primary_max_pixels": PRIMARY_MAX_PIXELS,
+                "primary_max_pixels": primary_max_pixels,
+                "hardware_profile": getattr(
+                    getattr(self, "hardware_profile", None), "name", "8gb"
+                ),
                 "original_image_size": list(original_size or ()),
                 "memory_before": memory_before,
                 "memory_after_cleanup": self._cuda_memory(torch),
@@ -305,7 +337,7 @@ class Qwen3VLVisionModel:
                 )
             elif primary_resized:
                 print(
-                    "[Agent1][VRAM] Applied measured 8 GB full-frame budget: "
+                    "[Agent1][VRAM] Applied configured full-frame budget: "
                     f"{diagnostics['image_size']} (original "
                     f"{diagnostics['original_image_size']}); OCR crops remain "
                     "sourced from the original image."
@@ -322,12 +354,15 @@ class Qwen3VLVisionModel:
                     item[2].startswith("oom_scaled_") for item in attempts
                 )
             ),
-            "primary_max_pixels": PRIMARY_MAX_PIXELS,
+            "primary_max_pixels": primary_max_pixels,
+            "hardware_profile": getattr(
+                getattr(self, "hardware_profile", None), "name", "8gb"
+            ),
             "original_image_size": list(original_size or ()),
             "failed_attempts": failures,
             "memory_after_cleanup": self._cuda_memory(torch),
         }
         raise RuntimeError(
-            "Qwen3-VL could not process this image within 8 GB VRAM after "
+            "Qwen3-VL could not process this image within the configured VRAM profile after "
             "full-detail, cache-free, and adaptive-resolution attempts."
         )

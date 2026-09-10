@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 
+from engine.claim_contract import assess_tribunal_claim_dependencies
 from engine.relation_schema import nominate_visual_relations
 
 
@@ -14,7 +15,38 @@ EVIDENCE_LIFECYCLE_STATUSES = {
 }
 EVIDENCE_LEVELS = {
     "OBSERVATION", "BINDING", "RELATION_CANDIDATE", "VERIFIED_RELATION",
+    "DIRECT_VERIFIED", "BRIDGE_CORROBORATED", "BRIDGE_PLAUSIBLE",
+    "INSUFFICIENT",
 }
+
+EVIDENCE_CLASSES = {
+    "DIRECT_TEXT_OR_COMPARISON",
+    "VISIBLE_STATE_OR_OUTCOME",
+    "FIGURATIVE_OR_SYMBOLIC_MAPPING",
+    "BACKGROUND_OR_NORMATIVE",
+    "OTHER",
+}
+
+
+def classify_evidence(source, kind, verification_method=None):
+    """Assign a domain-neutral reasoning class for dependency-aware review."""
+    source = str(source or "").casefold()
+    kind = str(kind or "").casefold()
+    method = str(verification_method or "").casefold()
+    if any(token in kind for token in ("text", "ocr", "comparison", "numeric")):
+        return "DIRECT_TEXT_OR_COMPARISON"
+    if method in {
+        "deterministic_structured_region_binding",
+        "deterministic_numeric_or_geometric_relation",
+    } or any(token in kind for token in ("state", "outcome", "event", "region_relation")):
+        return "VISIBLE_STATE_OR_OUTCOME"
+    if source in {"semantic_bridge_verifier", "semantic_bridge_generator"} or any(
+        token in kind for token in ("symbol", "metaphor", "semantic_bridge")
+    ):
+        return "FIGURATIVE_OR_SYMBOLIC_MAPPING"
+    if any(token in kind for token in ("intended_meaning", "background", "normative")):
+        return "BACKGROUND_OR_NORMATIVE"
+    return "OTHER"
 
 
 def _clean(value):
@@ -61,8 +93,10 @@ def _append(
         )
     if evidence_level not in EVIDENCE_LEVELS:
         raise ValueError(f"Unknown evidence level: {evidence_level}")
-    if decision_grade and evidence_level != "VERIFIED_RELATION":
-        raise ValueError("Decision-grade evidence must be a VERIFIED_RELATION.")
+    if decision_grade and evidence_level not in {
+        "VERIFIED_RELATION", "DIRECT_VERIFIED", "BRIDGE_CORROBORATED",
+    }:
+        raise ValueError("Decision-grade evidence must be directly verified or corroborated.")
     entries.append({
         "id": f"{prefix}{number:03d}",
         "source": source,
@@ -79,6 +113,9 @@ def _append(
         "evidence_level": evidence_level,
         "derived_from_ids": list(derived_from_ids or []),
         "reliability": reliability,
+        "evidence_class": classify_evidence(
+            source, kind, verification_method
+        ),
     })
 
 
@@ -88,6 +125,26 @@ def is_active_evidence(item):
     }
 
 
+def is_admissible_evidence(ledger, item_or_id):
+    """Require an active, acyclic chain with every referenced parent present."""
+    by_id = {item.get("id"): item for item in (ledger or []) if item.get("id")}
+    if len(by_id) != len(ledger or []):
+        raise ValueError("Evidence IDs must be unique and nonempty")
+    item = by_id.get(item_or_id) if isinstance(item_or_id, str) else item_or_id
+
+    def visit(current, trail):
+        if not current or not is_active_evidence(current):
+            return False
+        key = current.get("id")
+        if key in trail:
+            return False
+        parents = current.get("derived_from_ids", []) or []
+        return all(parent in by_id and visit(by_id[parent], trail | {key})
+                   for parent in parents)
+
+    return visit(item, set())
+
+
 VERIFICATION_RELIABILITY = {
     "deterministic_structured_region_binding": 1.0,
     "deterministic_numeric_or_geometric_relation": 1.0,
@@ -95,6 +152,7 @@ VERIFICATION_RELIABILITY = {
     "cross_agent_structured_relation": 0.78,
     "tribunal_semantic_corroboration": 0.74,
     "tribunal_normative_corroboration": 0.68,
+    "verified_semantic_bridge": 0.76,
     "structured_visual_reinspection_entity_bound_state": 0.70,
     "generic_text_nli_diagnostic": 0.25,
     "structured_lexical_nomination": 0.20,
@@ -154,6 +212,7 @@ def promote_verified_relation(
         "cross_agent_structured_relation",
         "tribunal_semantic_corroboration",
         "tribunal_normative_corroboration",
+        "verified_semantic_bridge",
     }:
         raise ValueError("Unapproved verification method cannot promote evidence.")
     output = deepcopy(ledger or [])
@@ -182,6 +241,62 @@ def promote_verified_relation(
         source_generation="tribunal_verification",
     )
     return output
+
+
+def add_semantic_bridge_evidence(ledger, proposal, verification):
+    """Record every bridge, but promote only independently corroborated ones."""
+    output = deepcopy(ledger or [])
+    proposal = proposal or {}
+    verification = verification or {}
+    status = str(
+        verification.get("verification_status")
+        or proposal.get("verification_status")
+        or "INSUFFICIENT"
+    ).upper()
+    relation = str(proposal.get("proposed_relation") or "NEUTRAL").upper()
+    if relation not in {"SUPPORT", "CONFLICT"}:
+        relation = "NEUTRAL"
+    corroborated = bool(
+        status == "BRIDGE_CORROBORATED"
+        and verification.get("corroborated", False)
+        and relation in {"SUPPORT", "CONFLICT"}
+    )
+    derived = list(dict.fromkeys(
+        list(proposal.get("visual_evidence_ids", []) or [])
+        + list(proposal.get("caption_evidence_ids", []) or [])
+    ))
+    text = (
+        f"Visual premise: {_clean(proposal.get('visual_premise'))}. "
+        f"Caption premise: {_clean(proposal.get('caption_premise'))}. "
+        f"Bridge: {_clean(proposal.get('bridge_statement'))}."
+    )
+    _append(
+        output,
+        "BR",
+        "semantic_bridge_verifier" if corroborated else "semantic_bridge_generator",
+        "semantic_bridge",
+        text,
+        relation=relation,
+        grounded=corroborated,
+        decision_grade=corroborated,
+        verification_method="verified_semantic_bridge" if corroborated else None,
+        evidence_level=status,
+        derived_from_ids=derived,
+        reliability=(VERIFICATION_RELIABILITY["verified_semantic_bridge"] if corroborated else 0.15),
+        source_generation="tribunal_verification",
+    )
+    if output:
+        entry = output[-1]
+        if entry.get("type") == "semantic_bridge" and entry.get("text") == _clean(text):
+            entry["semantic_bridge"] = deepcopy(proposal)
+            entry["verification"] = deepcopy(verification)
+    return output, {
+        "recorded": bool(output and output[-1].get("type") == "semantic_bridge"),
+        "promoted": corroborated,
+        "evidence_id": output[-1].get("id") if output and output[-1].get("type") == "semantic_bridge" else None,
+        "verification_status": status,
+        "relation": relation,
+    }
 
 
 def add_cross_agent_verified_relation(
@@ -305,11 +420,20 @@ def add_tribunal_corroborated_relation(
         return output, {"promoted": False, "reason": "tribunal_relation_unresolved"}
     if not review.get("_format_valid", False):
         return output, {"promoted": False, "reason": "tribunal_contract_invalid"}
-    if not contract.get(
-        "safe_for_tribunal_reasoning",
-        contract.get("safe_for_directional_reasoning", False),
-    ):
-        return output, {"promoted": False, "reason": "claim_contract_not_safe"}
+    by_id = {item.get("id"): item for item in output}
+    cited = set(review.get("_valid_evidence_ids", []) or [])
+    dependency_audit = assess_tribunal_claim_dependencies(
+        contract,
+        agent2_requirements_valid=bool(claim.get("requirements_valid", False)),
+        cited_evidence=[by_id[item_id] for item_id in cited if item_id in by_id],
+        proposed_relation=relation,
+    )
+    if not dependency_audit["safe"]:
+        return output, {
+            "promoted": False,
+            "reason": dependency_audit["reason"],
+            "claim_dependency_audit": dependency_audit,
+        }
     if visual.get("response_status") and visual.get("response_status") not in {
         "VALID_OBSERVATION", "VALID_DIRECTIONAL_ANSWER"
     }:
@@ -333,8 +457,6 @@ def add_tribunal_corroborated_relation(
             "promoted": False, "reason": "tribunal_corroboration_below_threshold"
         }
 
-    by_id = {item.get("id"): item for item in output}
-    cited = set(review.get("_valid_evidence_ids", []) or [])
     question_id = visual.get("question_id")
     if not question_id:
         return output, {
@@ -370,6 +492,14 @@ def add_tribunal_corroborated_relation(
         return output, {
             "promoted": False, "reason": "caption_proposition_not_recorded"
         }
+    from engine.semantic_bridge import build_semantic_bridge
+    from engine.independent_review import audit_independent_record
+    independent = audit_independent_record(
+        build_semantic_bridge(review, output, contract), output
+    )
+    if not independent["valid"]:
+        return output, {"promoted": False, "reason": "independent_semantic_verification_required",
+                        "independent_verification": independent}
     method = (
         "tribunal_normative_corroboration" if normative
         else "tribunal_semantic_corroboration"
@@ -524,7 +654,7 @@ def evidence_ids(ledger, relation=None, grounded_only=True):
         for item in (ledger or [])
         if (relation is None or item.get("relation") == relation)
         and (not grounded_only or item.get("grounded", False))
-        and is_active_evidence(item)
+        and is_admissible_evidence(ledger, item)
     ]
 
 
@@ -534,7 +664,7 @@ def audit_decision(decision, ledger):
     relation = RELATION_FOR_LABEL.get(label)
     by_id = {
         item.get("id"): item for item in (ledger or [])
-        if is_active_evidence(item)
+        if is_admissible_evidence(ledger, item)
     }
     claimed = list(dict.fromkeys(
         str(item).strip().upper()
@@ -554,6 +684,7 @@ def audit_decision(decision, ledger):
             "tribunal_independent_verifier",
             "cross_agent_relation_verifier",
             "tribunal_relation_verifier",
+            "semantic_bridge_verifier",
         }
     ]
     cited = [

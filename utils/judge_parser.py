@@ -22,6 +22,29 @@ TRIBUNAL_REVIEW_FIELDS = {
     "visual_observations", "issue", "agent1_question", "agent2_question",
     "verification_request", "reason",
 }
+TRIBUNAL_REVIEW_V2_FIELDS = {
+    "node_relations",
+    "best_semantic_judgment", "relation", "admissibility",
+    "visual_premise", "caption_premise", "semantic_bridge_type",
+    "semantic_bridge", "evidence_ids", "counter_interpretation",
+    "counter_interpretation_strength", "confidence",
+    "requested_follow_up", "reason",
+}
+TRIBUNAL_REVIEW_V2_REQUIRED_FIELDS = {
+    "best_semantic_judgment", "relation", "confidence", "evidence_ids",
+    "reason",
+}
+TRIBUNAL_SYMMETRIC_FIELDS = {
+    "support_case", "support_evidence_ids", "support_strength",
+    "conflict_case", "conflict_evidence_ids", "conflict_strength",
+}
+VALID_BRIDGE_TYPES = {
+    "AFFECTIVE_OPPOSITION", "LITERAL_INTENDED_POLARITY",
+    "TEMPORAL_SEQUENCE", "CAUSE_EFFECT", "PARTICIPANT_ACTION_OUTCOME",
+    "COMPARISON_DIRECTION", "QUOTED_STATEMENT_REACTION",
+    "SYMBOL_TARGET_ATTACHMENT", "OBJECT_FUNCTION", "SOCIAL_CONVENTION",
+    "HUMOR_INCONGRUITY", "GENERAL_SEMANTIC_RELATION",
+}
 LEGACY_TRIBUNAL_REVIEW_FIELDS = (
     TRIBUNAL_REVIEW_FIELDS - {"relation"}
 ) | {"provisional_verdict"}
@@ -245,6 +268,197 @@ def parse_tribunal_review_response(raw_output):
             "_raw_output": str(raw_output or ""),
         }
     normalized_fields = []
+    # Current generation has one decision variable. Retain V2 reading only for
+    # archived runs; never normalize conflicting explicitly supplied decisions.
+    if "best_semantic_judgment" not in payload and "semantic_bridge_type" in payload:
+        from engine.output_contracts import schema_for_contract, validate_shape
+        if "context_requests" not in payload:
+            payload["context_requests"] = []
+            normalized_fields.append("legacy_context_requests_absent")
+        if not validate_shape(payload, schema_for_contract("tribunal_review")):
+            return parse_tribunal_review_response("") | {
+                "_format_error": "invalid_v3_resolution", "_raw_output": str(raw_output or "")}
+        payload["best_semantic_judgment"] = VERDICT_FOR_RELATION[payload["relation"]]
+        normalized_fields.append("verdict_derived_from_relation_v3")
+    if "best_semantic_judgment" in payload:
+        missing = sorted(TRIBUNAL_REVIEW_V2_REQUIRED_FIELDS - set(payload))
+        unexpected = sorted(
+            set(payload) - TRIBUNAL_REVIEW_V2_FIELDS - TRIBUNAL_SYMMETRIC_FIELDS - {"context_requests"}
+        )
+        if missing:
+            error = "missing_fields:" + ",".join(missing)
+            return parse_tribunal_review_response("") | {
+                "_format_error": error, "_raw_output": str(raw_output or "")
+            }
+        if unexpected:
+            normalized_fields.extend(
+                f"ignored_extra_field:{field}" for field in unexpected
+            )
+        defaults = {
+            "admissibility": "INSUFFICIENT",
+            "visual_premise": "",
+            "caption_premise": "",
+            "semantic_bridge_type": "GENERAL_SEMANTIC_RELATION",
+            "semantic_bridge": "",
+            "counter_interpretation": "",
+            "counter_interpretation_strength": 0.0,
+            "requested_follow_up": "NONE",
+        }
+        for field, default in defaults.items():
+            if field not in payload:
+                payload[field] = default
+                normalized_fields.append(f"defaulted_optional_field:{field}")
+        if isinstance(payload.get("evidence_ids"), str):
+            payload["evidence_ids"] = re.findall(
+                r"\b[A-Za-z]{1,4}[-_ ]?\d{1,5}\b",
+                payload["evidence_ids"],
+            )
+            normalized_fields.append("evidence_ids_from_string")
+        for field in ("confidence", "counter_interpretation_strength"):
+            value = payload.get(field)
+            if isinstance(value, str):
+                try:
+                    payload[field] = float(value.strip())
+                except ValueError:
+                    pass
+                else:
+                    normalized_fields.append(f"numeric_string:{field}")
+        judgment = str(payload["best_semantic_judgment"]).strip().upper()
+        relation = str(payload["relation"]).strip().upper()
+        admissibility = str(payload["admissibility"]).strip().upper()
+        follow_up = str(payload["requested_follow_up"]).strip().upper()
+        bridge_type = str(payload["semantic_bridge_type"]).strip().upper()
+        valid_followups = {
+            "NONE", "VISUAL_PREMISE", "CAPTION_PREMISE", "ENTITY_BINDING",
+            "SCOPE_BINDING", "COUNTER_INTERPRETATION",
+        }
+        if judgment not in VALID_VERDICTS:
+            error = "invalid_best_semantic_judgment"
+        elif relation not in VALID_RELATIONS:
+            error = "invalid_relation"
+        elif relation != {
+            "ENTAILS": "SUPPORT", "CONTRADICTS": "CONFLICT",
+            "ABSTAIN": "UNRESOLVED",
+        }[judgment]:
+            error = "judgment_relation_mismatch"
+        else:
+            error = ""
+        if not error and admissibility not in {
+            "VERIFIED", "CORROBORATED", "PLAUSIBLE", "INSUFFICIENT"
+        }:
+            payload["admissibility"] = "INSUFFICIENT"
+            admissibility = "INSUFFICIENT"
+            normalized_fields.append("invalid_admissibility_to_insufficient")
+        if not error and follow_up not in valid_followups:
+            payload["requested_follow_up"] = "NONE"
+            follow_up = "NONE"
+            normalized_fields.append("invalid_follow_up_to_none")
+        if not error and bridge_type not in VALID_BRIDGE_TYPES:
+            payload["semantic_bridge_type"] = "GENERAL_SEMANTIC_RELATION"
+            bridge_type = "GENERAL_SEMANTIC_RELATION"
+            normalized_fields.append("unknown_bridge_type_ignored")
+        numeric_fields = ("confidence", "counter_interpretation_strength")
+        if not error and any(
+            isinstance(payload[field], bool)
+            or not isinstance(payload[field], (int, float))
+            or not 0.0 <= float(payload[field]) <= 1.0
+            for field in numeric_fields
+        ):
+            error = "invalid_numeric_field"
+        symmetric_present = bool(set(payload) & TRIBUNAL_SYMMETRIC_FIELDS)
+        if not error and symmetric_present:
+            if not TRIBUNAL_SYMMETRIC_FIELDS.issubset(payload):
+                error = "incomplete_symmetric_cases"
+            elif (
+                not isinstance(payload.get("support_case"), str)
+                or not isinstance(payload.get("conflict_case"), str)
+                or not isinstance(payload.get("support_evidence_ids"), list)
+                or not isinstance(payload.get("conflict_evidence_ids"), list)
+                or any(
+                    isinstance(payload.get(field), bool)
+                    or not isinstance(payload.get(field), (int, float))
+                    or not 0.0 <= float(payload.get(field)) <= 1.0
+                    for field in ("support_strength", "conflict_strength")
+                )
+            ):
+                error = "invalid_symmetric_cases"
+        context_requests = payload.get("context_requests", [])
+        if not error and (not isinstance(context_requests, list)
+                          or any(not isinstance(item, str) for item in context_requests)):
+            error = "invalid_context_requests"
+        text_fields = (
+            "visual_premise", "caption_premise", "semantic_bridge",
+            "counter_interpretation", "reason",
+        )
+        if not error and (
+            not isinstance(payload.get("evidence_ids"), list)
+            or not all(isinstance(item, str) for item in payload["evidence_ids"])
+            or any(not isinstance(payload.get(field), str) for field in text_fields)
+        ):
+            error = "invalid_field_type"
+        if not error and not payload["reason"].strip():
+            error = "missing_reason"
+        if error:
+            return parse_tribunal_review_response("") | {
+                "_format_error": error, "_raw_output": str(raw_output or "")
+            }
+        if admissibility in {"VERIFIED", "CORROBORATED"} and relation != "UNRESOLVED":
+            status = "RESOLVE"
+        elif follow_up != "NONE":
+            status = "FOLLOW_UP"
+        else:
+            status = "ABSTAIN"
+        ids = list(dict.fromkeys(
+            item.strip().upper() for item in payload["evidence_ids"][:12]
+            if item.strip()
+        ))
+        visual_premise = payload["visual_premise"].strip()[:800]
+        return {
+            "status": status,
+            "relation": relation,
+            "provisional_verdict": judgment,
+            "best_semantic_judgment": judgment,
+            "node_relations": payload.get("node_relations", []),
+            "context_requests": list(dict.fromkeys(context_requests)),
+            "admissibility": admissibility,
+            "confidence": float(payload["confidence"]),
+            "evidence_ids": ids,
+            "visual_observations": [visual_premise] if visual_premise else [],
+            "visual_premise": visual_premise,
+            "caption_premise": payload["caption_premise"].strip()[:800],
+            "semantic_bridge_type": bridge_type,
+            "semantic_bridge": payload["semantic_bridge"].strip()[:1200],
+            "counter_interpretation": payload["counter_interpretation"].strip()[:800],
+            "counter_interpretation_strength": float(payload["counter_interpretation_strength"]),
+            "support_case": str(payload.get("support_case") or "").strip()[:1000],
+            "support_evidence_ids": list(dict.fromkeys(
+                str(item).strip().upper()
+                for item in payload.get("support_evidence_ids", [])[:12]
+                if str(item).strip()
+            )),
+            "support_strength": (
+                float(payload["support_strength"]) if symmetric_present else None
+            ),
+            "conflict_case": str(payload.get("conflict_case") or "").strip()[:1000],
+            "conflict_evidence_ids": list(dict.fromkeys(
+                str(item).strip().upper()
+                for item in payload.get("conflict_evidence_ids", [])[:12]
+                if str(item).strip()
+            )),
+            "conflict_strength": (
+                float(payload["conflict_strength"]) if symmetric_present else None
+            ),
+            "symmetric_cases_present": symmetric_present,
+            "requested_follow_up": follow_up,
+            "issue": payload["reason"].strip()[:1000],
+            "agent1_questions": [], "agent2_questions": [],
+            "verification_requests": [],
+            "reason": payload["reason"].strip()[:2000],
+            "_format_valid": True, "_format_error": "",
+            "_contract_version": "2.0-tolerant",
+            "_normalized_fields": normalized_fields,
+            "_raw_output": str(raw_output or ""),
+        }
     # `issue` and `reason` are both explanatory text in this contract.  Reuse
     # existing model text when only the duplicate reason key is omitted; this
     # is schema normalization, not invented evidence or reasoning.
@@ -252,6 +466,35 @@ def parse_tribunal_review_response(raw_output):
         if payload["issue"].strip():
             payload["reason"] = payload["issue"]
             normalized_fields.append("reason_from_issue")
+    if "issue" not in payload and isinstance(payload.get("reason"), str):
+        if payload["reason"].strip():
+            payload["issue"] = payload["reason"]
+            normalized_fields.append("issue_from_reason")
+    for field, default in {
+        "visual_observations": [],
+        "agent1_question": "",
+        "agent2_question": "",
+        "verification_request": "",
+    }.items():
+        if field not in payload:
+            payload[field] = default
+            normalized_fields.append(f"defaulted_optional_field:{field}")
+    if isinstance(payload.get("evidence_ids"), str):
+        payload["evidence_ids"] = re.findall(
+            r"\b[A-Za-z]{1,4}[-_ ]?\d{1,5}\b",
+            payload["evidence_ids"],
+        )
+        normalized_fields.append("evidence_ids_from_string")
+    if isinstance(payload.get("visual_observations"), str):
+        payload["visual_observations"] = [payload["visual_observations"]]
+        normalized_fields.append("visual_observations_from_string")
+    if isinstance(payload.get("confidence"), str):
+        try:
+            payload["confidence"] = float(payload["confidence"].strip())
+        except ValueError:
+            pass
+        else:
+            normalized_fields.append("numeric_string:confidence")
     keys = set(payload)
     if "relation" in keys:
         expected_fields = TRIBUNAL_REVIEW_FIELDS
@@ -259,14 +502,14 @@ def parse_tribunal_review_response(raw_output):
         expected_fields = LEGACY_TRIBUNAL_REVIEW_FIELDS
     missing = sorted(expected_fields - keys)
     unexpected = sorted(keys - expected_fields)
-    if missing or unexpected:
-        error = (
-            "missing_fields:" + ",".join(missing) if missing
-            else "unexpected_fields:" + ",".join(unexpected)
-        )
+    if missing:
+        error = "missing_fields:" + ",".join(missing)
         return parse_tribunal_review_response("") | {
             "_format_error": error, "_raw_output": str(raw_output or "")
         }
+    normalized_fields.extend(
+        f"ignored_extra_field:{field}" for field in unexpected
+    )
     status = str(payload["status"]).strip().upper()
     relation = str(payload.get("relation", "")).strip().upper()
     verdict = str(payload.get("provisional_verdict", "")).strip().upper()

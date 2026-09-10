@@ -15,7 +15,10 @@ from engine.batch_runner import StagewiseRunner
 from engine.evidence_verifier import AtomicEvidenceVerifier
 from engine.feedback_loop import FeedbackLoop
 from engine.run_integrity import validate_resume_config
-from engine.sampling import select_records
+from engine.review_outcome import classify_review
+from dataset.selection import select_run, sample_count, usage_policy
+from evaluation.reference_bank import build_references
+from engine.reproducibility import deterministic_environment
 from evaluation.evaluate_predictions import evaluate_predictions
 from figdebate import FigDebate
 from models.judge_model import JUDGE_MODEL_ID, JUDGE_MODEL_REVISION
@@ -24,10 +27,18 @@ from models.vision_model import VISION_MODEL_ID, VISION_MODEL_REVISION
 
 LANGUAGE_MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.2"
 LANGUAGE_MODEL_REVISION = "63a8b081895390a26e140280378bc85ec8bce07a"
-EVIDENCE_LEDGER_VERSION = "12.0"
+EVIDENCE_LEDGER_VERSION = "13.0"
 
 
 FIELDNAMES = [
+    "control_mode", "generation_requests", "input_tokens_known", "output_tokens_known", "generation_tokens_complete",
+    "judge_execution_status", "judge_execution_error_type", "judge_schema_status",
+    "judge_context_status", "judge_graph_visible", "independent_verification_attempted",
+    "judge_verification_status",
+    "claim_semantic_audit_status", "claim_semantic_checks_executed", "claim_semantic_proposition_pass",
+    "claim_semantic_qualified", "claim_semantic_model_comparisons", "claim_deterministic_projections", "claim_validity_scope",
+    "claim_graph_representation", "claim_decomposition_status",
+    "image_sha256", "image_group_id", "caption_sha256", "source_dataset",
     "sample", "id", "dataset_source", "phenomenon", "ground_truth",
     "reference_explanation", "prediction",
     "initial_prediction", "final_prediction", "primary_prediction",
@@ -60,10 +71,15 @@ FIELDNAMES = [
     "agent1_critique_parser_errors", "agent1_generation_diagnostics",
     "agent1_region_pairs",
     "agent2_critique_stance", "agent2_critique_reason",
+    "agent2_generation_diagnostics",
     "agent2_critique_format_valid", "agent2_support_requirement",
     "agent2_conflict_requirement", "agent2_figurative_mechanism",
     "agent2_critique_ambiguity", "agent2_requirements_source",
     "agent2_requirements_valid", "agent2_requirement_errors",
+    "agent2_questions_requested", "agent2_questions_delivered", "agent2_questions_answered",
+    "agent2_questions_unresolved", "agent2_questions_failed", "agent2_citation_identity_valid",
+    "agent2_deterministic_requirement_repair",
+    "agent2_deterministic_repaired_fields",
     "visual_evidence_consensus_applied",
     "initial_forced_label", "forced_label", "retry_attempted",
     "retry_failed", "final_decision_valid", "figurative_type_predicted",
@@ -98,6 +114,8 @@ FIELDNAMES = [
     "claim_relation_predicate", "claim_relation_resolved",
     "claim_contract_valid", "claim_contract_proposition_preserved",
     "claim_contract_entity_frame_preserved", "claim_contract_warnings",
+    "claim_contract_fully_valid", "claim_contract_invalid_field_groups",
+    "claim_contract_field_groups",
     "claim_relation_pair_valid", "claim_reasoning_requirement",
     "claim_safe_for_automatic_directional_reasoning",
     "claim_safe_for_tribunal_reasoning",
@@ -113,7 +131,9 @@ FIELDNAMES = [
     "judge_mode", "judge_scope", "judge_requested", "judge_status",
     "pre_judge_prediction", "pre_judge_confidence",
     "judge_trigger_reasons", "judge_verdict", "judge_confidence",
-    "judge_format_valid", "judge_format_error", "judge_evidence_ids",
+    "judge_format_valid", "judge_format_error", "judge_format_retry_used",
+    "judge_format_retry_success", "judge_format_retry_strategy",
+    "judge_generation_diagnostics", "judge_evidence_ids",
     "judge_invalid_evidence_ids", "judge_visual_observations", "judge_reason",
     "judge_agreed_with_pre_judge_decision", "judge_revision_accepted",
     "judge_revision_reason", "judge_changed_decision",
@@ -127,9 +147,26 @@ FIELDNAMES = [
     "mediator_verification_requests", "mediator_reason", "mediator_usable",
     "mediator_tiebreak_used",
     "tribunal_state", "tribunal_round_count", "tribunal_stop_reason",
+    "tribunal_repair_planned", "tribunal_followup_hearing_count", "tribunal_repair_hearing_count",
+    "tribunal_content_changed_count", "tribunal_rereview_count",
     "tribunal_review_status", "tribunal_revision_accepted",
     "tribunal_revision_reason", "tribunal_corroboration_reason",
     "tribunal_acceptance_checks", "tribunal_verified_evidence_id",
+    "tribunal_repair_followup_attempted", "tribunal_repair_reasons",
+    "tribunal_best_semantic_judgment", "tribunal_admissibility",
+    "tribunal_semantic_judgment_valid", "tribunal_semantic_abstained",
+    "tribunal_computed_admissibility", "tribunal_contract_normalizations",
+    "tribunal_claim_dependency_reason",
+    "judge_normalized_evidence_ids",
+    "supervisor_dossier_schema", "supervisor_checkpoint",
+    "supervisor_memory_mode", "supervisor_model_residency",
+    "tribunal_visual_premise", "tribunal_caption_premise",
+    "semantic_bridge_mode", "semantic_bridge_type", "semantic_bridge_statement",
+    "semantic_bridge_relation", "semantic_bridge_verification_status",
+    "semantic_bridge_corroborated", "semantic_bridge_evidence_id",
+    "semantic_bridge_failed_checks", "semantic_bridge_counter_interpretation",
+    "semantic_bridge_counter_strength", "semantic_bridge_confidence",
+    "semantic_bridge_requested_follow_up", "hardware_profile",
     "agent1_seconds", "agent2_seconds", "comparator_seconds",
     "arbiter_primary_seconds", "citation_retry_seconds", "format_retry_seconds", "binary_resolution_seconds", "debate_seconds", "judge_seconds", "mediator_seconds",
     "feedback_mode", "feedback_enabled", "feedback_batch", "feedback_memory_active",
@@ -170,7 +207,7 @@ FIELDNAMES = [
     "targeted_region_verification_reason",
     "decision_trace_json",
     "feedback_review_seconds",
-    "runtime_seconds", "correct",
+    "sample_seed", "runtime_seconds", "correct",
 ]
 
 
@@ -179,26 +216,59 @@ def parse_args():
         description="Run the unified FigDebate pipeline on a named dataset split."
     )
     parser.add_argument(
+        "--semantic-bridge-mode",
+        choices=("disabled", "shadow", "corroborated"),
+        default="shadow",
+        help=(
+            "shadow records bridge proposals without using them; corroborated "
+            "allows only independently verified bridges through the Review Board."
+        ),
+    )
+    parser.add_argument(
+        "--hardware-profile",
+        choices=("auto", "paper-8gb", "8gb", "12gb", "16gb"),
+        default="auto",
+        help="Explicit deterministic GPU budget, or auto-select from measured VRAM.",
+    )
+    parser.add_argument(
         "--dataset-split",
-        choices=("vflute_train_dev50", "vflute_val", "vflute_test"),
+        choices=("vflute_train", "vflute_train_dev50", "vflute_val", "vflute_test"),
         default="vflute_train_dev50",
         help=(
             "Dataset split to run. vflute_train_dev50 is for development only; "
             "use vflute_val for tuning and keep vflute_test untouched for final reporting."
         ),
     )
-    parser.add_argument("--num-samples", type=int, default=1)
+    parser.add_argument("--candidate-mode", choices=("independent", "disabled"), default="independent")
+    parser.add_argument("--control-mode", choices=("none", "independent_vote", "conventional_debate"), default="none")
+    parser.add_argument("--reuse-stage-dir", action="append", default=[], help="Read-only compatible upstream checkpoint directory; incompatible entries are recomputed.")
+    parser.add_argument("--num-samples", type=sample_count, default=1, help="Positive count, or 'all' for the entire selected cohort")
+    parser.add_argument("--run-purpose", choices=("diagnostic", "evaluation"), default="diagnostic")
+    parser.add_argument("--selection-only", action="store_true", help="Save and validate the selected cases/references without model inference")
+    ids_group = parser.add_mutually_exclusive_group()
+    ids_group.add_argument("--sample-ids", nargs="+", help="Exact sample IDs within the chosen official split")
+    ids_group.add_argument("--sample-ids-file", help="JSON list of eligible IDs; randomize within it using selection-strategy random")
+    parser.add_argument("--phenomena", nargs="+", choices=("humor", "metaphor", "sarcasm"))
+    parser.add_argument("--sources", nargs="+", help="Native source names: memecap, muse, irfl, vismet, nycartoons")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--selection-seed", type=int, default=None, help="Locks sample order independently of inference seed.")
     parser.add_argument(
         "--selection-strategy",
         choices=("stratified", "random", "prefix"),
-        default="stratified",
+        default=None,
         help=(
-            "Subset policy. Stratified balances phenomenon/label groups; "
-            "prefix is retained only for reproducing historical runs."
+            "New cohorts default to random; explicit IDs default to listed order. "
+            "Replay inherits the saved strategy. Stratified is a balanced diagnostic sample."
         ),
     )
     parser.add_argument("--run-dir", help="Experiment directory; required with --resume.")
+    parser.add_argument(
+        "--sample-manifest",
+        help=(
+            "Locked JSON manifest. If omitted, a full nested manifest is "
+            "created in the run directory."
+        ),
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--execution-mode",
@@ -297,34 +367,21 @@ def file_checksum(path):
 
 
 def pipeline_source_checksum():
+    """Fingerprint complete relevant source, including dirty/new modules."""
     project_root = os.path.dirname(os.path.abspath(__file__))
-    paths = (
-        "agents/visual_grounding.py", "agents/visual_adapter.py",
-        "agents/claim_extraction.py",
-        "arbiter/arbiter.py", "comparators/evidence_comparator.py",
-        "engine/batch_runner.py", "engine/orchestrator.py", "figdebate.py",
-        "engine/debate.py", "engine/evidence_ledger.py",
-        "engine/evidence_verifier.py", "models/nli_model.py",
-        "engine/claim_contract.py", "engine/relation_schema.py",
-        "engine/region_verifier.py", "engine/review_board.py",
-        "engine/judge_review.py", "agents/multimodal_judge.py",
-        "engine/decision_trace.py", "engine/question_router.py",
-        "engine/tribunal.py", "engine/pre_hearing.py",
-        "engine/reasoning_schema.py", "engine/structured_evidence.py",
-        "engine/relation_semantics.py",
-        "engine/sampling.py", "engine/run_integrity.py",
-        "engine/feedback_loop.py", "evaluation/build_feedback_memory.py",
-        "evaluation/audit_evidence_provenance.py",
-        "evaluation/evaluate_predictions.py", "evaluation/metrics_core.py",
-        "models/vision_model.py", "models/language_model.py",
-        "models/prepare_vision_model.py",
-        "models/judge_model.py", "models/hub_source.py", "utils/judge_parser.py",
-        "utils/visual_parser.py", "utils/claim_parser.py",
-        "utils/arbiter_parser.py", "utils/decision_scoring.py",
-        "run_figdebate.py",
-    )
+    paths = []
+    for entry in ("agents", "arbiter", "comparators", "dataset", "engine",
+                  "evaluation", "models", "utils", "tests"):
+        for directory, children, files in os.walk(os.path.join(project_root, entry)):
+            children[:] = sorted(name for name in children if name not in {
+                ".venv", "__pycache__", "data", ".cache", ".git"})
+            paths.extend(os.path.relpath(os.path.join(directory, name), project_root).replace("\\", "/")
+                         for name in files if name.endswith(".py"))
+    paths.extend(name for name in os.listdir(project_root) if name.endswith(".py"))
+    paths.extend(name for name in ("requirements.txt", "pyproject.toml")
+                 if os.path.isfile(os.path.join(project_root, name)))
     digest = hashlib.sha256()
-    for relative_path in paths:
+    for relative_path in sorted(set(paths)):
         digest.update(relative_path.encode("utf-8"))
         with open(os.path.join(project_root, relative_path), "rb") as handle:
             digest.update(handle.read())
@@ -335,7 +392,7 @@ def runtime_environment():
     packages = {}
     for package in (
         "torch", "transformers", "bitsandbytes", "datasets", "pandas",
-        "scikit-learn", "Pillow",
+        "scikit-learn", "Pillow", "lm-format-enforcer", "pydantic", "interegular",
     ):
         try:
             packages[package] = metadata.version(package)
@@ -425,7 +482,15 @@ def build_record(index, raw, result, elapsed):
     tribunal_reviews = judge.get("tribunal_reviews", []) or []
     tribunal_review = tribunal_reviews[-1] if tribunal_reviews else {}
     tribunal_session = judge.get("tribunal_session", {}) or {}
+    from engine.review_outcome import hearing_accounting, review_timing
+    hearing_counts = hearing_accounting(judge)
     tribunal_resolution = judge.get("tribunal_resolution", {}) or {}
+    semantic_bridge = tribunal_resolution.get("semantic_bridge", {}) or {}
+    bridge_verification = tribunal_resolution.get(
+        "semantic_bridge_verification", {}
+    ) or {}
+    bridge_record = tribunal_resolution.get("semantic_bridge_record", {}) or {}
+    reproducibility = result.get("reproducibility", {}) or {}
     mediation = judge.get("mediation", result.get("mediation_plan", {})) or {}
     judge_review = (
         judge.get("appellate_review", {})
@@ -433,6 +498,7 @@ def build_record(index, raw, result, elapsed):
         or judge.get("mediation_review", {})
         or {}
     )
+    review_outcome = classify_review(judgment or tribunal_review or mediation)
     judge_feedback = judge.get("feedback_candidate", {}) or {}
     pre_hearing = result.get("pre_hearing", {}) or {}
     debate_visual_evidence = [
@@ -450,7 +516,30 @@ def build_record(index, raw, result, elapsed):
         evidence_level_summary[level] = evidence_level_summary.get(level, 0) + 1
     return {
         "sample": index, "id": raw["id"],
+        "control_mode": result.get("control", {}).get("mode", "none"),
+        **{key: result.get("runtime_accounting", {}).get(key) for key in (
+            "generation_requests", "input_tokens_known", "output_tokens_known", "generation_tokens_complete")},
         "dataset_source": raw.get("source"),
+        "source_dataset": raw.get("source_dataset", ""),
+        "image_sha256": raw.get("image_sha256") or hashlib.sha256(raw.get("image_bytes", b"")).hexdigest(),
+        "image_group_id": raw.get("image_group_id", ""),
+        "caption_sha256": hashlib.sha256(str(raw.get("caption", "")).encode("utf-8")).hexdigest(),
+        "judge_execution_status": review_outcome["execution_status"],
+        "judge_execution_error_type": review_outcome["execution_error_type"],
+        "judge_schema_status": review_outcome["schema_status"],
+        "judge_context_status": review_outcome["context_status"],
+        "judge_verification_status": review_outcome["verification_status"],
+        "judge_graph_visible": bool(tribunal_review.get("_judge_packet", {}).get("claim_agent", {}).get("claim_graph")) if tribunal_review else None,
+        "independent_verification_attempted": "_independent_verification" in tribunal_review if tribunal_review else None,
+        "claim_semantic_audit_status": (language.get("_caption_semantic_audit") or {}).get("audit_status", "NOT_RUN"),
+        "claim_semantic_qualified": (language.get("claim_contract") or {}).get("semantic_qualified", False),
+        "claim_semantic_model_comparisons": (language.get("_caption_semantic_audit") or {}).get("model_comparison_count"),
+        "claim_deterministic_projections": (language.get("_caption_semantic_audit") or {}).get("deterministic_projection_count"),
+        "claim_validity_scope": (language.get("claim_contract") or {}).get("validity_scope", "LEGACY_UNSPECIFIED"),
+        "claim_semantic_checks_executed": (language.get("_caption_semantic_audit") or {}).get("semantic_checks_executed", False),
+        "claim_semantic_proposition_pass": (language.get("_caption_semantic_audit") or {}).get("expressed_claim_preserved"),
+        "claim_graph_representation": (language.get("claim_graph") or {}).get("representation", "LEGACY_GRAPH"),
+        "claim_decomposition_status": (language.get("claim_graph") or {}).get("decomposition_status", "NOT_RECORDED"),
         "phenomenon": raw.get("phenomenon"),
         "ground_truth": raw["label"], "prediction": prediction,
         "reference_explanation": raw.get("explanation", ""),
@@ -550,6 +639,9 @@ def build_record(index, raw, result, elapsed):
             agent1_critique.get("region_pairs", []), ensure_ascii=True
         ),
         "agent2_critique_stance": agent2_critique.get("stance", ""),
+        "agent2_generation_diagnostics": json.dumps(
+            language.get("_generation_diagnostics", {}), sort_keys=True
+        ),
         "agent2_critique_reason": agent2_critique.get("reason", ""),
         "agent2_critique_format_valid": agent2_critique.get(
             "_format_valid", False
@@ -572,8 +664,18 @@ def build_record(index, raw, result, elapsed):
         "agent2_requirements_valid": agent2_critique.get(
             "requirements_valid", True
         ),
+        **{"agent2_" + column: (agent2_critique.get("communication") or {}).get(key)
+           for column, key in (("questions_requested", "requested"), ("questions_delivered", "delivered"),
+                               ("questions_answered", "answered"), ("questions_unresolved", "unresolved"),
+                               ("questions_failed", "failed"), ("citation_identity_valid", "source_identity_valid"))},
         "agent2_requirement_errors": text_list(
             agent2_critique.get("requirement_errors", [])
+        ),
+        "agent2_deterministic_requirement_repair": agent2_critique.get(
+            "deterministic_requirement_repair", False
+        ),
+        "agent2_deterministic_repaired_fields": text_list(
+            agent2_critique.get("deterministic_repaired_fields", [])
         ),
         "visual_evidence_consensus_applied": (
             debate.get("proposed_decision", {}) or {}
@@ -682,6 +784,13 @@ def build_record(index, raw, result, elapsed):
             "entity_frame_preserved", False
         ),
         "claim_contract_warnings": text_list(claim_contract.get("warnings")),
+        "claim_contract_fully_valid": claim_contract.get("fully_valid", False),
+        "claim_contract_invalid_field_groups": text_list(
+            claim_contract.get("invalid_field_groups", [])
+        ),
+        "claim_contract_field_groups": json.dumps(
+            claim_contract.get("field_groups", {}), sort_keys=True
+        ),
         "claim_relation_pair_valid": claim_contract.get(
             "relation_pair_valid", False
         ),
@@ -755,6 +864,25 @@ def build_record(index, raw, result, elapsed):
         ),
         "judge_format_error": judgment.get(
             "_format_error", tribunal_review.get("_format_error", "")
+        ),
+        "judge_format_retry_used": judgment.get(
+            "_format_retry_used",
+            tribunal_review.get("_format_retry_used", False),
+        ),
+        "judge_format_retry_success": judgment.get(
+            "_format_retry_success",
+            tribunal_review.get("_format_retry_success", False),
+        ),
+        "judge_format_retry_strategy": judgment.get(
+            "_format_retry_strategy",
+            tribunal_review.get("_format_retry_strategy", ""),
+        ),
+        "judge_generation_diagnostics": json.dumps(
+            judgment.get(
+                "_generation_diagnostics",
+                tribunal_review.get("_generation_diagnostics", []),
+            ),
+            ensure_ascii=True,
         ),
         "judge_evidence_ids": text_list(
             judgment.get(
@@ -847,6 +975,74 @@ def build_record(index, raw, result, elapsed):
         ),
         "tribunal_verified_evidence_id": tribunal_resolution.get(
             "verified_evidence_id", ""
+        ),
+        **hearing_counts,
+        "tribunal_timing": [review_timing(item) for item in tribunal_reviews],
+        "judge_terminal_output_policy": review_outcome["terminal_output_policy"],
+        "tribunal_best_semantic_judgment": tribunal_review.get(
+            "best_semantic_judgment", tribunal_review.get("provisional_verdict", "")
+        ),
+        "tribunal_admissibility": tribunal_review.get("admissibility", ""),
+        "tribunal_semantic_judgment_valid": tribunal_resolution.get(
+            "semantic_judgment_valid", False
+        ),
+        "tribunal_semantic_abstained": tribunal_resolution.get(
+            "semantic_abstained", False
+        ),
+        "tribunal_computed_admissibility": tribunal_resolution.get(
+            "admissibility", ""
+        ),
+        "tribunal_contract_normalizations": text_list(
+            tribunal_resolution.get("contract_normalizations", [])
+        ),
+        "tribunal_claim_dependency_reason": (
+            tribunal_resolution.get("claim_dependency_audit", {}) or {}
+        ).get("reason", ""),
+        "judge_normalized_evidence_ids": text_list(
+            tribunal_review.get("_normalized_evidence_ids", [])
+        ),
+        "supervisor_dossier_schema": (
+            judge.get("case_dossier", {}) or {}
+        ).get("schema_version", ""),
+        "supervisor_checkpoint": (
+            judge.get("case_dossier", {}) or {}
+        ).get("supervisor_checkpoint", ""),
+        "supervisor_memory_mode": (
+            judge.get("case_dossier", {}) or {}
+        ).get("persistent_memory", ""),
+        "supervisor_model_residency": (
+            judge.get("case_dossier", {}) or {}
+        ).get("model_residency", ""),
+        "tribunal_visual_premise": tribunal_review.get("visual_premise", ""),
+        "tribunal_caption_premise": tribunal_review.get("caption_premise", ""),
+        "semantic_bridge_mode": tribunal_resolution.get(
+            "semantic_bridge_mode", "disabled"
+        ),
+        "semantic_bridge_type": semantic_bridge.get("bridge_type", ""),
+        "semantic_bridge_statement": semantic_bridge.get("bridge_statement", ""),
+        "semantic_bridge_relation": semantic_bridge.get("proposed_relation", ""),
+        "semantic_bridge_verification_status": bridge_verification.get(
+            "verification_status", ""
+        ),
+        "semantic_bridge_corroborated": bridge_verification.get(
+            "corroborated", False
+        ),
+        "semantic_bridge_evidence_id": bridge_record.get("evidence_id", ""),
+        "semantic_bridge_failed_checks": text_list(
+            bridge_verification.get("failed_checks", [])
+        ),
+        "semantic_bridge_counter_interpretation": semantic_bridge.get(
+            "counter_interpretation", ""
+        ),
+        "semantic_bridge_counter_strength": semantic_bridge.get(
+            "counter_interpretation_strength"
+        ),
+        "semantic_bridge_confidence": semantic_bridge.get("confidence"),
+        "semantic_bridge_requested_follow_up": tribunal_review.get(
+            "requested_follow_up", ""
+        ),
+        "hardware_profile": (result.get("runtime_profile", {}) or {}).get(
+            "name", ""
         ),
         "arbiter_evidence_assessment": decision.get("_arbiter_assessment", ""),
         "final_reason": decision.get("explanation", ""),
@@ -989,8 +1185,9 @@ def build_record(index, raw, result, elapsed):
         "feedback_review_seconds": round(
             timing.get("feedback_review_seconds", 0.0), 4
         ),
+        "sample_seed": reproducibility.get("sample_seed"),
         "runtime_seconds": round(timing.get("sample_inference_seconds", elapsed), 4),
-        "correct": valid and prediction == raw["label"],
+        "correct": prediction in {"ENTAILS", "CONTRADICTS"} and prediction == raw["label"],
         "trace": {
             "visual_output": result.get("visual_output", {}),
             "language_output": language, "comparison": comparison,
@@ -1003,8 +1200,27 @@ def build_record(index, raw, result, elapsed):
             "evidence_verification": evidence_verification,
             "judge": judge,
             "pre_hearing": pre_hearing,
+            "final_artifact": result.get("final_artifact", {}),
+            "candidate_dispute": result.get("candidate_dispute", {}),
+            "control": result.get("control", {}),
+            "runtime_accounting": result.get("runtime_accounting", {}),
         },
     }
+
+
+def run_tracked_phase(progress_path, progress, phase, operation):
+    """Preserve completed records and leave an honest terminal failure status."""
+    try:
+        return operation()
+    except (Exception, KeyboardInterrupt) as error:
+        progress.update({
+            "status": "interrupted" if isinstance(error, KeyboardInterrupt) else "failed",
+            "failure_phase": phase, "failure_type": type(error).__name__,
+            "failure_reason": str(error),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        write_json_atomic(progress_path, progress)
+        raise
 
 
 def append_record(path, record):
@@ -1173,7 +1389,17 @@ def write_feedback_decision_logs(run_dir, records):
 
 def main():
     args = parse_args()
+    data_usage = usage_policy(args.dataset_split, args.run_purpose, args.feedback_mode)
+    if args.selection_only and args.resume:
+        raise ValueError("Selection-only preparation cannot resume an inference run")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
     set_reproducibility(args.seed)
+    from engine.runtime_profile import resolve_runtime_profile
+    hardware_profile = resolve_runtime_profile(args.hardware_profile)
     if args.feedback_mode == "verified" and not args.verified_feedback_file:
         raise ValueError("Verified feedback mode requires --verified-feedback-file.")
     if args.feedback_mode != "disabled" and args.execution_mode != "stagewise":
@@ -1189,6 +1415,9 @@ def main():
             "Calibration must never use vflute_test. Use vflute_train_dev50 or vflute_val."
         )
     run_dir = resolve_run_dir(args)
+    if not args.resume and any(os.path.exists(os.path.join(run_dir, name)) for name in
+                               ("sample_manifest.json", "run_config.json", "records.jsonl")):
+        raise ValueError("Run artifacts already exist. Choose a new run directory, or resume the identical run.")
     os.makedirs(run_dir, exist_ok=True)
     os.makedirs(os.path.join(run_dir, "paper_assets"), exist_ok=True)
     records_path = os.path.join(run_dir, "records.jsonl")
@@ -1200,16 +1429,46 @@ def main():
             "with the identical configuration or choose a new --run-dir."
         )
     existing = load_records(records_path) if args.resume else {}
+    if args.reuse_stage_dir and args.execution_mode != "stagewise":
+        raise ValueError("Shared stage reuse requires stagewise execution")
     dataset = load_split(args.dataset_split)
-    selected = select_records(
-        dataset,
-        args.num_samples,
-        strategy=args.selection_strategy,
-        seed=args.seed,
-    )
+    replay_path = args.sample_manifest
+    if args.resume and not replay_path:
+        replay_path = os.path.join(run_dir, "sample_manifest.json")
+    selected, selection_manifest = select_run(dataset, args.dataset_split, count=args.num_samples,
+        strategy=args.selection_strategy, selection_seed=args.selection_seed, inference_seed=args.seed,
+        manifest_path=replay_path, sample_ids=args.sample_ids, ids_file=args.sample_ids_file,
+        phenomena=args.phenomena, sources=args.sources)
+    args.selection_strategy, args.selection_seed = selection_manifest["strategy"], selection_manifest["seed"]
+    references = build_references(selected, selection_manifest)
+    manifest_path = os.path.join(run_dir, "sample_manifest.json")
+    if args.resume and os.path.exists(manifest_path):
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            existing_manifest = json.load(handle)
+        if existing_manifest.get("manifest_sha256") != selection_manifest.get(
+            "manifest_sha256"
+        ):
+            raise ValueError("Cannot resume with a different sample manifest.")
+    else:
+        write_json_atomic(manifest_path, selection_manifest)
     pending = [(index, raw) for index, raw in enumerate(selected) if raw["id"] not in existing]
+    if set(existing) - {row["id"] for row in selected}:
+        raise ValueError("Existing outputs are outside the requested selection")
+    reference_path = os.path.join(run_dir, "evaluation_references.json")
+    if args.selection_only:
+        write_json_atomic(reference_path, references)
+        write_json_atomic(os.path.join(run_dir, "selected_ids.json"), [row["id"] for row in selected])
+        write_json_atomic(os.path.join(run_dir, "run_config.json"), {
+            "dataset": args.dataset_split, "requested_samples": len(selected), "selection_only": True,
+            "data_usage": data_usage, "selection_strategy": args.selection_strategy,
+            "selection_seed": args.selection_seed, "selection_manifest_sha256": selection_manifest["manifest_sha256"]})
+        print(f"Prepared {len(selected)} cases from {args.dataset_split}; no model inference. Manifest: {manifest_path}")
+        return
 
     run_config = {
+        "data_usage": data_usage,
+        "evaluation_reference_sha256": hashlib.sha256(json.dumps(references, sort_keys=True).encode()).hexdigest(),
+        "selection_seed": args.selection_seed if args.selection_seed is not None else args.seed,
         "system_name": "FigDebate", "dataset": args.dataset_split,
         "requested_samples": len(selected), "completed_before_run": len(existing),
         "execution_mode": args.execution_mode,
@@ -1218,6 +1477,19 @@ def main():
         "evidence_mode": args.evidence_mode,
         "judge_mode": args.judge_mode,
         "judge_scope": args.judge_scope,
+        "hardware_profile": hardware_profile.as_dict(),
+        "semantic_bridge_mode": args.semantic_bridge_mode,
+        "candidate_mode": args.candidate_mode,
+        "control_mode": args.control_mode,
+        "stage_checkpointing": "atomic_per_sample_per_stage",
+        "ablation_signature": {
+            "debate": args.debate_mode,
+            "evidence_verification": args.evidence_mode,
+            "judge": args.judge_mode,
+            "semantic_bridge": args.semantic_bridge_mode,
+            "candidates": args.candidate_mode,
+            "control": args.control_mode,
+        },
         "feedback_enabled": args.feedback_mode != "disabled",
         "feedback_mode": args.feedback_mode,
         "verified_feedback_file": args.verified_feedback_file,
@@ -1230,6 +1502,8 @@ def main():
         "model_judge_revision": JUDGE_MODEL_REVISION,
         "seed": args.seed,
         "selection_strategy": args.selection_strategy,
+        "selection_manifest_schema": selection_manifest.get("schema_version"),
+        "selection_manifest_sha256": selection_manifest.get("manifest_sha256"),
         "dataset_selection_sha256": dataset_selection_checksum(selected),
         "pipeline_source_sha256": pipeline_source_checksum(),
         "evidence_ledger_version": EVIDENCE_LEDGER_VERSION,
@@ -1266,7 +1540,7 @@ def main():
             "position": (
                 "inside_debate_before_agent_reviews"
                 if args.judge_mode == "mediated"
-                else "pre_hearing_then_bounded_targeted_tribunal"
+                else "post_targeted_hearing_checkpointed_supervisor"
                 if args.judge_mode == "tribunal"
                 else "after_existing_arbiter_and_debate"
             ),
@@ -1282,7 +1556,9 @@ def main():
             "mediator_provisional_label_visible_to_agents": False,
             "judge_generated_text_is_visual_proof": False,
             "tribunal_maximum_rounds": 2,
-            "tribunal_follow_up": "one_neutral_atomic_question_per_agent",
+            "tribunal_follow_up": "one_actionable_followup_when_new_admissible_information",
+            "tribunal_memory": "serialized_gold_free_case_dossier",
+            "tribunal_model_residency": "stage_local_one_load_per_batch",
             "tribunal_revision_gate": (
                 "ordinary_review_board_plus_independent_current_image_verification"
             ),
@@ -1297,12 +1573,17 @@ def main():
         "comparator": "evidence_comparator", "python_version": sys.version,
         "platform": platform.platform(),
         "runtime_environment": runtime_environment(),
+        "deterministic_environment": deterministic_environment(),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
+    from engine.cache_identity import stage_fingerprints
+    run_config["stage_fingerprints"] = stage_fingerprints(os.path.dirname(os.path.abspath(__file__)), run_config)
     if args.resume:
         original_config = validate_resume_config(run_dir, run_config)
         run_config["original_timestamp"] = original_config.get("timestamp")
         run_config["resume_timestamp"] = run_config["timestamp"]
+    write_json_atomic(reference_path, references)
+    write_json_atomic(os.path.join(run_dir, "selected_ids.json"), [row["id"] for row in selected])
     with open(os.path.join(run_dir, "run_config.json"), "w", encoding="utf-8") as handle:
         json.dump(run_config, handle, indent=2)
 
@@ -1347,8 +1628,18 @@ def main():
                 evidence_mode=args.evidence_mode,
                 judge_mode=args.judge_mode,
                 judge_scope=args.judge_scope,
+                hardware_profile=hardware_profile.name,
+                candidate_mode=args.candidate_mode,
+                control_mode=args.control_mode,
+                semantic_bridge_mode=args.semantic_bridge_mode,
+                stage_checkpoint_dir=os.path.join(run_dir, "stage_checkpoints"),
+                resume_stages=args.resume,
+                readonly_stage_sources=args.reuse_stage_dir,
+                global_seed=args.seed,
+                checkpoint_fingerprint=run_config["stage_fingerprints"],
             )
-            run_timing = runner.run_samples(samples, record_result) or {}
+            run_timing = run_tracked_phase(progress_path, progress, "stagewise_execution",
+                lambda: runner.run_samples(samples, record_result)) or {}
             if args.feedback_mode != "disabled":
                 with open(
                     os.path.join(run_dir, "feedback_events.json"),
@@ -1364,10 +1655,18 @@ def main():
                 ) as handle:
                     json.dump(runner.export_feedback_examples(), handle, indent=2)
         else:
-            system = FigDebate()
+            system = FigDebate(
+                feedback_mode=args.feedback_mode, debate_mode=args.debate_mode,
+                evidence_mode=args.evidence_mode, judge_mode=args.judge_mode,
+                judge_scope=args.judge_scope, hardware_profile=hardware_profile.name,
+                candidate_mode=args.candidate_mode,
+                control_mode=args.control_mode,
+                semantic_bridge_mode=args.semantic_bridge_mode, global_seed=args.seed,
+            )
             for index, raw in pending:
                 start = time.time()
-                result = system.predict(decode_image(raw["image_bytes"]), raw["caption"])
+                result = run_tracked_phase(progress_path, progress, "sequential_execution",
+                    lambda: system.predict(decode_image(raw["image_bytes"]), raw["caption"]))
                 record_result(index, raw, result, time.time() - start)
 
     run_timing["wall_clock_seconds"] = round(time.time() - run_started, 4)
@@ -1378,7 +1677,8 @@ def main():
     write_predictions(predictions_path, records)
     debate_jsonl, debate_csv = write_debate_logs(run_dir, records)
     feedback_jsonl, feedback_csv = write_feedback_decision_logs(run_dir, records)
-    metrics = evaluate_predictions(predictions_path, run_dir)
+    metrics = run_tracked_phase(progress_path, progress, "evaluation",
+        lambda: evaluate_predictions(predictions_path, run_dir))
     progress.update({
         "status": "complete",
         "completed_samples": len(records),

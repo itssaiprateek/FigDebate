@@ -6,7 +6,10 @@ import re
 MISSING_ONLY_RE = re.compile(
     r"^(?:there (?:is|are) )?(?:no (?:clear )?(?:evidence|indication|sign)|"
     r"not (?:shown|visible|present)|nothing (?:shows|indicates)|"
-    r"cannot be (?:seen|determined)|unclear|absent|missing)\b",
+    r"cannot be (?:seen|determined)|not (?:visually )?confirmed|"
+    r"not enough context|(?:cause|intent|context) (?:is )?(?:unknown|unclear)|"
+    r"does not literally (?:show|depict)|without (?:context|proof)|"
+    r"could (?:have|be)|may (?:have|be)|not necessarily|unclear|absent|missing)\b",
     flags=re.IGNORECASE,
 )
 

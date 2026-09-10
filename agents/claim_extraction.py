@@ -1,5 +1,9 @@
 import time
 import re
+import json
+from engine.runtime_accounting import record_generation
+from engine.structured_decoder import DECODER_ID
+from engine.output_contracts import CORE, INTERPRETATION, prefix_constraint, validate_shape, object_schema
 try:
     import torch
 except ImportError:
@@ -27,54 +31,38 @@ class ClaimExtractionAgent:
     """
 
     DEFAULT_PROMPT = """
-You are Agent 2. Analyze only the caption; never imagine an image or verify
-whether it is true. The dataset's figurative phenomenon can occur in the image,
-the caption, or both. Therefore a caption may be literal. Do not guess an
-unseen visual phenomenon.
-
-Before choosing the type, check:
-- sarcasm: does the literal wording reverse the likely intended evaluation?
-- metaphor: does a concrete domain describe a different abstract situation?
-- humor: is the main mechanism absurdity, incongruity, or a punchline?
-- literal: does the caption itself contain no clear figurative device?
-
-Return exactly these concise sections:
+Extract the caption's EXPRESSED claim using only its words. Do not imagine an
+image or substitute sarcastic intended meaning for the expressed proposition.
+Preserve entities, negation, numbers, comparison direction and panel/time scope.
+Distinguish an event from its rate, degree or ease. Every modifier matters.
+Return these short headings; use None for genuinely absent arguments:
+Caption Proposition:
+Claim Subject:
+Claim Predicate:
+Claim Object:
+Claim Source:
+Claim Target:
+Asserted Property:
+Relation Family: trajectory, pace, outcome, sentiment, safety, trust, association, quantity, or other
+Reasoning Requirement: visual, text_binding, background, normative, or mixed
+Comparison Direction:
+Time or Panel Scope:
+"""
+    INTERPRETATION_PROMPT = """
+Propose a figurative interpretation of this caption ONLY. Do not imagine the
+image or decide entailment. Interpretation is a hypothesis, not a replacement
+for the expressed claim. Use None where inapplicable. Return short headings:
 Figurative Type: sarcasm, metaphor, humor, or literal
-Linguistic Cue: short quoted phrase or cue
-Polarity Reversal: yes, no, or unclear, followed by a short reason
-Literal Meaning: one sentence
-Underlying Message: one sentence
-Caption Proposition: one declarative sentence preserving the caption's key
-entities, numbers, comparison, and polarity
-Claim Subject: the entity or group whose state is asserted
-Claim Predicate: the main state, action, quality, or relation
-Claim Object: the object or target of the predicate, or None
-Claim Source: who expresses, causes, or owns the claim, or Same as subject
-Claim Target: who or what receives the action or evaluation, or None
-Asserted Property: the exact state, relation, or evaluation being claimed
-Transferred Property: for metaphor, the property transferred from source to
-target; otherwise None
-Incongruity: for sarcasm or humor, the exact expectation/reality mismatch;
-otherwise None
-Caption Polarity: positive, negative, neutral, mixed, or unclear
+Linguistic Cue:
+Polarity Reversal: yes, no, or unclear
+Literal Meaning:
+Underlying Message:
+Alternative Interpretation:
 Literal Polarity: positive, negative, neutral, mixed, or unclear
 Intended Polarity: positive, negative, neutral, mixed, or unclear
-Figurative Mechanism Candidates: up to two of literal, metaphor, sarcasm,
-humor, or unresolved, ordered most likely first
-Structural Reasoning Type: direct_state, ocr_region_binding,
-comparative_layout, temporal_causal_sequence, quoted_statement_and_reaction,
-affective_scene, symbol_attachment, background_required, or unresolved
-Comparison Direction: the exact A-versus-B direction, or None
-Evaluation Target: what is praised, criticized, preferred, or rejected, or None
-Time or Panel Scope: the relevant moment, panel, or ordering constraint, or None
-Alternative Interpretation: one plausible competing reading, or None
-Relation Family: trajectory, pace, outcome, sentiment, safety, trust,
-association, quantity, or other
-Expected Visual State: one short observable state that would support the claim
-Opposite Visual State: one short observable state that would conflict with it
-Reasoning Requirement: visual, text_binding, background, normative, or mixed
-Background Knowledge: one short sentence or None
-Confidence: one decimal from 0 to 1
+Structural Reasoning Type: direct_state, ocr_region_binding, comparative_layout, temporal_causal_sequence, quoted_statement_and_reaction, affective_scene, symbol_attachment, background_required, or unresolved
+Background Knowledge:
+Confidence:
 """
     FIGURATIVE_TYPES = ("sarcasm", "metaphor", "humor", "literal")
     CLAIM_FRAME_FIELDS = (
@@ -88,7 +76,7 @@ Confidence: one decimal from 0 to 1
         "time_or_panel_scope",
     )
 
-    def __init__(self, mistral_model, tokenizer):
+    def __init__(self, mistral_model, tokenizer, research_decomposition=False):
         if torch is None:
             raise RuntimeError(
                 "Agent 2 requires PyTorch. Run check_environment.py."
@@ -96,6 +84,7 @@ Confidence: one decimal from 0 to 1
 
         self.model = mistral_model
         self.tokenizer = tokenizer
+        self.research_decomposition = bool(research_decomposition)
 
         print("[Agent2] Ready.")
 
@@ -116,6 +105,7 @@ Confidence: one decimal from 0 to 1
             [{"role": "user", "content": instruction.strip()}],
             tokenize=False,
             add_generation_prompt=True,
+            enable_thinking=False,
         )
 
     @staticmethod
@@ -151,7 +141,7 @@ Confidence: one decimal from 0 to 1
         declared = str(value or "").strip().lower()
         text = " ".join(
             str(item or "").lower()
-            for item in (asserted_property, intended_meaning)
+            for item in (asserted_property,)
         )
         negative = bool(re.search(
             r"\b(rotten|corrupt|negative|bad|hate|disliked|sad|angry|"
@@ -171,6 +161,7 @@ Confidence: one decimal from 0 to 1
             "positive", "negative", "neutral", "mixed", "unclear"
         } else "unclear"
 
+    @record_generation("Mistral-7B-figurative-type")
     def _retry_figurative_type(self, caption: str):
         prompt = f"""
 Classify the caption itself. Return exactly one lowercase word: sarcasm,
@@ -198,6 +189,10 @@ Caption:
             )
 
         generated = output[:, inputs["input_ids"].shape[1]:]
+        self._last_generation_diagnostics = {
+            "input_tokens": int(inputs["input_ids"].shape[1]),
+            "generated_tokens": int(generated.shape[-1]),
+        }
         response = self.tokenizer.decode(
             generated[0],
             skip_special_tokens=True,
@@ -274,59 +269,87 @@ Answer with one lowercase word: sarcasm, metaphor, humor, or literal.
         selected = max(scores, key=scores.get)
         return selected, float(scores[selected]), scores
 
-    def _retry_structured_claim(self, caption):
-        prompt = f"""
-Repair only the structured claim for this caption. Preserve every explicit
-entity, number, negation, comparison, and polarity. Use None when a source,
-object, or target is absent. Relation Family must be exactly one of:
-trajectory, pace, outcome, sentiment, safety, trust, association, quantity,
-or other. Return exactly these headings and no commentary:
+    def _retry_structured_claim(self, caption, invalid_groups=None, defective_fields=None, verification=None):
+        instruction = (
+            "Repair only the fields requested by the JSON schema from the original caption. Preserve "
+            "expressed polarity, entity roles, quantities and scope. Do not "
+            "imagine an image. Use JSON null for absent optional arguments and [] for absent lists."
+        )
+        requested = [field for field in (defective_fields or []) if field in CORE["properties"]]
+        if verification and verification.get("claim_graph_fingerprint") and verification.get("input_errors"):
+            if "INVALID_CORE_TYPES" not in verification["input_errors"]:
+                # Graph defects belong to the graph repairer, not every CORE field.
+                return {}, "", 0.0
+        if verification and verification.get("claim_graph_fingerprint"):
+            requested = [field for field in requested if field not in {"expected_visual_state", "opposite_visual_state"}]
+            if not requested:
+                return {}, "", 0.0
+        if not requested:
+            # Structural failures may precede a usable semantic audit. Repair
+            # the affected typed group rather than returning to legacy headings.
+            groups = {
+                "immutable_proposition": ["caption_proposition", "claim_subject", "claim_predicate", "claim_object", "claim_source", "claim_target", "negation", "quantities", "claim_modifiers"],
+                "relation": ["relation_family", "expected_visual_state", "opposite_visual_state"],
+                "reasoning_profile": ["reasoning_requirement", "comparison_direction", "time_or_panel_scope"],
+            }
+            requested = list(dict.fromkeys(field for group in (invalid_groups or ["immutable_proposition", "relation"])
+                for field in groups.get(group, [])))
+        if not requested:
+            raise ValueError("No identified defective claim fields to repair")
+        if verification:
+            instruction += "\nSource verification (fallible evidence; preserve unaffected fields): " + json.dumps({
+                "input_errors": verification.get("input_errors", []),
+                "answers": verification.get("independent_source_answers", []),
+                "obligations": verification.get("obligations", []),
+            })
+        schema = object_schema({field: CORE["properties"][field] for field in requested})
+        parsed, response, elapsed, _ = self._generate_section(
+            instruction, caption, 512, schema=schema
+        )
+        return parsed, response, elapsed
 
-Caption Proposition:
-Claim Subject:
-Claim Predicate:
-Claim Object:
-Claim Source:
-Claim Target:
-Asserted Property:
-Relation Family:
-Expected Visual State:
-Opposite Visual State:
-Structural Reasoning Type:
-Figurative Mechanism Candidates:
-Literal Polarity:
-Intended Polarity:
-Comparison Direction:
-Evaluation Target:
-Time or Panel Scope:
-Reasoning Requirement:
-Background Knowledge:
-
-Caption: {caption}
-"""
-        inputs = self.tokenizer(
-            self._chat_prompt(prompt),
-            return_tensors="pt",
-            max_length=1024,
-            truncation=True,
-        ).to(self.model.device)
-        started = time.time()
+    @record_generation("Mistral-7B")
+    def _generate_section(self, instruction, caption, max_new_tokens, schema=None):
+        if schema:
+            instruction += "\nReturn JSON only, using these exact keys and types instead of headings: " + json.dumps(schema)
+        prompt = self._chat_prompt(instruction + "\nCaption:\n" + caption)
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=False)
+        input_tokens = int(inputs["input_ids"].shape[1])
+        if input_tokens > 3072:
+            raise ValueError("Agent 2 context budget exceeded; caption not truncated")
+        inputs = inputs.to(self.model.device)
+        started = time.perf_counter()
+        constrained = {"prefix_allowed_tokens_fn": prefix_constraint(self.tokenizer, schema)} if schema else {}
+        if schema:
+            from transformers import StoppingCriteriaList
+            from engine.output_contracts import complete_json_stopper
+            constrained["stopping_criteria"] = StoppingCriteriaList([
+                complete_json_stopper(self.tokenizer, input_tokens, schema)])
         with torch.inference_mode():
             output = self.model.generate(
-                **inputs,
-                max_new_tokens=200,
-                do_sample=False,
-                repetition_penalty=1.05,
-                no_repeat_ngram_size=6,
-                use_cache=True,
-                pad_token_id=self.tokenizer.eos_token_id,
+                **inputs, **constrained, max_new_tokens=max_new_tokens, do_sample=False,
+                use_cache=True, pad_token_id=self.tokenizer.eos_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
             )
-        generated = output[:, inputs["input_ids"].shape[1]:]
-        response = self.tokenizer.decode(
-            generated[0], skip_special_tokens=True
-        ).strip()
-        return parse_claim_response(response), response, time.time() - started
+        elapsed = time.perf_counter() - started
+        generated = output[:, input_tokens:]
+        count = int(generated.shape[-1])
+        response = self.tokenizer.decode(generated[0], skip_special_tokens=True).strip()
+        try:
+            parsed = json.loads(response) if schema else parse_claim_response(response)
+        except ValueError:
+            parsed = {}
+        schema_valid = validate_shape(parsed, schema) if schema else None
+        if schema and not schema_valid:
+            parsed = {}
+        return parsed, response, elapsed, {
+            "input_tokens": input_tokens, "generated_tokens": count,
+            "max_new_tokens": max_new_tokens, "hit_token_limit": count >= max_new_tokens,
+            "elapsed_seconds": round(elapsed, 4),
+            "decoder": DECODER_ID if schema else "greedy_unconstrained_headings",
+            "raw_response": response, "prompt": prompt, "schema": schema,
+            "schema_valid": schema_valid,
+        }
 
     @staticmethod
     def _claim_frame_quality(output):
@@ -379,6 +402,9 @@ Caption: {caption}
             "background_knowledge": background_knowledge or "Not specified",
             "non_literal_expressions": parsed.get("non_literal_expressions", []) or [],
             "caption_proposition": caption_proposition,
+            "negation": parsed.get("negation", []),
+            "quantities": parsed.get("quantities", []),
+            "claim_modifiers": parsed.get("claim_modifiers", []),
             "claim_subject": parsed.get("claim_subject", ""),
             "claim_predicate": parsed.get("claim_predicate", ""),
             "claim_object": parsed.get("claim_object", ""),
@@ -388,7 +414,7 @@ Caption: {caption}
             "transferred_property": parsed.get("transferred_property", ""),
             "incongruity": parsed.get("incongruity", ""),
             "caption_polarity": ClaimExtractionAgent._normalize_caption_polarity(
-                parsed.get("caption_polarity", ""),
+                parsed.get("literal_polarity", parsed.get("caption_polarity", "")),
                 parsed.get("asserted_property", ""),
                 parsed.get("underlying_message", ""),
             ),
@@ -419,6 +445,9 @@ Caption: {caption}
             "_figurative_type_was_guessed": figurative_type_was_guessed,
             "_figurative_type_source": "primary" if not figurative_type_was_guessed else "unresolved",
             "_relation_family_raw": relation_family_raw,
+            "_caption_semantic_audit": parsed.get("_caption_semantic_audit"),
+            "claim_graph": parsed.get("claim_graph"),
+            "_graph_generation": parsed.get("_graph_generation"),
             "_internal": parsed,
         }
 
@@ -433,7 +462,7 @@ Caption: {caption}
         generated = " ".join(
             str(preserved.get("caption_proposition") or "").split()
         )
-        source = " ".join(str(caption or "").split())
+        source = str(caption or "")
         preserved["generated_caption_proposition"] = generated
         preserved["caption_proposition"] = source
         preserved["source_caption_immutable"] = True
@@ -531,57 +560,39 @@ Focus especially on:
 Return the SAME output format as before.
 """
 
-        prompt = self._chat_prompt(f"""
-{prompt_text}
+        parsed, response, elapsed, core_diagnostics = self._generate_section(
+            prompt_text, caption, 512, schema=object_schema({key: value for key, value in CORE["properties"].items()
+                if key not in {"expected_visual_state", "opposite_visual_state"}})
+        )
+        interpretation, interpretation_response, interpretation_elapsed, interpretation_diagnostics = (
+            self._generate_section(self.INTERPRETATION_PROMPT, caption, 384, schema=INTERPRETATION)
+        )
+        # Interpretation cannot overwrite source roles, states or proposition.
+        interpretation_fields = {
+            "figurative_type", "linguistic_cue", "polarity_reversal",
+            "literal_meaning", "underlying_message", "alternative_interpretation",
+            "literal_polarity", "intended_polarity", "structural_reasoning_type",
+            "background_knowledge", "confidence",
+        }
+        parsed.update({key: value for key, value in interpretation.items()
+                       if key in interpretation_fields})
+        elapsed += interpretation_elapsed
+        generation_diagnostics = {
+            "core": core_diagnostics, "interpretation": interpretation_diagnostics,
+            "hit_token_limit": core_diagnostics["hit_token_limit"] or interpretation_diagnostics["hit_token_limit"],
+            "generated_tokens": core_diagnostics["generated_tokens"] + interpretation_diagnostics["generated_tokens"],
+            "max_new_tokens": 896,
+        }
 
-Caption:
-{caption}
-""")
-        
-
-        
-
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            max_length=2048,
-            truncation=True,
-        ).to(self.model.device)
-
-        print("\n========== Agent 2 ==========")
-
-        start = time.time()
-
-        with torch.inference_mode():
-
-            output = self.model.generate(
-                **inputs,
-                max_new_tokens=300,
-                do_sample=False,
-                repetition_penalty=1.08,
-                no_repeat_ngram_size=8,
-                use_cache=True,
-                pad_token_id=self.tokenizer.eos_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
-
-        elapsed = time.time() - start
-
-        print(f"Generation Time : {elapsed:.2f} sec")
-
-        generated = output[:, inputs["input_ids"].shape[1]:]
-
-        response = self.tokenizer.decode(
-            generated[0],
-            skip_special_tokens=True,
-        ).strip()
-
-        print("\n================ RAW MISTRAL OUTPUT ================\n")
-        print(response)
-        print("\n====================================================\n")
-
-        parsed = parse_claim_response(response)
-
+        from engine.claim_semantics import audit_core
+        from engine.claim_graph import attach_graph, repair_graph, bind_readings
+        elapsed += attach_graph(self, caption, parsed,
+                                research_decomposition=getattr(self, "research_decomposition", False))
+        parsed["_caption_semantic_audit"] = audit_core(self, caption, parsed)
+        parsed["claim_graph"] = bind_readings(parsed["claim_graph"],
+            parsed["_caption_semantic_audit"].get("independent_source_answers", []))
+        elapsed += parsed["_caption_semantic_audit"]["_generation_seconds"]
+        generation_diagnostics["semantic_audit"] = parsed["_caption_semantic_audit"]["_generation_diagnostics"]
         spec_output = attach_reasoning_profile(attach_claim_contract(
             self._preserve_source_caption(
                 self._to_spec_schema(parsed, response), caption
@@ -598,19 +609,36 @@ Caption:
             primary_quality = self._claim_frame_quality(spec_output)
             try:
                 retry_parsed, retry_response, retry_elapsed = (
-                    self._retry_structured_claim(caption)
+                    self._retry_structured_claim(
+                        caption,
+                        spec_output["claim_contract"].get(
+                            "invalid_field_groups", []
+                        ),
+                        defective_fields=(spec_output.get("_caption_semantic_audit") or {}).get("defective_fields"),
+                        verification=spec_output.get("_caption_semantic_audit"),
+                    )
                 )
             except (RuntimeError, ValueError) as error:
                 spec_output["_claim_retry_error"] = str(error)
                 print(f"[Agent2 WARNING] Claim-frame recovery failed: {error}")
             else:
                 elapsed += retry_elapsed
-                repaired, repaired_fields = self._merge_repaired_claim_fields(
-                    spec_output, retry_parsed, caption
-                )
+                repaired_fields = [key for key in retry_parsed if key in CORE["properties"]]
+                repaired = dict(spec_output)
+                repaired.update({key: retry_parsed[key] for key in repaired_fields})
+                elapsed += repair_graph(self, caption, repaired,
+                                        verification=spec_output.get("_caption_semantic_audit"))
+                repaired["_caption_semantic_audit"] = audit_core(self, caption, repaired)
+                recovery_audit = dict(repaired["_caption_semantic_audit"])
+                elapsed += repaired["_caption_semantic_audit"]["_generation_seconds"]
+                repaired = attach_claim_contract(self._preserve_source_caption(repaired, caption), caption)
                 if self._claim_frame_quality(repaired) > primary_quality:
                     spec_output = attach_reasoning_profile(repaired)
-                    spec_output["_claim_retry_success"] = True
+                    final_valid = bool(
+                        repaired["claim_contract"].get("fully_valid", False)
+                    )
+                    spec_output["_claim_retry_success"] = final_valid
+                    spec_output["_claim_retry_improved"] = True
                     spec_output["_claim_retry_repaired_fields"] = repaired_fields
                     spec_output["_claim_retry_directionally_safe"] = bool(
                         repaired["claim_contract"].get(
@@ -623,8 +651,15 @@ Caption:
                 spec_output["_claim_retry_attempted"] = True
                 spec_output["_claim_retry_seconds"] = round(retry_elapsed, 4)
                 spec_output["_raw_claim_retry_response"] = retry_response
+                spec_output["_claim_retry_semantic_audit"] = recovery_audit
+                spec_output["_claim_retry_graph"] = repaired.get("claim_graph")
+                spec_output["_graph_repair_history"] = repaired.get("_graph_repair_history", [])
+                spec_output["_claim_retry_proposed_fields"] = {key: retry_parsed[key] for key in repaired_fields}
 
         spec_output["_generation_seconds"] = round(elapsed, 4)
+        spec_output["_generation_diagnostics"] = generation_diagnostics
+        spec_output["_raw_interpretation_response"] = interpretation_response
+        spec_output["_claim_extraction_version"] = "source_graph_bound_readings_v4"
 
         spec_output["_figurative_type_retry_attempted"] = False
         spec_output["_figurative_type_retry_failed"] = False
@@ -670,297 +705,7 @@ Caption:
         )
         return " ".join(match.group(1).split()) if match else ""
 
-    @staticmethod
-    def _unusable_requirement(value):
-        normalized = " ".join(str(value or "").casefold().split()).strip(" .")
-        return (
-            normalized in {"", "none", "n/a", "unavailable", "unknown"}
-            or normalized.startswith("none (")
-        )
-
-    @classmethod
-    def _ground_visual_requirements(
-        cls, support_requirement, conflict_requirement,
-        figurative_mechanism, critique_prompt,
-    ):
-        expected_state = cls._audit_field(
-            critique_prompt, "Expected visual state"
-        )
-        opposite_state = cls._audit_field(
-            critique_prompt, "Opposite visual state"
-        )
-        claim_subject = cls._audit_field(
-            critique_prompt, "Claim subject"
-        ) or "the claim subject"
-        asserted_property = cls._audit_field(
-            critique_prompt, "Asserted property"
-        )
-        intended_meaning = cls._audit_field(
-            critique_prompt, "Intended meaning"
-        )
-        if cls._unusable_requirement(support_requirement):
-            support_requirement = (
-                expected_state
-                if not cls._unusable_requirement(expected_state)
-                else intended_meaning
-            )
-        if cls._unusable_requirement(conflict_requirement):
-            conflict_requirement = (
-                opposite_state
-                if not cls._unusable_requirement(opposite_state)
-                else f"a visible state opposite to {intended_meaning or 'the caption meaning'}"
-            )
-        support_requirement = str(support_requirement).strip().rstrip(".")
-        conflict_requirement = str(conflict_requirement).strip().rstrip(".")
-        if "metaphor" in str(figurative_mechanism).casefold():
-            property_text = (
-                asserted_property or intended_meaning or "the asserted property"
-            )
-            support_requirement = (
-                f"{support_requirement}. A visible symbol attached to "
-                f"{claim_subject} supports the claim only when its condition "
-                f"or conventional association expresses {property_text}."
-            )
-            conflict_requirement = (
-                f"{conflict_requirement}. A visible symbol attached to "
-                f"{claim_subject} conflicts when its condition or conventional "
-                f"association expresses the opposite of {property_text}."
-            )
-        else:
-            support_requirement = (
-                f"{support_requirement}. An explicitly bound label, analogy, "
-                "or symbol may instantiate the same semantic roles."
-            )
-            conflict_requirement = (
-                f"{conflict_requirement}. An explicitly bound label, analogy, "
-                "or symbol may instantiate the opposite role relation."
-            )
-        return support_requirement.strip(), conflict_requirement.strip()
-
-    @classmethod
-    def _validate_visual_requirements(
-        cls, support_requirement, conflict_requirement, critique_prompt,
-    ):
-        """Reject claim requirements that cease to be mutually directional."""
-        stopwords = {
-            "a", "an", "and", "are", "as", "at", "be", "by", "for",
-            "from", "in", "is", "it", "of", "on", "or", "the", "to",
-            "visible", "visibly", "image", "caption", "claim", "state",
-            "condition", "object", "person", "symbol", "label", "role",
-        }
-
-        def tokens(value):
-            result = set()
-            for token in re.findall(r"[a-z0-9]+", str(value or "").casefold()):
-                if token in stopwords or len(token) < 3:
-                    continue
-                for suffix in ("ingly", "edly", "ing", "ed", "es", "s"):
-                    if token.endswith(suffix) and len(token) - len(suffix) >= 4:
-                        token = token[:-len(suffix)]
-                        break
-                result.add(token)
-            return result
-
-        support_tokens = tokens(support_requirement)
-        conflict_tokens = tokens(conflict_requirement)
-        expected_tokens = tokens(
-            cls._audit_field(critique_prompt, "Expected visual state")
-        )
-        opposite_tokens = tokens(
-            cls._audit_field(critique_prompt, "Opposite visual state")
-        )
-        expected_only = expected_tokens - opposite_tokens
-        opposite_only = opposite_tokens - expected_tokens
-        errors = []
-        if " ".join(str(support_requirement).casefold().split()) == " ".join(
-            str(conflict_requirement).casefold().split()
-        ):
-            errors.append("IDENTICAL_REQUIREMENTS")
-        if expected_only and not support_tokens.intersection(expected_only):
-            errors.append("SUPPORT_DROPPED_EXPECTED_STATE")
-        if opposite_only and not conflict_tokens.intersection(opposite_only):
-            errors.append("CONFLICT_DROPPED_OPPOSITE_STATE")
-        if (
-            support_tokens
-            and conflict_tokens
-            and support_tokens == conflict_tokens
-            and "IDENTICAL_REQUIREMENTS" not in errors
-        ):
-            errors.append("NON_OPPOSING_REQUIREMENTS")
-        return not errors, errors
 
     def critique(self, caption, critique_prompt, _format_retry=False):
-
-        prompt = self._chat_prompt(f"""
-You are the independent linguistic claim auditor in a multimodal reasoning
-system. You are not shown another agent's answer.
-
-Audit the supplied structured analysis using ONLY the original caption.
-
-Rules:
-
-- Analyze ONLY the caption.
-- Do NOT imagine the image.
-- Do NOT use outside knowledge unless required to interpret the caption.
-- ENDORSE only when entities, numbers, negation, target, polarity, and the
-  figurative meaning are preserved.
-- CHALLENGE when one of those fields changed.
-- ABSTAIN when the supplied analysis is too incomplete to audit.
-- The image may realize a literal caption through labels, analogy, or a visual
-  metaphor. Requirements must therefore describe semantic roles, not demand
-  only the literal real-world object.
-- For metaphor, support and conflict requirements must name the visible symbol,
-  its attachment to the claim subject, and the expected or opposite property.
-- Support Requirement and Conflict Requirement must never be None. They must
-  be mutually opposing, visually testable conditions.
-
-Return exactly these six lines, without brackets or angle brackets:
-Stance: ENDORSE, CHALLENGE, or ABSTAIN
-Support Requirement: observable condition that would support the caption meaning
-Conflict Requirement: observable condition that would conflict with it
-Figurative Mechanism: literal, metaphor, sarcasm, humor, or unresolved, with a short cue
-Ambiguity: the main competing caption interpretation, or None
-Reason: whether the structured claim preserved the exact caption meaning
-
-====================================================
-
-Caption:
-
-{caption}
-
-====================================================
-
-Structured Caption Analysis:
-
-{critique_prompt}
-""")
-
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            max_length=1024,
-            truncation=True,
-        ).to(self.model.device)
-
-        print("\n========== Agent 2 Critique ==========")
-
-        with torch.inference_mode():
-
-            output = self.model.generate(
-                **inputs,
-                max_new_tokens=150,
-                do_sample=False,
-                repetition_penalty=1.05,
-                pad_token_id=self.tokenizer.eos_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-            )
-
-        generated = output[:, inputs["input_ids"].shape[1]:]
-
-        response = self.tokenizer.decode(
-            generated[0],
-            skip_special_tokens=True,
-        ).strip()
-
-        print("\n================ AGENT 2 CRITIQUE ================\n")
-        print(response)
-        print("\n=================================================\n")
-
-        # Do not turn an unparseable response into a fabricated challenge.
-        stance = "UNRESOLVED"
-        match = re.search(
-            r"stance\s*:\s*[<\[\(\"']*\s*(endorse|challenge|abstain)\b",
-            response,
-            flags=re.IGNORECASE,
-        )
-        if match:
-            stance = match.group(1).upper()
-        
-
-        reason_match = re.search(
-            r"reason\s*:\s*(.+)", response, flags=re.IGNORECASE | re.DOTALL
-        )
-        reason = reason_match.group(1).strip() if reason_match else ""
-        support_match = re.search(
-            r"support requirement\s*:\s*(.+)", response, flags=re.IGNORECASE
-        )
-        conflict_match = re.search(
-            r"conflict requirement\s*:\s*(.+)", response, flags=re.IGNORECASE
-        )
-        mechanism_match = re.search(
-            r"figurative mechanism\s*:\s*(.+)", response, flags=re.IGNORECASE
-        )
-        ambiguity_match = re.search(
-            r"ambiguity\s*:\s*(.+)", response, flags=re.IGNORECASE
-        )
-        support_requirement = (
-            support_match.group(1).strip() if support_match else ""
-        )
-        conflict_requirement = (
-            conflict_match.group(1).strip() if conflict_match else ""
-        )
-        figurative_mechanism = (
-            mechanism_match.group(1).strip() if mechanism_match else ""
-        )
-        ambiguity = ambiguity_match.group(1).strip() if ambiguity_match else ""
-        support_requirement, conflict_requirement = (
-            self._ground_visual_requirements(
-                support_requirement,
-                conflict_requirement,
-                figurative_mechanism,
-                critique_prompt,
-            )
-        )
-        requirements_valid, requirement_errors = (
-            self._validate_visual_requirements(
-                support_requirement, conflict_requirement, critique_prompt
-            )
-        )
-        format_valid = bool(
-            stance != "UNRESOLVED"
-            and reason
-            and not self._unusable_requirement(support_requirement)
-            and not self._unusable_requirement(conflict_requirement)
-            and figurative_mechanism
-            and ambiguity_match
-        )
-
-        result = {
-            "stance": stance,
-            "reason": reason or response.strip(),
-            "specific_evidence": len(reason.split()) >= 5,
-            "support_requirement": support_requirement,
-            "conflict_requirement": conflict_requirement,
-            "figurative_mechanism": figurative_mechanism,
-            "ambiguity": ambiguity,
-            "requirements_source": "caption_audit_with_role_equivalence",
-            "requirements_valid": requirements_valid,
-            "requirement_errors": requirement_errors,
-            "_format_valid": format_valid,
-            "_raw_response": response,
-        }
-        result["_format_retry_used"] = bool(_format_retry)
-        result["_format_retry_success"] = False
-        if (
-            not _format_retry
-            and (not format_valid or not requirements_valid)
-        ):
-            retry = self.critique(
-                caption,
-                critique_prompt
-                + "\nFormat repair: preserve the original caption exactly and "
-                "return all six required lines with mutually opposing, visually "
-                "testable support and conflict conditions.",
-                _format_retry=True,
-            )
-            retry["_format_retry_used"] = True
-            retry["_format_retry_success"] = bool(
-                retry.get("_format_valid", False)
-                and retry.get("requirements_valid", False)
-            )
-            retry["_raw_primary_response"] = response
-            if retry["_format_retry_success"]:
-                return retry
-            result["_format_retry_used"] = True
-            result["_raw_retry_response"] = retry.get("_raw_response", "")
-        return result
+        from engine.claim_witness import audit_claim_witness
+        return audit_claim_witness(self, caption, critique_prompt)

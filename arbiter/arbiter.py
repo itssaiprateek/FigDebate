@@ -12,14 +12,19 @@ from utils.decision_scoring import (
     position_balanced_relation_scores,
 )
 from engine.region_verifier import verify_region_pairs
+from engine.runtime_accounting import record_generation
 
 
 class Arbiter:
     
     DEFAULT_PROMPT = """
 You are the final decision-maker for a binary figurative image-caption task.
-Use only the supplied evidence. ENTAILS needs direct visual support for the
-caption's figurative meaning. CONTRADICTS needs direct visual conflict. Missing
+Use only the supplied evidence. Evaluate the original caption's expressed
+proposition, preserving entity roles, negation, quantities and scope.
+Figurative interpretation explains the wording; it must not replace a
+sarcastic expressed evaluation with its opposite intended message.
+Never infer a label from the phenomenon name. ENTAILS needs direct visual
+support for the expressed claim. CONTRADICTS needs direct visual conflict. Missing
 evidence alone is not conflict. Never invent facts or return a third label.
 
 Return exactly these short sections and nothing else:
@@ -151,7 +156,9 @@ Reasoning: one sentence citing [VISUAL], [CAPTION], or [COMPARATOR].
             parts.append(f"Figurative type:\n{figurative}")
 
         intended = language_understanding.get("intended_meaning", "")
-        if intended:
+        # A hypothesis is not an authoritative scoring input. Source-preserving
+        # fallback graphs do not qualify a generated intended interpretation.
+        if intended and (language_understanding.get("claim_contract") or {}).get("semantic_qualified") is True:
             parts.append(f"Intended meaning:\n{str(intended)[:350]}")
 
         proposition = language_understanding.get("caption_proposition", "")
@@ -710,6 +717,7 @@ Confidence:
 [/INST]
 """
 
+    @record_generation("Mistral-7B-arbiter")
     def _generate_response(self, prompt, max_new_tokens):
         """Generate one response and return its text with generation time."""
         inputs = self.tokenizer(
@@ -732,6 +740,10 @@ Confidence:
             )
 
         generated = output[:, inputs["input_ids"].shape[1]:]
+        self._last_generation_diagnostics = {
+            "input_tokens": int(inputs["input_ids"].shape[1]),
+            "generated_tokens": int(generated.shape[-1]),
+        }
         response = self.tokenizer.decode(
             generated[0],
             skip_special_tokens=True,

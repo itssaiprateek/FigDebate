@@ -7,6 +7,7 @@ from engine.reasoning_schema import (
     normalize_figurative_mechanism,
     normalize_structural_type,
 )
+from engine.pragmatic_schema import detect_pragmatic_schema
 
 
 ISSUE_TYPES = {
@@ -25,6 +26,7 @@ ISSUE_TYPES = {
     "AFFECTIVE_SCENE",
     "METAPHOR_MAPPING",
     "SARCASM_POLARITY",
+    "PRAGMATIC_SCOPE",
 }
 
 
@@ -65,6 +67,8 @@ def classify_issue(comparison):
     )
     if contract.get("requires_normative_reasoning", False):
         return "NORMATIVE_REASONING"
+    if detect_pragmatic_schema(contract.get("source_caption")) != "NONE":
+        return "PRAGMATIC_SCOPE"
     if (
         contract.get("requires_background_knowledge", False)
         or structural == "BACKGROUND_REQUIRED"
@@ -112,6 +116,28 @@ def build_question_plan(comparison):
     subject = _clean(relation.get("subject"))
     expected = _clean(relation.get("expected_visual_state"), "expected state")
     opposite = _clean(relation.get("opposite_visual_state"), "opposite state")
+
+    graph = contract.get("claim_graph")
+    if graph and graph.get("representation") == "UNDECOMPOSED_SOURCE" and not graph.get("errors"):
+        return TribunalQuestionPlan(
+            "SEMANTIC_RELATION", "Resolve the complete source claim without assuming a literal pictured referent.",
+            "Report visible text with its object or panel bindings, and visible actions, states and relationships. "
+            "Distinguish observations from unclear details.",
+            "Explain the complete expressed caption, preserving roles, comparisons, negation and qualifiers. "
+            "Separate conventional idiom meaning and possible sarcasm from source assertions.",
+            "Bind observations to source claim C1; assess the justified reading without inventing a literal referent.", True)
+    if graph is not None and not graph.get("errors") and issue_type not in {
+        "CLAIM_CONTRACT_INVALID", "BACKGROUND_KNOWLEDGE", "NORMATIVE_REASONING"
+    }:
+        questions = [f"[{node['id']}] For {node['subject']}, report the visible state or relation relevant to "
+                     f"{node['interpreted_proposition']}, retaining qualifiers {node['qualifiers']}. "
+                     "Distinguish observed facts from unavailable information."
+                     for node in graph.get("nodes", [])]
+        return TribunalQuestionPlan(
+            "SEMANTIC_RELATION", "Resolve the source-anchored claim obligations separately.",
+            "\n".join(questions),
+            "Check each claim node's reading and scope against the original caption; do not invent image facts.",
+            "Bind each observation and its region to its claim-node ID; preserve dependencies.", True)
 
     if issue_type == "CLAIM_CONTRACT_INVALID":
         return TribunalQuestionPlan(
@@ -211,6 +237,15 @@ def build_question_plan(comparison):
             "State the evaluative claim and the behavior that would instantiate it, without imagining the image.",
             "Keep visual facts separate from the normative inference and verify both premises.",
             False,
+        )
+    if issue_type == "PRAGMATIC_SCOPE":
+        return TribunalQuestionPlan(
+            issue_type,
+            "A conventional English construction changes the literal scope.",
+            "Report the exact displayed wording, speaker or target, and associated visible object.",
+            "State the literal proposition and intended pragmatic proposition separately, preserving the target.",
+            "Verify which property the construction attributes to which target before assigning direction.",
+            True,
         )
     if issue_type == "BACKGROUND_KNOWLEDGE":
         return TribunalQuestionPlan(

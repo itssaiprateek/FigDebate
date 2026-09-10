@@ -1,0 +1,1419 @@
+{
+  "updated": "2026-09-07",
+  "completion_claim": false,
+  "latest_critical_repair_status": "CRITICAL_REPAIR_IMPLEMENTATION_STATUS_20260907.md",
+  "notes": "Repair pass closed with 321 passing regression tests. All 116 requirements retained; full research objective remains incomplete. D showed no gain and E failed all three review contracts despite wider text allowance. Negative results retained; no active GPU experiment. Gated rebuild, calibrated acceptance, held-out and human validation remain pending.",
+  "items": [
+    {
+      "id": 1,
+      "requirement": "Make the three-category filter explicit and reproducible in the preparation script.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Local protocol checks exist; existing three-phenomenon split files are unchanged."
+    },
+    {
+      "id": 2,
+      "requirement": "Pin the upstream dataset version.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Local protocol checks exist; existing three-phenomenon split files are unchanged."
+    },
+    {
+      "id": 3,
+      "requirement": "Preserve original sample identifiers, source-dataset information and image hashes.",
+      "status": "partial",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Historical IDs/hashes are preserved and runtime identities added in memory; missing upstream original metadata cannot be reconstructed without access."
+    },
+    {
+      "id": 4,
+      "requirement": "Verify that rebuilding produces the same samples, labels and split counts.",
+      "status": "qualification_or_research_pending",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Pending user-arranged gated dataset access. Do not rebuild or claim exact historical provenance meanwhile."
+    },
+    {
+      "id": 5,
+      "requirement": "Avoid unnecessary lossy image re-encoding, especially where readable text matters.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Local protocol checks exist; existing three-phenomenon split files are unchanged."
+    },
+    {
+      "id": 6,
+      "requirement": "Detect duplicate and near-duplicate images.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Exact encoded/pixel duplicates audited; four near-duplicate candidates require human adjudication."
+    },
+    {
+      "id": 7,
+      "requirement": "Keep related image–caption pairs together when creating internal training/calibration splits.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Train-only image-group partition excludes inspected dev50 and validation/test image groups; 791 calibration and 3100 development rows eligible."
+    },
+    {
+      "id": 8,
+      "requirement": "Keep the existing development samples for debugging; use untouched held-out samples for final evaluation.",
+      "status": "partial",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "dev50 remains debugging only. Held-out evaluation not launched."
+    },
+    {
+      "id": 9,
+      "requirement": "Keep gold labels and reference explanations outside every inference prompt.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Local protocol checks exist; existing three-phenomenon split files are unchanged."
+    },
+    {
+      "id": 10,
+      "requirement": "Document the benchmark’s label interpretation, particularly sarcastic captions versus their non-sarcastic paraphrases.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Local protocol checks exist; existing three-phenomenon split files are unchanged."
+    },
+    {
+      "id": 11,
+      "requirement": "Describe results as evaluating the **three-phenomenon V-FLUTE subset**.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "dataset/prepare_vflute.py",
+        "dataset/audit_protocol.py",
+        "dataset/internal_partition.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Local protocol checks exist; existing three-phenomenon split files are unchanged."
+    },
+    {
+      "id": 12,
+      "requirement": "Separate these outcomes:",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/review_outcome.py",
+        "models/judge_model.py",
+        "evaluation/evaluate_predictions.py",
+        "evaluation/qualify_judge_runtime.py"
+      ],
+      "validation_note": "Execution, schema, semantic abstention and procedural rejection are distinct. Live qualification is not a held-out accuracy study."
+    },
+    {
+      "id": 13,
+      "requirement": "Stop counting failed generations as semantic abstentions.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/review_outcome.py",
+        "models/judge_model.py",
+        "evaluation/evaluate_predictions.py",
+        "evaluation/qualify_judge_runtime.py"
+      ],
+      "validation_note": "Execution, schema, semantic abstention and procedural rejection are distinct. Live qualification is not a held-out accuracy study."
+    },
+    {
+      "id": 14,
+      "requirement": "Preserve failed-attempt diagnostics, memory information and elapsed time.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/review_outcome.py",
+        "models/judge_model.py",
+        "evaluation/evaluate_predictions.py",
+        "evaluation/qualify_judge_runtime.py"
+      ],
+      "validation_note": "Execution, schema, semantic abstention and procedural rejection are distinct. Live qualification is not a held-out accuracy study."
+    },
+    {
+      "id": 15,
+      "requirement": "Record the actual reason each judge attempt failed.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/review_outcome.py",
+        "models/judge_model.py",
+        "evaluation/evaluate_predictions.py",
+        "evaluation/qualify_judge_runtime.py"
+      ],
+      "validation_note": "Execution, schema, semantic abstention and procedural rejection are distinct. Live qualification is not a held-out accuracy study."
+    },
+    {
+      "id": 16,
+      "requirement": "Clearly identify when the final answer comes from the unchanged baseline because the judge failed.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/review_outcome.py",
+        "models/judge_model.py",
+        "evaluation/evaluate_predictions.py",
+        "evaluation/qualify_judge_runtime.py"
+      ],
+      "validation_note": "Execution, schema, semantic abstention and procedural rejection are distinct. Live qualification is not a held-out accuracy study."
+    },
+    {
+      "id": 17,
+      "requirement": "Calculate each rate with the appropriate denominator; no successful reviews means semantic abstention rate is unavailable.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/review_outcome.py",
+        "models/judge_model.py",
+        "evaluation/evaluate_predictions.py",
+        "evaluation/qualify_judge_runtime.py"
+      ],
+      "validation_note": "Execution, schema, semantic abstention and procedural rejection are distinct. Live qualification is not a held-out accuracy study."
+    },
+    {
+      "id": 18,
+      "requirement": "Add live judge qualification tests before launching an evaluation batch.",
+      "status": "partial",
+      "evidence": [
+        "engine/review_outcome.py",
+        "models/judge_model.py",
+        "evaluation/evaluate_predictions.py",
+        "evaluation/qualify_judge_runtime.py"
+      ],
+      "validation_note": "D completed, revealing 3/3 failed judge/witness contracts. Focused replay E also failed 3/3 judge contracts. Qualification is not passed."
+    },
+    {
+      "id": 19,
+      "requirement": "Remove the leaked initial prediction from nested dossier fields.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/case_dossier.py",
+        "agents/multimodal_judge.py",
+        "tests/test_continuation_repairs.py"
+      ],
+      "validation_note": "Allowlisted, bounded packet with visible-evidence audit; full history retained."
+    },
+    {
+      "id": 20,
+      "requirement": "Remove previous-answer proxies, such as decision-derived recommendations, from independent judging.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/case_dossier.py",
+        "agents/multimodal_judge.py",
+        "tests/test_continuation_repairs.py"
+      ],
+      "validation_note": "Allowlisted, bounded packet with visible-evidence audit; full history retained."
+    },
+    {
+      "id": 21,
+      "requirement": "Replace broad copying of internal records with an explicit list of permitted input fields.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/case_dossier.py",
+        "agents/multimodal_judge.py",
+        "tests/test_continuation_repairs.py"
+      ],
+      "validation_note": "Allowlisted, bounded packet with visible-evidence audit; full history retained. Post-D fix withholds unusable witness prose and invalid generated state pairs instead of dropping their failure status."
+    },
+    {
+      "id": 22,
+      "requirement": "Remove duplicated claim contracts, observations and hearing content.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/case_dossier.py",
+        "agents/multimodal_judge.py",
+        "tests/test_continuation_repairs.py"
+      ],
+      "validation_note": "Allowlisted, bounded packet with visible-evidence audit; full history retained."
+    },
+    {
+      "id": 23,
+      "requirement": "Enforce a total token budget—not merely a limit on evidence-item count.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/case_dossier.py",
+        "agents/multimodal_judge.py",
+        "tests/test_continuation_repairs.py"
+      ],
+      "validation_note": "Allowlisted, bounded packet with visible-evidence audit; full history retained."
+    },
+    {
+      "id": 24,
+      "requirement": "Reserve sufficient space for the judge’s structured answer.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/case_dossier.py",
+        "agents/multimodal_judge.py",
+        "tests/test_continuation_repairs.py"
+      ],
+      "validation_note": "Both the 160-character/512-token D contract and wider 320-character/1024-token E contract produced incomplete clauses on all three cases. Total context6144/120s per-generation deadline unchanged; larger allowance alone is not a validated fix."
+    },
+    {
+      "id": 25,
+      "requirement": "Keep the complete history on disk while sending a compact, relevant case packet.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/case_dossier.py",
+        "agents/multimodal_judge.py",
+        "tests/test_continuation_repairs.py"
+      ],
+      "validation_note": "Allowlisted, bounded packet with visible-evidence audit; full history retained."
+    },
+    {
+      "id": 26,
+      "requirement": "Allow omitted evidence to be retrieved before the judge relies on it.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/case_dossier.py",
+        "agents/multimodal_judge.py",
+        "tests/test_continuation_repairs.py"
+      ],
+      "validation_note": "One bounded omitted-evidence retrieval/re-review cycle implemented; protected requested IDs and unread-citation refusal. Full live retrieval qualification pending."
+    },
+    {
+      "id": 27,
+      "requirement": "Record exactly which evidence text the judge actually received.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/case_dossier.py",
+        "agents/multimodal_judge.py",
+        "tests/test_continuation_repairs.py"
+      ],
+      "validation_note": "Allowlisted, bounded packet with visible-evidence audit; full history retained."
+    },
+    {
+      "id": 28,
+      "requirement": "Store the original caption separately and immutably.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Typed extraction and caption-only checks exist; model semantic mistakes remain possible and were observed live."
+    },
+    {
+      "id": 29,
+      "requirement": "Separate **what the caption expresses** from **its possible figurative interpretation**.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Typed extraction and caption-only checks exist; model semantic mistakes remain possible and were observed live."
+    },
+    {
+      "id": 30,
+      "requirement": "Split the oversized contract into a small mandatory claim structure and optional interpretation fields.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Typed extraction and caption-only checks exist; model semantic mistakes remain possible and were observed live."
+    },
+    {
+      "id": 31,
+      "requirement": "Represent subject, predicate, object, negation, quantities, comparison direction and scope explicitly.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Core roles, negation, quantities, modifiers, comparison and scope are explicit; extraction accuracy is not established."
+    },
+    {
+      "id": 32,
+      "requirement": "Attach caption spans to extracted entities and claims.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Exact caption-span provenance is recorded as a diagnostic, not semantic correctness proof."
+    },
+    {
+      "id": 33,
+      "requirement": "Allow genuinely inapplicable fields to be empty rather than forcing invented values.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Nullable truly inapplicable core fields supported. Model errors remain."
+    },
+    {
+      "id": 34,
+      "requirement": "Replace entity-word matching with checks that preserve semantic roles.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Image verification and semantic claim audit replace entity-word matching as positive authority; exact role-swap diagnostics remain."
+    },
+    {
+      "id": 35,
+      "requirement": "Replace broad opposite-word heuristics with relation-specific checks.",
+      "status": "partial",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Typed contrary conditions and semantic audit replace lexical witness repair. Other relation-family heuristics still require qualification."
+    },
+    {
+      "id": 36,
+      "requirement": "Prevent sarcastic reinterpretation from silently changing the proposition being evaluated.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Typed extraction and caption-only checks exist; model semantic mistakes remain possible and were observed live."
+    },
+    {
+      "id": 37,
+      "requirement": "Increase or adapt generation budgets based on measured output requirements.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Typed extraction and caption-only checks exist; model semantic mistakes remain possible and were observed live."
+    },
+    {
+      "id": 38,
+      "requirement": "Qualify schema-constrained generation where supported.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Installed tokenizer/decoder integration passes regression testing, but live clause completeness failed D and E. Syntactic compatibility does not qualify semantic output."
+    },
+    {
+      "id": 39,
+      "requirement": "Repair only defective fields instead of repeatedly regenerating the entire contract.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Typed extraction and caption-only checks exist; model semantic mistakes remain possible and were observed live."
+    },
+    {
+      "id": 40,
+      "requirement": "Measure formatting validity and semantic correctness separately.",
+      "status": "partial",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Schema validity and model semantic checks reported separately; independent human semantic correctness remains unmeasured."
+    },
+    {
+      "id": 41,
+      "requirement": "Qualify the extraction model on held-out cases before deciding whether to replace or fine-tune it.",
+      "status": "qualification_or_research_pending",
+      "evidence": [
+        "agents/claim_extraction.py",
+        "engine/claim_witness.py",
+        "engine/claim_semantics.py",
+        "engine/claim_contract.py",
+        "tests/test_typed_claim_groups.py"
+      ],
+      "validation_note": "Held-out extraction qualification is pending; no replacement/fine-tune justified yet."
+    },
+    {
+      "id": 42,
+      "requirement": "Preserve the distinction between directly observed facts and tentative symbolic interpretations.",
+      "status": "partial",
+      "evidence": [
+        "agents/visual_grounding.py",
+        "engine/debate.py",
+        "engine/evidence_ledger.py"
+      ],
+      "validation_note": "Observation/interpretation and lifecycle metadata exist; localization and observation accuracy still need systematic qualification."
+    },
+    {
+      "id": 43,
+      "requirement": "Attach region or panel references to decisive observations where possible.",
+      "status": "partial",
+      "evidence": [
+        "agents/visual_grounding.py",
+        "engine/debate.py",
+        "engine/evidence_ledger.py"
+      ],
+      "validation_note": "Observation/interpretation and lifecycle metadata exist; localization and observation accuracy still need systematic qualification."
+    },
+    {
+      "id": 44,
+      "requirement": "Bind OCR text to the correct object, region or panel.",
+      "status": "partial",
+      "evidence": [
+        "agents/visual_grounding.py",
+        "engine/debate.py",
+        "engine/evidence_ledger.py"
+      ],
+      "validation_note": "Observation/interpretation and lifecycle metadata exist; localization and observation accuracy still need systematic qualification."
+    },
+    {
+      "id": 45,
+      "requirement": "Record uncertainty instead of treating every generated observation as established fact.",
+      "status": "partial",
+      "evidence": [
+        "agents/visual_grounding.py",
+        "engine/debate.py",
+        "engine/evidence_ledger.py"
+      ],
+      "validation_note": "Observation/interpretation and lifecycle metadata exist; localization and observation accuracy still need systematic qualification."
+    },
+    {
+      "id": 46,
+      "requirement": "Ask targeted follow-up questions about the exact missing relationship.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/visual_grounding.py",
+        "engine/debate.py",
+        "engine/evidence_ledger.py"
+      ],
+      "validation_note": "Observation/interpretation and lifecycle metadata exist; localization and observation accuracy still need systematic qualification."
+    },
+    {
+      "id": 47,
+      "requirement": "Reinspect relevant crops when the original image pass is insufficient.",
+      "status": "partial",
+      "evidence": [
+        "agents/visual_grounding.py",
+        "engine/debate.py",
+        "engine/evidence_ledger.py"
+      ],
+      "validation_note": "Observation/interpretation and lifecycle metadata exist; localization and observation accuracy still need systematic qualification."
+    },
+    {
+      "id": 48,
+      "requirement": "Check the decisive observation against the image—not merely against Agent 1’s description.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/visual_grounding.py",
+        "engine/debate.py",
+        "engine/evidence_ledger.py"
+      ],
+      "validation_note": "Observation/interpretation and lifecycle metadata exist; localization and observation accuracy still need systematic qualification."
+    },
+    {
+      "id": 49,
+      "requirement": "Preserve original observations and explicitly mark corrections or supersession.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "agents/visual_grounding.py",
+        "engine/debate.py",
+        "engine/evidence_ledger.py"
+      ],
+      "validation_note": "Observation/interpretation and lifecycle metadata exist; localization and observation accuracy still need systematic qualification."
+    },
+    {
+      "id": 50,
+      "requirement": "Stop treating word overlap as proof that an observation supports a premise.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/independent_review.py",
+        "engine/semantic_bridge_verifier.py",
+        "tests/test_independent_review.py"
+      ],
+      "validation_note": "Two image-bound answer-blind order-swapped checks; agreement is not established error independence."
+    },
+    {
+      "id": 51,
+      "requirement": "Stop treating the proposing judge’s confidence as independent corroboration.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/independent_review.py",
+        "engine/semantic_bridge_verifier.py",
+        "tests/test_independent_review.py"
+      ],
+      "validation_note": "Two image-bound answer-blind order-swapped checks; agreement is not established error independence."
+    },
+    {
+      "id": 52,
+      "requirement": "Independently check:",
+      "status": "partial",
+      "evidence": [
+        "engine/independent_review.py",
+        "engine/semantic_bridge_verifier.py",
+        "tests/test_independent_review.py"
+      ],
+      "validation_note": "Image/premise, caption relation, entity/scope and order checks implemented. Reliability of figurative bridge prose still needs annotated validation."
+    },
+    {
+      "id": 53,
+      "requirement": "Hide the proposer’s preferred answer during independent verification.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/independent_review.py",
+        "engine/semantic_bridge_verifier.py",
+        "tests/test_independent_review.py"
+      ],
+      "validation_note": "Two image-bound answer-blind order-swapped checks; agreement is not established error independence."
+    },
+    {
+      "id": 54,
+      "requirement": "Evaluate a different model family for verification where practical.",
+      "status": "partial",
+      "evidence": [
+        "engine/independent_review.py",
+        "engine/semantic_bridge_verifier.py",
+        "tests/test_independent_review.py"
+      ],
+      "validation_note": "Qwen-family VLM checks are live; Mistral is a different-family caption/candidate model, not an independent visual verifier. Cross-family VLM comparison remains pending."
+    },
+    {
+      "id": 55,
+      "requirement": "Replace the current artificial position-reversal check with genuinely repeated scoring under swapped presentation order.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/independent_review.py",
+        "engine/semantic_bridge_verifier.py",
+        "tests/test_independent_review.py"
+      ],
+      "validation_note": "Two image-bound answer-blind order-swapped checks; agreement is not established error independence."
+    },
+    {
+      "id": 56,
+      "requirement": "Prevent derived evidence from certifying its own parent proposal.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/independent_review.py",
+        "engine/semantic_bridge_verifier.py",
+        "tests/test_independent_review.py"
+      ],
+      "validation_note": "Two image-bound answer-blind order-swapped checks; agreement is not established error independence."
+    },
+    {
+      "id": 57,
+      "requirement": "Measure false corroborations and false rejections on annotated examples.",
+      "status": "qualification_or_research_pending",
+      "evidence": [
+        "engine/independent_review.py",
+        "engine/semantic_bridge_verifier.py",
+        "tests/test_independent_review.py"
+      ],
+      "validation_note": "No annotated false-corroboration/rejection estimates exist yet; human packet tooling cannot substitute for ratings."
+    },
+    {
+      "id": 58,
+      "requirement": "Exclude superseded, rejected and otherwise inadmissible evidence from decision strength.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/evidence_ledger.py",
+        "engine/review_board.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Recursive admissibility and provenance-component strength; actual correction/rejection trade-off remains a measurement task."
+    },
+    {
+      "id": 59,
+      "requirement": "Check the validity of an evidence item’s ancestors, not just the item itself.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/evidence_ledger.py",
+        "engine/review_board.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Recursive admissibility and provenance-component strength; actual correction/rejection trade-off remains a measurement task."
+    },
+    {
+      "id": 60,
+      "requirement": "Reverify derived conclusions when their supporting observations change.",
+      "status": "partial",
+      "evidence": [
+        "engine/evidence_ledger.py",
+        "engine/review_board.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Changed/superseded ancestry invalidates dependent evidence and checkpoints. Systematic live re-verification behavior still needs qualification."
+    },
+    {
+      "id": 61,
+      "requirement": "Keep shadow-mode proposals completely separate from operational evidence.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/evidence_ledger.py",
+        "engine/review_board.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Recursive admissibility and provenance-component strength; actual correction/rejection trade-off remains a measurement task."
+    },
+    {
+      "id": 62,
+      "requirement": "Prevent duplicate derivatives of one observation from being counted as independent corroboration.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/evidence_ledger.py",
+        "engine/review_board.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Shared transitive roots and exact content-equivalent roots are deduplicated, preserving explicit panel/region bindings. Semantic paraphrase deduplication is not claimed."
+    },
+    {
+      "id": 63,
+      "requirement": "Separate structural/provenance checks from semantic judgments.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/evidence_ledger.py",
+        "engine/review_board.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Recursive admissibility and provenance-component strength; actual correction/rejection trade-off remains a measurement task."
+    },
+    {
+      "id": 64,
+      "requirement": "Record the precise reason a correction was accepted or rejected.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/evidence_ledger.py",
+        "engine/review_board.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Recursive admissibility and provenance-component strength; actual correction/rejection trade-off remains a measurement task."
+    },
+    {
+      "id": 65,
+      "requirement": "Do not weaken thresholds merely to obtain more revisions.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/evidence_ledger.py",
+        "engine/review_board.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Recursive admissibility and provenance-component strength; actual correction/rejection trade-off remains a measurement task."
+    },
+    {
+      "id": 66,
+      "requirement": "Test whether useful corrections are being blocked alongside whether harmful corrections are being accepted.",
+      "status": "partial",
+      "evidence": [
+        "engine/evidence_ledger.py",
+        "engine/review_board.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Correction, harm, useful rejected proposal metrics exist; annotated gate trade-off study pending."
+    },
+    {
+      "id": 67,
+      "requirement": "Generate independent candidate interpretations before exposing them to peer answers.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/candidate_cases.py",
+        "engine/deliberation.py",
+        "engine/batch_runner.py"
+      ],
+      "validation_note": "Independent first-pass arguments, actionable witness routing and at most two tribunal rounds."
+    },
+    {
+      "id": 68,
+      "requirement": "Replace deterministic “advocate” summaries with actual candidate reasoning where needed.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/candidate_cases.py",
+        "engine/deliberation.py",
+        "engine/batch_runner.py"
+      ],
+      "validation_note": "Real Qwen/Mistral first-pass candidate arguments replace fabricated candidate reasoning; deterministic routing summaries remain routing only."
+    },
+    {
+      "id": 69,
+      "requirement": "Identify the strongest competing explanation and the decisive disagreement.",
+      "status": "partial",
+      "evidence": [
+        "engine/candidate_cases.py",
+        "engine/deliberation.py",
+        "engine/batch_runner.py"
+      ],
+      "validation_note": "Candidate alternatives and decisive questions are logged; strongest-alternative quality still unvalidated."
+    },
+    {
+      "id": 70,
+      "requirement": "Do not force disagreement when both candidates reasonably agree.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/candidate_cases.py",
+        "engine/deliberation.py",
+        "engine/batch_runner.py"
+      ],
+      "validation_note": "Independent first-pass arguments, actionable witness routing and at most two tribunal rounds."
+    },
+    {
+      "id": 71,
+      "requirement": "Direct witness questions toward evidence that could resolve the disagreement.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/candidate_cases.py",
+        "engine/deliberation.py",
+        "engine/batch_runner.py"
+      ],
+      "validation_note": "Candidate questions route to caption/image witnesses; typed caption witness rejects semantic audit failures after bounded repair."
+    },
+    {
+      "id": 72,
+      "requirement": "Allow a bounded second round when a specific follow-up can supply useful information.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/candidate_cases.py",
+        "engine/deliberation.py",
+        "engine/batch_runner.py"
+      ],
+      "validation_note": "Independent first-pass arguments, actionable witness routing and at most two tribunal rounds."
+    },
+    {
+      "id": 73,
+      "requirement": "Stop when no new evidence appears, the supported resolution stabilizes, or the budget is exhausted.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/candidate_cases.py",
+        "engine/deliberation.py",
+        "engine/batch_runner.py"
+      ],
+      "validation_note": "Independent first-pass arguments, actionable witness routing and at most two tribunal rounds."
+    },
+    {
+      "id": 74,
+      "requirement": "Preserve unresolved disagreement rather than forcing consensus.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/candidate_cases.py",
+        "engine/deliberation.py",
+        "engine/batch_runner.py"
+      ],
+      "validation_note": "Independent first-pass arguments, actionable witness routing and at most two tribunal rounds."
+    },
+    {
+      "id": 75,
+      "requirement": "Have the judge compare the competing cases, not simply endorse the existing answer.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/candidate_cases.py",
+        "engine/deliberation.py",
+        "engine/batch_runner.py"
+      ],
+      "validation_note": "Independent first-pass arguments, actionable witness routing and at most two tribunal rounds."
+    },
+    {
+      "id": 76,
+      "requirement": "Separate model preference, observation reliability, verifier confidence and final calibrated probability.",
+      "status": "partial",
+      "evidence": [
+        "evaluation/confidence_calibration.py",
+        "evaluation/evaluate_predictions.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Raw scores distinguished from a separate fitted correctness probability interface. No fitted probability currently produced."
+    },
+    {
+      "id": 77,
+      "requirement": "Stop presenting hard-coded reliability weights as measured probabilities.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "evaluation/confidence_calibration.py",
+        "evaluation/evaluate_predictions.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Raw scores remain explicitly uncalibrated. No fitted calibrator or calibrated acceptance policy is claimed."
+    },
+    {
+      "id": 78,
+      "requirement": "Calibrate confidence and acceptance policies using disjoint development data.",
+      "status": "qualification_or_research_pending",
+      "evidence": [
+        "evaluation/confidence_calibration.py",
+        "evaluation/evaluate_predictions.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Disjoint, input/method-bound sigmoid calibration utility implemented and score-field integration repaired; fitting and acceptance-policy selection are pending."
+    },
+    {
+      "id": 79,
+      "requirement": "Freeze thresholds before final testing.",
+      "status": "qualification_or_research_pending",
+      "evidence": [
+        "evaluation/confidence_calibration.py",
+        "evaluation/evaluate_predictions.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Current heuristic gates were not relaxed. Final research configuration/threshold freeze awaits development qualification."
+    },
+    {
+      "id": 80,
+      "requirement": "Report calibration, class-specific recall and harmful revision rates.",
+      "status": "partial",
+      "evidence": [
+        "evaluation/confidence_calibration.py",
+        "evaluation/evaluate_predictions.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Classification, calibration diagnostics and harm metrics exist; calibrated held-out results absent."
+    },
+    {
+      "id": 81,
+      "requirement": "Keep genuine uncertainty distinct from infrastructure failure.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "evaluation/confidence_calibration.py",
+        "evaluation/evaluate_predictions.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Raw scores remain explicitly uncalibrated. No fitted calibrator or calibrated acceptance policy is claimed."
+    },
+    {
+      "id": 82,
+      "requirement": "Preserve the rule that missing support alone does not establish contradiction.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "evaluation/confidence_calibration.py",
+        "evaluation/evaluate_predictions.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Raw scores remain explicitly uncalibrated. No fitted calibrator or calibrated acceptance policy is claimed."
+    },
+    {
+      "id": 83,
+      "requirement": "Generate the final explanation from the accepted decision record.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/final_artifact.py",
+        "evaluation/human_review.py",
+        "tests/test_continuation_repairs.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Accepted-record explanation, admissible ancestors and fallback disclosure; no human faithfulness results yet."
+    },
+    {
+      "id": 84,
+      "requirement": "Include:",
+      "status": "partial",
+      "evidence": [
+        "engine/final_artifact.py",
+        "evaluation/human_review.py",
+        "tests/test_continuation_repairs.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Original claim, bindings, hypotheses, alternatives, verification, admissible ancestors and fallback stored. Completeness is explicitly warned, not asserted when missing."
+    },
+    {
+      "id": 85,
+      "requirement": "Check that citations support the statements attached to them.",
+      "status": "partial",
+      "evidence": [
+        "engine/final_artifact.py",
+        "evaluation/human_review.py",
+        "tests/test_continuation_repairs.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Citations checked for visibility, ancestry and image-bound proposal semantics. Full statement-level faithfulness needs independent human review."
+    },
+    {
+      "id": 86,
+      "requirement": "Prevent explanations from relying on superseded or unseen evidence.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/final_artifact.py",
+        "evaluation/human_review.py",
+        "tests/test_continuation_repairs.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Accepted-record explanation, admissible ancestors and fallback disclosure; no human faithfulness results yet."
+    },
+    {
+      "id": 87,
+      "requirement": "Explain rejected revisions as well as accepted revisions.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/final_artifact.py",
+        "evaluation/human_review.py",
+        "tests/test_continuation_repairs.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Accepted-record explanation, admissible ancestors and fallback disclosure; no human faithfulness results yet."
+    },
+    {
+      "id": 88,
+      "requirement": "Evaluate explanations with blinded human review.",
+      "status": "qualification_or_research_pending",
+      "evidence": [
+        "engine/final_artifact.py",
+        "evaluation/human_review.py",
+        "tests/test_continuation_repairs.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Blinded image-preserving two-rater packet and agreement tooling added; ratings not yet collected. D's three-case blinded image-preserving packets generated successfully; ratings remain empty."
+    },
+    {
+      "id": 89,
+      "requirement": "Add evidence-removal and controlled counterfactual tests.",
+      "status": "partial",
+      "evidence": [
+        "engine/final_artifact.py",
+        "evaluation/human_review.py",
+        "tests/test_continuation_repairs.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Evidence-removal, relation-counterfactual and wrong-image binding regressions exist. Controlled image-edit/model-response study remains pending."
+    },
+    {
+      "id": 90,
+      "requirement": "Keep readable justifications concise while preserving the detailed audit record.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/final_artifact.py",
+        "evaluation/human_review.py",
+        "tests/test_continuation_repairs.py",
+        "tests/test_research_controls.py"
+      ],
+      "validation_note": "Accepted-record explanation, admissible ancestors and fallback disclosure; no human faithfulness results yet."
+    },
+    {
+      "id": 91,
+      "requirement": "Make the API, sequential runner and stagewise runner use the same reasoning logic.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "figdebate.py",
+        "engine/orchestrator.py",
+        "engine/batch_runner.py",
+        "engine/cache_identity.py",
+        "engine/stage_checkpoint.py",
+        "engine/run_integrity.py"
+      ],
+      "validation_note": "Canonical runner, input-bound stage identities, read-only upstream reuse, explicit control configuration."
+    },
+    {
+      "id": 92,
+      "requirement": "Forward all supported settings correctly; reject unsupported combinations explicitly.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "figdebate.py",
+        "engine/orchestrator.py",
+        "engine/batch_runner.py",
+        "engine/cache_identity.py",
+        "engine/stage_checkpoint.py",
+        "engine/run_integrity.py"
+      ],
+      "validation_note": "Canonical runner, input-bound stage identities, read-only upstream reuse, explicit control configuration. Live cached-control finalization exposed an UnboundLocalError; module-scope import fixed, full cached-runner regression passes."
+    },
+    {
+      "id": 93,
+      "requirement": "Fix the sequential debate-disabled configuration mismatch.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "figdebate.py",
+        "engine/orchestrator.py",
+        "engine/batch_runner.py",
+        "engine/cache_identity.py",
+        "engine/stage_checkpoint.py",
+        "engine/run_integrity.py"
+      ],
+      "validation_note": "Canonical runner, input-bound stage identities, read-only upstream reuse, explicit control configuration."
+    },
+    {
+      "id": 94,
+      "requirement": "Record complete relevant source, dependency, prompt, schema and dataset identities.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "figdebate.py",
+        "engine/orchestrator.py",
+        "engine/batch_runner.py",
+        "engine/cache_identity.py",
+        "engine/stage_checkpoint.py",
+        "engine/run_integrity.py"
+      ],
+      "validation_note": "Canonical runner, input-bound stage identities, read-only upstream reuse, explicit control configuration."
+    },
+    {
+      "id": 95,
+      "requirement": "Include uncommitted source changes in experiment identification.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "figdebate.py",
+        "engine/orchestrator.py",
+        "engine/batch_runner.py",
+        "engine/cache_identity.py",
+        "engine/stage_checkpoint.py",
+        "engine/run_integrity.py"
+      ],
+      "validation_note": "Canonical runner, input-bound stage identities, read-only upstream reuse, explicit control configuration."
+    },
+    {
+      "id": 96,
+      "requirement": "Reject duplicate sample identifiers during comparisons.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "figdebate.py",
+        "engine/orchestrator.py",
+        "engine/batch_runner.py",
+        "engine/cache_identity.py",
+        "engine/stage_checkpoint.py",
+        "engine/run_integrity.py"
+      ],
+      "validation_note": "Canonical runner, input-bound stage identities, read-only upstream reuse, explicit control configuration."
+    },
+    {
+      "id": 97,
+      "requirement": "Verify identical images, captions and intended configuration differences—not just matching IDs and labels.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "figdebate.py",
+        "engine/orchestrator.py",
+        "engine/batch_runner.py",
+        "engine/cache_identity.py",
+        "engine/stage_checkpoint.py",
+        "engine/run_integrity.py"
+      ],
+      "validation_note": "Comparison checks image/caption/group identity, duplicate IDs and declared configuration differences; fresh paired experiments still pending."
+    },
+    {
+      "id": 98,
+      "requirement": "Use stage-specific cache fingerprints so unchanged upstream outputs can be shared fairly.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "figdebate.py",
+        "engine/orchestrator.py",
+        "engine/batch_runner.py",
+        "engine/cache_identity.py",
+        "engine/stage_checkpoint.py",
+        "engine/run_integrity.py"
+      ],
+      "validation_note": "Live independent-vote run reused upstream checkpoints and recorded zero new generations. Final report export failed and was fixed/tested; clean latest-source qualification still pending."
+    },
+    {
+      "id": 99,
+      "requirement": "Invalidate dependent checkpoints when relevant inputs or code change.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "figdebate.py",
+        "engine/orchestrator.py",
+        "engine/batch_runner.py",
+        "engine/cache_identity.py",
+        "engine/stage_checkpoint.py",
+        "engine/run_integrity.py"
+      ],
+      "validation_note": "Canonical runner, input-bound stage identities, read-only upstream reuse, explicit control configuration."
+    },
+    {
+      "id": 100,
+      "requirement": "Compare the improved system against:",
+      "status": "partial",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Base/hearing/judge/full and ablation recipes plus two-agent strict vote and two-round conventional debate implemented. Compute-matched voting/self-consistency and full comparisons remain pending."
+    },
+    {
+      "id": 101,
+      "requirement": "Remove individual components to measure their contribution.",
+      "status": "partial",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Component-removal recipes exist; experiments not run."
+    },
+    {
+      "id": 102,
+      "requirement": "Report corrections **and harms**, not simply the number of changed predictions.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Comparison infrastructure and protocol are not completed comparisons or evidence of benefit."
+    },
+    {
+      "id": 103,
+      "requirement": "Separate the full tribunal gain from the judge’s incremental gain.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Comparison infrastructure and protocol are not completed comparisons or evidence of benefit."
+    },
+    {
+      "id": 104,
+      "requirement": "Report accuracy, macro-F1, per-category results, coverage, calibration and explanation quality.",
+      "status": "partial",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Primary accuracy now counts all file records, including missing outputs; contract coverage separate. Partial-run completeness disclosed. Human explanation and calibrated results pending."
+    },
+    {
+      "id": 105,
+      "requirement": "Use paired, image-group-aware uncertainty estimates.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Comparison infrastructure and protocol are not completed comparisons or evidence of benefit."
+    },
+    {
+      "id": 106,
+      "requirement": "Run prespecified seeds for stochastic configurations.",
+      "status": "partial",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Three-seed recipes exist but no completed stochastic multi-seed experiment is claimed."
+    },
+    {
+      "id": 107,
+      "requirement": "Select an adequately sized held-out evaluation; stop treating ten-case gains as general performance evidence.",
+      "status": "partial",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "No adequately powered untouched held-out study has been run; small development qualification is explicitly excluded from generalization claims."
+    },
+    {
+      "id": 108,
+      "requirement": "Record unsuccessful variants and avoid selecting configurations using final-test results.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Comparison infrastructure and protocol are not completed comparisons or evidence of benefit."
+    },
+    {
+      "id": 109,
+      "requirement": "Define the desired practical improvement before testing.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "evaluation/research_protocol.py",
+        "engine/control_conditions.py",
+        "evaluation/compare_runs.py",
+        "evaluation/grouped_metrics.py",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Prespecified planning target: five-point absolute gain, image-group CI above zero and benefit over qualified simpler controls; not a promised outcome."
+    },
+    {
+      "id": 110,
+      "requirement": "Use sequential model loading, compact contexts and targeted crops.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/runtime_accounting.py",
+        "models/judge_model.py",
+        "docs/STRUCTURED_OUTPUT_ATTRIBUTION.md",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Consumer-GPU qualification and attribution in progress. Negative results retained; no research-readiness claim."
+    },
+    {
+      "id": 111,
+      "requirement": "Qualify consumer-scale quantized models before considering larger replacements.",
+      "status": "partial",
+      "evidence": [
+        "engine/runtime_accounting.py",
+        "models/judge_model.py",
+        "docs/STRUCTURED_OUTPUT_ATTRIBUTION.md",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Existing quantized 4B/7B models exercised on RTX4060 Laptop 8GB; systematic consumer-runtime qualification remains incomplete."
+    },
+    {
+      "id": 112,
+      "requirement": "Measure peak memory, runtime, model calls and token consumption.",
+      "status": "partial",
+      "evidence": [
+        "engine/runtime_accounting.py",
+        "models/judge_model.py",
+        "docs/STRUCTURED_OUTPUT_ATTRIBUTION.md",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Executed generation requests/tokens (including arbiter and retries) are recorded separately from cached work; scoring-forward FLOPs and complete per-model peak-memory accounting remain incomplete."
+    },
+    {
+      "id": 113,
+      "requirement": "Add regression tests for every confirmed defect and replay tests using real model outputs.",
+      "status": "partial",
+      "evidence": [
+        "engine/runtime_accounting.py",
+        "models/judge_model.py",
+        "docs/STRUCTURED_OUTPUT_ATTRIBUTION.md",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "321 regressions pass, including cached-control finalization, invalid-witness filtering and failure/interruption status persistence. Real outputs D/E retained; full defect and semantic replay coverage remains incomplete."
+    },
+    {
+      "id": 114,
+      "requirement": "Retain saved papers, citations and exact adaptation records.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/runtime_accounting.py",
+        "models/judge_model.py",
+        "docs/STRUCTURED_OUTPUT_ATTRIBUTION.md",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Ten PDFs/read copies/metadata/BibTeX archived with hashes; LMFE adapter separately attributed under MIT. Citations do not grant republication rights."
+    },
+    {
+      "id": 115,
+      "requirement": "Attribute existing debate methods; position novelty around FigDebate’s **figurative claim handling, targeted evidence disputes, independent verification and faithful revision traces**.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/runtime_accounting.py",
+        "models/judge_model.py",
+        "docs/STRUCTURED_OUTPUT_ATTRIBUTION.md",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Novelty framed as figurative claim/evidence dispute/verification/trace combination, not first debate or multimodal debate."
+    },
+    {
+      "id": 116,
+      "requirement": "Make paper claims match the measured implementation—including limitations and negative results.",
+      "status": "implemented_validation_in_progress",
+      "evidence": [
+        "engine/runtime_accounting.py",
+        "models/judge_model.py",
+        "docs/STRUCTURED_OUTPUT_ATTRIBUTION.md",
+        "docs/RESEARCH_VALIDATION_PROTOCOL.md"
+      ],
+      "validation_note": "Saved handoff explicitly states full116-item objective incomplete, no gain and judge/witness qualification failure. Negative results not relabelled successful."
+    }
+  ],
+  "validation_snapshot": {
+    "regression_tests_passed": 321,
+    "accuracy_gain_established": false,
+    "held_out_evaluation_completed": false,
+    "human_ratings_completed": false,
+    "upstream_rebuild_completed": false,
+    "dataset_scope_changed": false,
+    "live_d": {
+      "cases": 3,
+      "baseline_correct": 2,
+      "final_correct": 2,
+      "accepted_corrections": 0,
+      "complete_judge_contracts": 0,
+      "valid_caption_witnesses": 0,
+      "generation_requests": 74,
+      "wall_seconds": 957.7368,
+      "performance_claim_allowed": false
+    },
+    "replay_e": {
+      "cases": 3,
+      "valid_review_contracts": 0,
+      "generation_requests": 6,
+      "maximum_allocated_gb": 7.0644,
+      "oom_recovery": false,
+      "full_pipeline_run": false
+    }
+  }
+}

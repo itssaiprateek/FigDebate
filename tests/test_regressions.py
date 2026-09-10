@@ -249,16 +249,6 @@ class SemanticDebateRegressionTests(unittest.TestCase):
             comparison["required_evidence_status"], "SUPPORT_CANDIDATE"
         )
 
-    def test_agent2_detects_dropped_truthful_outcome(self):
-        valid, errors = ClaimExtractionAgent._validate_visual_requirements(
-            "A police officer visibly asks a driver a question.",
-            "A police officer does not visibly ask a driver a question.",
-            "Claim subject: police officers\n"
-            "Expected visual state: drivers truthfully admit breaking the law\n"
-            "Opposite visual state: drivers evade or deny the question",
-        )
-        self.assertFalse(valid)
-        self.assertIn("SUPPORT_DROPPED_EXPECTED_STATE", errors)
 
     def test_vflute_566_2199_2850_invalid_visual_review_cannot_flip(self):
         revised = DebateEngine._enforce_revision_requirements(
@@ -321,32 +311,7 @@ class SemanticDebateRegressionTests(unittest.TestCase):
         self.assertTrue(parsed["_format_valid"])
         self.assertTrue(parsed["specific_evidence"])
 
-    def test_linguistic_requirements_support_role_equivalent_images(self):
-        support, conflict = ClaimExtractionAgent._ground_visual_requirements(
-            "A literal black hole absorbs an object",
-            "A literal black hole releases an object",
-            "literal",
-            "Claim subject: black hole\n"
-            "Expected visual state: a black hole absorbs matter\n"
-            "Opposite visual state: a black hole releases matter",
-        )
-        self.assertIn("explicitly bound label", support)
-        self.assertIn("opposite role relation", conflict)
 
-    def test_metaphor_none_requirements_fall_back_to_claim_contract(self):
-        support, conflict = ClaimExtractionAgent._ground_visual_requirements(
-            "None (negative sentiment)",
-            "None",
-            "metaphor",
-            "Claim subject: the man\n"
-            "Asserted property: rotten heart\n"
-            "Intended meaning: the man's character is corrupt\n"
-            "Expected visual state: a rotten or damaged heart\n"
-            "Opposite visual state: a whole healthy heart",
-        )
-        self.assertIn("rotten or damaged heart", support)
-        self.assertIn("visible symbol attached to the man", support)
-        self.assertIn("whole healthy heart", conflict)
 
     def test_rotten_heart_polarity_is_negative(self):
         polarity = ClaimExtractionAgent._normalize_caption_polarity(

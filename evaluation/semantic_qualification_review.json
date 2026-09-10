@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "purpose": "Independent annotation packet, not training data or final benchmark",
+  "dataset_modified": false,
+  "status": "UNANNOTATED_DO_NOT_USE_AS_GOLD",
+  "instructions": "Two independent human reviewers must assess representation preservation and hypothetical condition relations. Do not automatically flip labels after role swaps. Record ambiguity, adjudicate disagreements, and freeze the completed packet before model evaluation. All expected outcomes are intentionally null.",
+  "reviewers": [],
+  "cases": [
+    {"id": "roles", "caption": "The cat chases the dog.", "proposed_support": "The dog chases the cat.", "proposed_conflict": "The cat is resting and does not chase the dog.", "expected": null, "reviews": []},
+    {"id": "negation", "caption": "The person is not opening the door.", "proposed_support": "The person leaves the door closed without opening it.", "proposed_conflict": "The person opens the door.", "expected": null, "reviews": []},
+    {"id": "quantity", "caption": "Exactly three cups remain on the table.", "proposed_support": "Four cups remain on the table.", "proposed_conflict": "Only two cups remain on the table.", "expected": null, "reviews": []},
+    {"id": "degree", "caption": "She solved the puzzle with considerable difficulty.", "proposed_support": "She solved the puzzle.", "proposed_conflict": "She solved the puzzle effortlessly.", "expected": null, "reviews": []},
+    {"id": "scope", "caption": "In the final panel, the bird has left the cage.", "proposed_support": "The first panel shows a bird outside a cage.", "proposed_conflict": "The final panel shows the bird still inside the closed cage.", "expected": null, "reviews": []},
+    {"id": "idiom", "caption": "After the rejection, her spirits sank.", "proposed_support": "She became dejected after being rejected.", "proposed_conflict": "She remained cheerful and undiscouraged after being rejected.", "expected": null, "reviews": []},
+    {"id": "sarcasm", "caption": "Wonderful, another three-hour delay.", "proposed_support": "The speaker is expressing literal pleasure about the delay.", "proposed_conflict": "The speaker is expressing frustration about the delay.", "expected": null, "reviews": []},
+    {"id": "bound_comparison", "caption": "The red plant is taller than the blue plant, but shorter than the yellow plant.", "proposed_support": "The red plant is taller than the yellow plant.", "proposed_conflict": "The blue plant is taller than the red plant.", "expected": null, "reviews": []}
+  ]
+}

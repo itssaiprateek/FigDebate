@@ -5,8 +5,15 @@ def _values(items):
     return list(items)
 
 
-def accuracy_score(y_true, y_pred):
+def _paired(y_true, y_pred):
     truth, predicted = _values(y_true), _values(y_pred)
+    if not truth or len(truth) != len(predicted):
+        raise ValueError("Metrics require nonempty, equal-length truth and prediction arrays")
+    return truth, predicted
+
+
+def accuracy_score(y_true, y_pred):
+    truth, predicted = _paired(y_true, y_pred)
     return sum(a == b for a, b in zip(truth, predicted)) / len(truth)
 
 
@@ -14,7 +21,7 @@ def confusion_matrix(y_true, y_pred, labels):
     labels = list(labels)
     positions = {label: index for index, label in enumerate(labels)}
     matrix = [[0 for _ in labels] for _ in labels]
-    for truth, predicted in zip(_values(y_true), _values(y_pred)):
+    for truth, predicted in zip(*_paired(y_true, y_pred)):
         if truth in positions and predicted in positions:
             matrix[positions[truth]][positions[predicted]] += 1
     try:
@@ -32,7 +39,7 @@ class _Matrix(list):
 def precision_recall_fscore_support(
     y_true, y_pred, labels, zero_division=0
 ):
-    truth, predicted = _values(y_true), _values(y_pred)
+    truth, predicted = _paired(y_true, y_pred)
     precisions, recalls, scores, supports = [], [], [], []
     for label in labels:
         true_positive = sum(
@@ -77,7 +84,7 @@ def f1_score(y_true, y_pred, labels, average="macro", zero_division=0):
 
 
 def balanced_accuracy_score(y_true, y_pred):
-    truth, predicted = _values(y_true), _values(y_pred)
+    truth, predicted = _paired(y_true, y_pred)
     labels = sorted(set(truth))
     recalls = []
     for label in labels:

@@ -35,6 +35,8 @@ REQUIRED_MODULES = {
     "safetensors": "safetensors",
     "sklearn": "scikit-learn",
     "sentencepiece": "sentencepiece",
+    "llguidance": "llguidance",
+    "pydantic": "pydantic",
 }
 EXPECTED_VERSIONS = {
     "torch": "2.5.1+cu121",
@@ -49,6 +51,8 @@ EXPECTED_VERSIONS = {
     "safetensors": "0.8.0",
     "scikit-learn": "1.9.0",
     "sentencepiece": "0.2.2",
+    "llguidance": "1.8.0",
+    "pydantic": "2.13.5",
 }
 REQUIRED_DATA = (
     "dataset/data/processed/vflute_train_dev50.pkl",

@@ -9,9 +9,9 @@ It runs:
 
     image -> Agent 1 visual evidence
     caption -> Agent 2 immutable claim frame
-    both -> Evidence Comparator -> Arbiter -> selective two-level Debate
-         -> deterministic Review Board -> optional independent Qwen Judge
-         -> optional bounded Tribunal -> deterministic revision gate
+    both -> Evidence Comparator -> Arbiter -> uncertainty router
+         -> optional targeted witness hearing -> checkpointed Qwen supervisor
+         -> deterministic evidence and revision gate
          -> prediction and paper artifacts
 
 The default `stagewise` mode loads Qwen3-VL 4B Instruct once for the visual stage and Mistral
@@ -20,9 +20,9 @@ keeping the two large models separate in GPU memory.
 
 The judge is disabled by default, so established runs keep the same model loads,
 decision path, and predictions. Shadow and appellate load Qwen after the debate.
-Mediated mode loads Qwen once before debate. Tribunal mode uses the same
-label-blind question plan, reviews both agent answers, and permits at most one
-targeted follow-up. Large GPU runtimes are unloaded between every stage.
+Mediated mode loads Qwen once before debate. Tribunal mode reviews one complete,
+gold-free case dossier after the optional targeted hearing. There is no second
+judge round. Large GPU runtimes are unloaded between stages.
 
 Quick verification
 ------------------
@@ -68,14 +68,14 @@ Current reasoning flow
     caption -> structured intended claim and relation
     relation candidates -> generic NLI diagnostic routing (never visual proof)
     initial Arbiter -> label-blind evidence-risk score
-    tribunal Level 1 -> deterministic pre-hearing dossier (no model vote)
-    tribunal Level 2 -> targeted Agent 1/Agent 2 witness hearing
+    uncertainty router -> decide whether a targeted hearing is necessary
+    targeted hearing -> one atomic question per relevant witness
     procedural feedback -> diagnostic question and debate routing, never a label
     deterministic Review Board -> accept only stronger current-image evidence
     optional Qwen judge -> independent raw-image and full-debate audit
     appellate gate -> require stronger cited decision-grade ledger evidence
     mediated mode -> Qwen issue map -> targeted agent checks -> verified gate
-    tribunal mode -> pre-hearing -> both witnesses -> review -> optional follow-up
+    tribunal mode -> route -> optional witnesses -> one full-dossier review
                   -> independent verification -> deterministic Review Board
     final binary decision -> complete audit and paper artifacts
 
@@ -131,23 +131,51 @@ questions; Qwen's provisional vote and rationale remain hidden from them:
     python run_figdebate.py --num-samples 10 --judge-mode mediated --judge-scope escalated
 
 Tribunal mode replaces the active two-level model debate with a deterministic
-pre-hearing audit and one targeted witness hearing. The legacy debate remains
-available in non-tribunal modes for controlled ablation. Tribunal permits at
-most one targeted follow-up:
+uncertainty route, at most one targeted witness hearing, and one checkpointed
+supervisor review. The legacy debate remains available in non-tribunal modes
+for controlled ablation:
 
     python run_figdebate.py --num-samples 10 --judge-mode tribunal --judge-scope escalated
 
-The judge never sees the gold label or the current Arbiter label. A Qwen answer
-cannot become evidence by itself. A proposed label change is accepted only if
-the response is valid JSON, confidence is at least 0.75, every citation belongs
-to the current sample, and the judge cites independently verified evidence whose
-provenance-weighted strength exceeds the current direction. The validated Agent
-1 observation, Agent 2 caption audit, and tribunal relation can jointly create
-one provenance-linked verified relation; judge prose alone cannot add visual
-evidence. Same-label confirmations are logged separately and cannot raise
-confidence or count as accepted revisions. The ordinary Review Board
-still rejects the proposal when opposing verified evidence is stronger. See `docs/judge_architecture.md` and
+The semantic bridge is enabled in shadow mode by default. It records the
+judge's best semantic judgment, explicit visual and caption premises, bridge
+family, counter-interpretation, and deterministic verification result without
+letting the bridge change a prediction:
+
+    python run_figdebate.py --num-samples 10 --judge-mode tribunal --judge-scope escalated --semantic-bridge-mode shadow --hardware-profile auto
+
+Only after the paired shadow report shows zero harmful corroborated proposals,
+run the controlled acceptance mode. Even here, only `BRIDGE_CORROBORATED`
+records may reach the unchanged Review Board:
+
+    python run_figdebate.py --num-samples 10 --judge-mode tribunal --judge-scope escalated --semantic-bridge-mode corroborated --hardware-profile auto
+
+`--hardware-profile` can be fixed to `8gb`, `12gb`, or `16gb` for a reproducible
+ablation. `auto` records the selected measured profile in `run_config.json` and
+every prediction row.
+
+The judge never sees the gold label or the current Arbiter label. Its durable
+memory is a serialized case dossier containing the caption, semantic agent
+outputs, comparator state, hearing, ordered history, and every active evidence
+ID. To fit 8 GB GPUs, lower-priority entries use a compact index; they are not
+deleted. The judge model is loaded once for its batch stage rather than kept in
+VRAM beside the other large models. A Qwen answer cannot become evidence by
+itself. A proposed label change is accepted only if the semantic contract is
+valid, confidence is at least 0.75, every citation belongs to the current
+sample, and independently verified evidence is stronger than the current
+direction. Cosmetic optional-field defects may be normalized, but unknown
+citations, changed caption meaning, hallucinated evidence, or direction
+mismatches remain fatal. Same-label confirmations are diagnostic only. The
+ordinary Review Board still rejects the proposal when opposing verified
+evidence is stronger. See `docs/judge_architecture.md` and
 `docs/tribunal_implementation.md` for the contracts and rollout protocol.
+
+On the 8 GB profiles, judge decoding starts without a KV cache. This preserves
+the identical image, prompt, deterministic decoding, and output-token budget
+while using less VRAM at the cost of speed. CUDA is synchronized at each
+generation boundary so an OOM is attributed to the correct sample. Only after
+a genuine cache-free OOM may the non-paper 8 GB profile retry a smaller
+full-frame pixel budget; that fallback is recorded in generation diagnostics.
 
 Run integrity
 -------------
@@ -156,7 +184,9 @@ An existing run directory cannot be reused accidentally. `--resume` verifies
 the dataset, seed, modes, model revisions, feedback checksum, source checksum,
 and evidence-ledger version before processing any missing samples.
 `progress.json` and `predictions.csv` are atomically refreshed after every
-completed sample, so an interrupted run clearly reports its last durable result.
+completed sample. Intermediate visual, initial-reasoning, and tribunal-round
+records are also written under `stage_checkpoints`; `--resume` restores them
+before loading a model whenever that complete stage already exists.
 
 Paired ablation comparison
 --------------------------
@@ -167,8 +197,8 @@ The runner prints a unique run folder, for example:
 
     outputs\run_YYYYMMDD_HHMMSS
 
-That folder contains `records.jsonl` (durable per-sample checkpoint),
-`predictions.csv`, `run_config.json`, and `paper_assets`.
+That folder contains `records.jsonl`, `predictions.csv`, `run_config.json`,
+`stage_checkpoints`, `semantic_bridge_analysis.csv`, and `paper_assets`.
 
 Resume an interrupted run
 -------------------------
@@ -227,6 +257,23 @@ See `docs/agent1_qwen3vl.md` for the Agent 1 contract and acceptance protocol.
 Paper protocol
 --------------
 
+Official cross-machine runs must use the process-start reproducibility launcher,
+the fixed paper profile, and one shared manifest. The first run creates
+`sample_manifest.json`; every larger or repeated run should pass that file:
+
+    python run_reproducible.py --dataset-split vflute_train_dev50 --num-samples 10 --selection-strategy stratified --seed 42 --hardware-profile paper-8gb --judge-mode tribunal --judge-scope escalated --semantic-bridge-mode corroborated --run-dir outputs\paper_10
+
+    python run_reproducible.py --dataset-split vflute_train_dev50 --num-samples 30 --selection-strategy stratified --seed 42 --sample-manifest outputs\paper_10\sample_manifest.json --hardware-profile paper-8gb --judge-mode tribunal --judge-scope escalated --semantic-bridge-mode corroborated --run-dir outputs\paper_30
+
+Compare shared cases for order, size, repeat, or resume invariance:
+
+    python -m evaluation.check_reproducibility outputs\paper_10\predictions.csv outputs\paper_30\predictions.csv outputs\paper_10_vs_30
+
+`paper-8gb` deliberately uses the same resolution and token budgets on 8 GB and
+larger GPUs. Larger hardware may improve speed but cannot silently change model
+inputs. `auto` remains useful for exploratory work but is not a paper-comparison
+profile.
+
 Use separate run directories and the same seed/selection strategy:
 
     1. Baseline ablation: --debate-mode disabled --feedback-mode disabled
@@ -238,7 +285,9 @@ Never calibrate on `vflute_test`. Compare matched runs with
 `python -m evaluation.compare_runs`; report accuracy, balanced accuracy,
 macro F1, debate corrections/harms, feedback corrections/harms, claim-contract
 validity, directional evidence coverage, calibration, explanation diagnostics,
-and stage/runtime profiles.
+stage/runtime profiles, useful-correction recall, acceptance precision, and
+position-decile degradation. Report zero *observed* harms with a confidence
+bound rather than claiming an unmeasured mathematical zero.
 
 Feedback files created before memory schema version 2 contain legacy
 gold-direction fields and must not be reused. Rebuild `calibrated_feedback.json`
@@ -246,6 +295,13 @@ with the current runner before a verified run.
 
 Project structure
 -----------------
+
+For the current official-split workflow, including exact replay, seeded random
+subsets, source/phenomenon filters, reference explanations and before/after code
+comparisons, see [Official split workflow](docs/OFFICIAL_SPLIT_WORKFLOW.md).
+New selections default to random; replay inherits the saved strategy/seed.
+Run purpose defaults to diagnostic. Existing three-category split membership
+and gold annotations are unchanged.
 
     agents/          visual grounding and claim extraction
     arbiter/         final language-model decision component

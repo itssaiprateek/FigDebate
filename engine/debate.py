@@ -1,6 +1,7 @@
 from models.vision_model import Qwen3VLVisionModel
 from models.language_model import MistralModel
 from copy import deepcopy
+from engine.output_contracts import CORE
 import time
 import re
 
@@ -11,6 +12,7 @@ from arbiter.arbiter import Arbiter
 from comparators.evidence_comparator import compare
 
 from engine.feedback_loop import FeedbackLoop
+from engine.reproducibility import seed_stage
 from engine.evidence_verifier import AtomicEvidenceVerifier, merge_verified_evidence
 from engine.evidence_ledger import (
     add_cross_agent_verified_relation,
@@ -22,6 +24,7 @@ from engine.evidence_ledger import (
     build_evidence_ledger,
     evidence_lifecycle_summary,
     is_active_evidence,
+    is_admissible_evidence,
 )
 from engine.gpu_manager import GPUManager
 from engine.review_board import attach_final_review, review_revision
@@ -231,7 +234,7 @@ class DebateEngine:
             by_relation[relation] = [
                 item for item in (evidence_ledger or [])
                 if item.get("grounded", False)
-                and is_active_evidence(item)
+                and is_admissible_evidence(evidence_ledger, item)
                 and item.get("relation") == relation
                 and (
                     item.get("decision_grade", False)
@@ -282,7 +285,7 @@ class DebateEngine:
                 {"id": item.get("id"), "text": item.get("text")}
                 for item in (evidence_ledger or [])
                 if item.get("grounded", False)
-                and is_active_evidence(item)
+                and is_admissible_evidence(evidence_ledger, item)
                 and item.get("relation") == relation
                 and (
                     item.get("decision_grade", False)
@@ -315,7 +318,7 @@ class DebateEngine:
             if (
                 not item.get("grounded", False)
                 or not item.get("id")
-                or not is_active_evidence(item)
+                or not is_admissible_evidence(evidence_ledger, item)
             ):
                 continue
             if item["id"] not in catalog_ids:
@@ -405,7 +408,7 @@ class DebateEngine:
             if (
                 item_relation in by_relation
                 and item.get("grounded", False)
-                and is_active_evidence(item)
+                and is_admissible_evidence(evidence_ledger, item)
                 and decision_grade
                 and item.get("id")
             ):
@@ -585,7 +588,9 @@ class DebateEngine:
         if visual_review_cases:
             try:
                 load_started = time.time()
-                vision_runtime = Qwen3VLVisionModel()
+                vision_runtime = Qwen3VLVisionModel(
+                    hardware_profile=getattr(self, "hardware_profile", "8gb")
+                )
                 vision_load_seconds = time.time() - load_started
                 agent1 = VisualGroundingAgent(vision_runtime)
                 for case in visual_review_cases:
@@ -674,22 +679,7 @@ class DebateEngine:
                         recovered_visual_outputs[case["key"]] = recovered_visual
                         recovered_comparisons[case["key"]] = recovered_comparison
                     critique_started = time.time()
-                    challenge_prompt = self.build_agent1_challenge_prompt(
-                            case["visual_output"],
-                            case["decision"],
-                            case.get("comparison"),
-                            case.get("mediation_plan"),
-                        )
-                    if case.get("tribunal_hearing", False):
-                        challenge_prompt += (
-                            "\nTRIBUNAL_VISUAL_WITNESS_ONLY: Report the direct "
-                            "observation only. Do not assign its semantic relation "
-                            "to the caption; the tribunal performs that step.\n"
-                        )
-                    critique = agent1.critique(
-                        case["image"],
-                        challenge_prompt,
-                    )
+                    critique = self._run_visual_questions(agent1, case)
                     critique["_seconds"] = time.time() - critique_started
                     agent1_critiques[case["key"]] = critique
             finally:
@@ -731,19 +721,13 @@ class DebateEngine:
                     case["decision"].get("label"),
                 )
                 original_ledger = case.get("evidence_ledger", []) or []
-                review_ledger = add_visual_witness_evidence(
-                    original_ledger, agent1_critique
-                )
-                if (
-                    int(case.get("debate_level", 2)) >= 2
-                    and agent1_critique.get("review_method")
-                    != "independent_cached_evidence_review"
-                ):
-                    review_ledger = add_visual_reinspection_evidence(
-                        review_ledger,
-                        agent1_critique,
-                        case.get("comparison", {}),
-                    )
+                review_ledger = original_ledger
+                for visual_reply in agent1_critique.get("question_answers", [agent1_critique]):
+                    review_ledger = add_visual_witness_evidence(review_ledger, visual_reply)
+                    if (int(case.get("debate_level", 2)) >= 2
+                            and visual_reply.get("review_method") != "independent_cached_evidence_review"):
+                        review_ledger = add_visual_reinspection_evidence(
+                            review_ledger, visual_reply, case.get("comparison", {}))
                 review_comparison = self._comparison_with_review_evidence(
                     case.get("comparison", {}), review_ledger
                 )
@@ -758,14 +742,33 @@ class DebateEngine:
                 )
                 agent1_critique["advocates"] = advocate_summary
                 critique_started = time.time()
+                seed_stage(
+                    getattr(self, "global_seed", 42),
+                    case.get("sample_id", case["key"]),
+                    "debate_claim_witness",
+                )
                 agent2_critique = agent2.critique(
                     case["caption"],
-                    self.build_agent2_challenge_prompt(
-                        case["language_output"], case["decision"],
-                        mediation_plan,
-                    ),
+                    {"claim_fields": {key: deepcopy(case["language_output"].get(key))
+                                      for key in (*CORE["properties"], "claim_graph")},
+                     "advisory_questions": list(mediation_plan.get("agent2_questions", []) or [])},
                 )
                 agent2_critique["_seconds"] = time.time() - critique_started
+                updated_graph = agent2_critique.get("_updated_claim_graph")
+                if updated_graph is not None:
+                    from engine.claim_contract import attach_claim_contract
+                    case["language_output"]["claim_graph"] = deepcopy(updated_graph)
+                    case["language_output"].update(attach_claim_contract(case["language_output"], case["caption"]))
+
+                repaired_claim = agent2_critique.get("_repaired_claim_fields")
+                if repaired_claim and agent2_critique.get("requirements_valid"):
+                    from engine.claim_contract import attach_claim_contract
+                    case["language_output"].update(deepcopy(repaired_claim))
+                    case["language_output"].update(attach_claim_contract(case["language_output"], case["caption"]))
+                    refreshed = compare(case["visual_output"], case["language_output"])
+                    case["comparison"].clear()
+                    case["comparison"].update(refreshed)
+                    review_comparison.update(refreshed)
 
                 review_ledger, cross_agent_verification = (
                     add_cross_agent_verified_relation(
@@ -1228,8 +1231,8 @@ attached to the caption subject.
                 "\nThese are review questions, not evidence and not a label vote.\n"
             )
         plan = mediation or {}
-        atomic_question = ""
-        if plan.get("_usable", False):
+        atomic_question = plan.get("_requested_visual_question", "")
+        if not atomic_question and plan.get("_usable", False):
             atomic_question = compile_visual_question(
                 comparison or {}, plan
             )
@@ -1260,6 +1263,9 @@ attached to the caption subject.
                     "What exact visible state or relation is shown for the "
                     "caption subject?"
                 )
+        # The visual adapter parses one header line. Preserve all words of a
+        # multiline request instead of silently losing everything after line one.
+        atomic_question = " ".join(str(atomic_question).split())
 
         claim = (comparison or {}).get("claim_relation", {}) or {}
 
@@ -1290,7 +1296,7 @@ You are the independent Visual Evidence Reviewer.
 You are not shown another agent's label. Reinspect the image and evaluate the
 caption claim using current-image evidence only.
 
-Question ID: agent1_{(comparison or {}).get('required_evidence_status', 'review').lower()}
+Question ID: {(mediation or {}).get('question_id') or 'agent1_round' + str((mediation or {}).get('hearing_round', 1)) + '_' + (comparison or {}).get('required_evidence_status', 'review').lower()}
 Review question: {atomic_question}
 
 Original caption: {claim.get('claim_text', 'Unavailable')}
@@ -1316,6 +1322,42 @@ unclear, never contradiction.
     # Prompt for Agent 2 (Linguistic)
     # -------------------------------------------------------
 
+    def _run_visual_questions(self, agent, case):
+        """One visual call per requested question; retain every response."""
+        from engine.caption_answers import question_id
+        plan = case.get("mediation_plan", {}) or {}
+        questions = list(plan.get("agent1_questions", []) or [])
+        replies = []
+        for index, requested in enumerate(questions or [None]):
+            current = dict(plan)
+            if requested is not None:
+                if not isinstance(requested, str) or not requested.strip():
+                    raise ValueError("Visual questions must be nonempty strings")
+                current.update(_requested_visual_question=requested,
+                    question_id=question_id(case.get("caption", ""), requested, "agent1"))
+            prompt = self.build_agent1_challenge_prompt(case["visual_output"], case["decision"],
+                case.get("comparison"), current)
+            if case.get("tribunal_hearing", False):
+                prompt += "\nTRIBUNAL_VISUAL_WITNESS_ONLY: Report direct observations, never the caption relation.\n"
+            seed_stage(getattr(self, "global_seed", 42), case.get("sample_id", case["key"]),
+                       "debate_visual_witness", index)
+            try:
+                reply = agent.critique(case["image"], prompt)
+            except (RuntimeError, ValueError) as error:
+                reply = {"_format_valid": False, "response_status": "FAILED",
+                         "reason": str(error), "recommendation": "ABSTAIN"}
+            reply["requested_question"] = requested or reply.get("question", "")
+            if requested is not None:
+                reply["question_id"] = current["question_id"]
+            reply["delivered_prompt"] = prompt
+            replies.append(reply)
+        primary = deepcopy(next((r for r in replies if r.get("_format_valid")), replies[0]))
+        primary["question_answers"] = replies
+        primary["communication"] = {"requested": len(replies), "recorded": len(replies),
+            "valid_responses": sum(bool(r.get("_format_valid")) for r in replies),
+            "semantic_correctness": "NOT_INDEPENDENTLY_ESTABLISHED"}
+        return primary
+
     def build_agent2_challenge_prompt(
         self,
         language_output,
@@ -1325,7 +1367,7 @@ unclear, never contradiction.
         contract = language_output.get("claim_contract", {}) or {}
 
         def compact(value, limit=280):
-            return " ".join(str(value or "None").split())[:limit]
+            return " ".join(str(value if value is not None else "None").split())[:limit]
 
         fields = (
             ("Original caption", language_output.get("original_caption")),
@@ -1335,10 +1377,16 @@ unclear, never contradiction.
             ("Claim object", language_output.get("claim_object")),
             ("Claim source", language_output.get("claim_source")),
             ("Claim target", language_output.get("claim_target")),
+            ("Negation", language_output.get("negation")),
+            ("Quantities", language_output.get("quantities")),
+            ("Claim modifiers", language_output.get("claim_modifiers")),
+            ("Comparison direction", language_output.get("comparison_direction")),
+            ("Time or panel scope", language_output.get("time_or_panel_scope")),
             ("Asserted property", language_output.get("asserted_property")),
             ("Caption polarity", language_output.get("caption_polarity")),
             ("Intended meaning", language_output.get("intended_meaning")),
             ("Relation family", language_output.get("relation_family")),
+            ("Reasoning requirement", language_output.get("reasoning_requirement")),
             ("Expected visual state", language_output.get("expected_visual_state")),
             ("Opposite visual state", language_output.get("opposite_visual_state")),
             ("Audit warnings", ", ".join(contract.get("warnings", []) or []) or "None"),

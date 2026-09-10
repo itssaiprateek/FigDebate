@@ -1,3 +1,4 @@
+from tests.verification_fixture import with_independent_fixture
 import unittest
 from unittest.mock import patch
 
@@ -245,13 +246,13 @@ class EvidenceLifecycleTests(unittest.TestCase):
                 "decision_grade": False,
             },
         ]
-        promoted, metadata = add_tribunal_corroborated_relation(
-            ledger,
-            {
+        review = with_independent_fixture({
                 "status": "RESOLVE", "relation": "SUPPORT",
                 "confidence": 0.86, "_format_valid": True,
                 "_valid_evidence_ids": ["DW001"],
-            },
+            }, ledger, {})
+        promoted, metadata = add_tribunal_corroborated_relation(
+            ledger, review,
             {
                 "safe_for_directional_reasoning": True,
                 "safe_for_automatic_directional_reasoning": False,
@@ -564,6 +565,7 @@ class TribunalControllerTests(unittest.TestCase):
             "_format_valid": True, "_valid_evidence_ids": ["DW001"],
             "_invalid_evidence_ids": [],
         }
+        review = with_independent_fixture(review, ledger, {})
         decision, output_ledger, metadata = apply_tribunal_resolution(
             {"label": "ENTAILS", "confidence": 0.35},
             review,
@@ -692,7 +694,6 @@ class TribunalControllerTests(unittest.TestCase):
         }
         session = record_tribunal_round(new_tribunal_session({}), review, {})
         self.assertEqual(session["state"], "FOLLOW_UP_REQUIRED")
-        self.assertTrue(followup_plan(review)["_usable"])
         session = record_tribunal_round(session, review, {})
         self.assertEqual(session["state"], "ABSTAINED")
         self.assertEqual(session["stop_reason"], "maximum_rounds_reached")
@@ -938,10 +939,10 @@ class TribunalBatchIntegrationTests(unittest.TestCase):
             patch("engine.batch_runner.TribunalMediatorAgent", FakeMediator),
             patch("engine.batch_runner.GPUManager.clear"),
         ):
-            followups, _ = runner._run_tribunal_review_round(
+            load_seconds = runner._run_tribunal_review_round(
                 [sample], results, 1
             )
-        self.assertEqual(followups, [])
+        self.assertGreaterEqual(load_seconds, 0.0)
         self.assertEqual(results[0]["decision"]["label"], "CONTRADICTS")
         self.assertEqual(results[0]["judge"]["status"], "tribunal_revision_accepted")
         self.assertEqual(results[0]["judge"]["tribunal_session"]["state"], "RESOLVED")

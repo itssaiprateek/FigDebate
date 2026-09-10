@@ -15,6 +15,11 @@ class Orchestrator:
         judge_mode="disabled",
         judge_scope="escalated",
         verified_feedback_path=None,
+        hardware_profile="8gb",
+        semantic_bridge_mode="disabled",
+        global_seed=42,
+        candidate_mode="independent",
+        control_mode="none",
     ):
         print("=" * 70)
         print("FigDebate Engine Ready")
@@ -22,6 +27,11 @@ class Orchestrator:
         self.runner = StagewiseRunner(
             feedback_mode=feedback_mode,
             verified_feedback_path=verified_feedback_path,
+            hardware_profile=hardware_profile,
+            semantic_bridge_mode=semantic_bridge_mode,
+            global_seed=global_seed,
+            candidate_mode=candidate_mode,
+            control_mode=control_mode,
             debate_mode=debate_mode,
             evidence_mode=evidence_mode,
             judge_mode=judge_mode,

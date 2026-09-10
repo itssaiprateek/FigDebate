@@ -1,0 +1,4 @@
+# Only needed to reproduce the archived LMFE character/token defect.
+-r requirements.txt
+lm-format-enforcer==0.11.3
+interegular==0.3.3

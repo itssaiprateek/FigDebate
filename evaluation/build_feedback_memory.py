@@ -3,6 +3,8 @@
 import argparse
 import json
 import os
+from pathlib import Path
+import pandas as pd
 
 from engine.evidence_ledger import (
     RELATION_FOR_LABEL,
@@ -15,13 +17,31 @@ from engine.feedback_loop import FeedbackLoop
 def build_memory(records_path, output_path):
     run_dir = os.path.dirname(os.path.abspath(records_path))
     output_dir = os.path.dirname(os.path.abspath(output_path))
-    os.makedirs(output_dir, exist_ok=True)
     config_path = os.path.join(run_dir, "run_config.json")
-    if os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as handle:
-            dataset_name = json.load(handle).get("dataset")
-        if dataset_name == "vflute_test":
-            raise ValueError("Feedback memory must never be built from vflute_test.")
+    if not os.path.exists(config_path):
+        raise ValueError("Feedback requires verified development run configuration")
+    with open(config_path, "r", encoding="utf-8") as handle:
+        config = json.load(handle)
+    dataset_name = config.get("dataset")
+    if config.get("selection_only"):
+        raise ValueError("Selection-only plans are not completed model runs")
+    if dataset_name not in {"vflute_train", "vflute_train_dev50", "vflute_val"} or config.get("data_usage", {}).get("purpose") != "diagnostic":
+        raise ValueError("Feedback requires a declared diagnostic train/validation run; never test")
+    records = [json.loads(line) for line in Path(records_path).read_text(encoding="utf8").splitlines() if line.strip()]
+    from evaluation.input_coverage import reconcile
+    _, audit = reconcile(pd.DataFrame(records), records_path)
+    if audit["status"] != "RECONCILED" or audit["missing_ids"] or not audit.get("source_lineage_verified"):
+        raise ValueError("Feedback requires complete outputs with verified source identities")
+    if not audit.get("references_bound_to_manifest"):
+        raise ValueError("Feedback requires reference explanations bound to the source manifest")
+    # Check against the actual dataset, not only mutually consistent run files.
+    from dataset.loaders import load_split
+    from engine.sampling import select_from_manifest
+    manifest = json.loads((Path(run_dir) / "sample_manifest.json").read_text(encoding="utf8"))
+    select_from_manifest(load_split(dataset_name), manifest, config["requested_samples"])
+    if os.path.exists(output_path):
+        raise FileExistsError("Choose a new feedback output; existing memory is immutable")
+    os.makedirs(output_dir, exist_ok=True)
 
     loop = FeedbackLoop(
         max_examples=100,

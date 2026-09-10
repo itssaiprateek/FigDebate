@@ -1,4 +1,5 @@
 import time
+from copy import deepcopy
 
 from agents.visual_grounding import VisualGroundingAgent
 from agents.claim_extraction import ClaimExtractionAgent
@@ -31,11 +32,14 @@ from models.language_model import MistralModel
 from models.vision_model import Qwen3VLVisionModel
 from engine.tribunal import (
     apply_tribunal_resolution,
-    followup_plan,
     new_tribunal_session,
     record_tribunal_round,
+    followup_plan,
 )
 from engine.pre_hearing import build_pre_hearing_audit
+from engine.runtime_profile import resolve_runtime_profile
+from engine.reproducibility import seed_stage
+from engine.stage_checkpoint import StageCheckpointStore
 
 
 class StagewiseRunner:
@@ -50,6 +54,15 @@ class StagewiseRunner:
         evidence_mode="enabled",
         judge_mode="disabled",
         judge_scope="escalated",
+        hardware_profile="8gb",
+        semantic_bridge_mode="disabled",
+        stage_checkpoint_dir=None,
+        resume_stages=False,
+        global_seed=42,
+        checkpoint_fingerprint="",
+        candidate_mode="independent",
+        readonly_stage_sources=(),
+        control_mode="none",
     ):
         if feedback_mode not in {"disabled", "collect", "calibrate", "verified"}:
             raise ValueError(f"Unknown feedback mode: {feedback_mode}")
@@ -61,12 +74,33 @@ class StagewiseRunner:
             raise ValueError(f"Unknown judge mode: {judge_mode}")
         if judge_scope not in JUDGE_SCOPES:
             raise ValueError(f"Unknown judge scope: {judge_scope}")
+        if candidate_mode not in {"independent", "disabled"}:
+            raise ValueError(f"Unknown candidate mode: {candidate_mode}")
+        self.candidate_mode = candidate_mode
+        if control_mode not in {"none", "independent_vote", "conventional_debate"}:
+            raise ValueError("Unknown control mode")
+        if control_mode != "none" and (debate_mode != "disabled" or judge_mode != "disabled"
+                or semantic_bridge_mode != "disabled" or feedback_mode != "disabled" or candidate_mode != "independent"):
+            raise ValueError("Simpler controls require independent candidates and disabled hearing/judge/bridge/feedback")
+        self.control_mode = control_mode
         self.debate = DebateEngine()
         self.feedback_mode = feedback_mode
         self.debate_mode = debate_mode
         self.evidence_mode = evidence_mode
         self.judge_mode = judge_mode
         self.judge_scope = judge_scope
+        self.hardware_profile = resolve_runtime_profile(hardware_profile)
+        if semantic_bridge_mode not in {"disabled", "shadow", "corroborated"}:
+            raise ValueError(f"Unknown semantic bridge mode: {semantic_bridge_mode}")
+        self.semantic_bridge_mode = semantic_bridge_mode
+        self.global_seed = int(global_seed)
+        self.debate.hardware_profile = self.hardware_profile.name
+        self.debate.global_seed = self.global_seed
+        self.stage_checkpoints = StageCheckpointStore(
+            stage_checkpoint_dir, enabled=resume_stages,
+            fingerprint=checkpoint_fingerprint,
+            readonly_sources=readonly_stage_sources,
+        )
         self.run_timing = {}
         self.feedback_events = []
         if feedback_log_path:
@@ -75,6 +109,12 @@ class StagewiseRunner:
             if not verified_feedback_path:
                 raise ValueError("Verified feedback mode requires a feedback file.")
             self.debate.feedback_loop.load_verified_examples(verified_feedback_path)
+
+    def _seed_sample(self, sample, stage, attempt=0):
+        sample_id = sample.get("raw", {}).get("id", sample.get("index"))
+        return seed_stage(
+            getattr(self, "global_seed", 42), sample_id, stage, attempt
+        )
 
     @staticmethod
     def _agent1_feedback_instruction():
@@ -168,6 +208,7 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
         return [
             {
                 "key": sample["index"],
+                "sample_id": sample.get("raw", {}).get("id", sample["index"]),
                 "image": sample["image"],
                 "caption": sample["caption"],
                 "visual_output": results[sample["index"]]["visual_output"],
@@ -206,7 +247,13 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             )
             result["debate_triggered"] = True
             result["debate_rounds"] = decision["_debate"]["rounds"]
+            previous_hearing = result.get("debate_details", {}) or {}
+            history = deepcopy(previous_hearing.get("hearing_history", []))
+            if previous_hearing:
+                history.append({key: deepcopy(previous_hearing[key]) for key in (
+                    "agent1_critique", "agent2_critique", "mediation", "review_status") if key in previous_hearing})
             result["debate_details"] = decision.get("_debate", {})
+            result["debate_details"]["hearing_history"] = history
             recovered_visual = result["debate_details"].get(
                 "recovered_visual_output"
             )
@@ -223,7 +270,7 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             if recovered_verification:
                 result["evidence_verification"] = recovered_verification
             result["round2_confidence"] = decision.get("confidence")
-            result["timing"]["debate_seconds"] = decision["_debate"].get(
+            result["timing"]["debate_seconds"] = result["timing"].get("debate_seconds", 0.0) + decision["_debate"].get(
                 "inference_seconds", 0.0
             )
 
@@ -233,17 +280,9 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 result = results[sample["index"]]
                 base_context = result.get("_feedback_context", context)
                 reliability_updates = []
-                if self.feedback_mode == "verified" and base_context.get(
-                    "matched_rule_ids"
-                ):
-                    reliability_updates = (
-                        self.debate.feedback_loop.record_reliability_outcome(
-                            base_context.get("matched_rule_ids", []),
-                            result.get("pre_feedback_decision", {}).get("label"),
-                            result.get("decision", {}).get("label"),
-                            sample["raw"].get("label"),
-                        )
-                    )
+                # Verified memory is frozen across ALL batches. Gold-based
+                # reliability updates here would alter retrieval for later cases.
+                # Corrections/harms are measured by the post-run evaluator instead.
                 results[sample["index"]]["feedback"] = {
                     **base_context,
                     "update_applied": False,
@@ -317,22 +356,50 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
     def _run_tribunal_review_round(
         self, samples, results, round_number
     ):
-        """Run one mediator review after both agents have answered."""
-        followups = []
+        """Run the single supervisor review after both agents have answered."""
+        if not hasattr(self, "stage_checkpoints"):
+            self.stage_checkpoints = StageCheckpointStore()
         load_seconds = 0.0
         if not samples:
-            return followups, load_seconds
+            return load_seconds
+        pending_samples = []
+        for sample in samples:
+            cached = self.stage_checkpoints.load(
+                f"tribunal_round_{round_number}", sample
+            )
+            if cached is None:
+                pending_samples.append(sample)
+                continue
+            results[sample["index"]] = cached
+            print(
+                f"[resume] restored tribunal round {round_number} for "
+                f"{sample.get('raw', {}).get('id', sample['index'])}"
+            )
+        if not pending_samples:
+            return load_seconds
+        samples = pending_samples
         judge_runtime = None
         reviewer = None
         try:
             load_started = time.time()
-            judge_runtime = QwenJudgeModel()
+            profile_name = getattr(
+                getattr(self, "hardware_profile", None), "name", "8gb"
+            )
+            load_error = None
+            try:
+                judge_runtime = QwenJudgeModel(hardware_profile=profile_name)
+                reviewer = TribunalMediatorAgent(judge_runtime)
+            except (RuntimeError, ValueError, OSError) as error:
+                load_error = error
             load_seconds = time.time() - load_started
-            reviewer = TribunalMediatorAgent(judge_runtime)
             for sample in samples:
                 result = results[sample["index"]]
+                sample_id = sample.get("raw", {}).get("id", sample["index"])
+                print(f"[sample={sample_id}][model=judge][round={round_number}] start")
+                self._seed_sample(sample, "tribunal_review", round_number)
                 debate = result.get("debate_details", {}) or {}
-                review = reviewer.review(
+                from engine.review_outcome import failed_review
+                review = failed_review(load_error, "model_load", load_seconds / len(samples)) if load_error else reviewer.review(
                     sample["image"],
                     sample["caption"],
                     result.get("visual_output", {}),
@@ -341,6 +408,8 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     result.get("evidence_ledger", []),
                     debate,
                     round_number=round_number,
+                    current_decision=result.get("decision", {}),
+                    pre_hearing=result.get("pre_hearing", {}),
                 )
                 result["timing"]["mediator_seconds"] = round(
                     float(result["timing"].get("mediator_seconds", 0.0))
@@ -355,18 +424,6 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 judge["tribunal_session"] = session
                 judge.setdefault("tribunal_reviews", []).append(review)
 
-                if session.get("state") == "FOLLOW_UP_REQUIRED":
-                    plan = followup_plan(review)
-                    if plan.get("_usable", False):
-                        result["mediation_plan"] = plan
-                        result["debate_level"] = 2
-                        result["debate_need_signals"] = [
-                            "tribunal_follow_up"
-                        ]
-                        followups.append(sample)
-                        judge["status"] = "tribunal_follow_up_planned"
-                        continue
-
                 resolved, verified_ledger, resolution = (
                     apply_tribunal_resolution(
                         result.get("decision", {}),
@@ -380,11 +437,22 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                         ),
                         agent1_critique=debate.get("agent1_critique", {}),
                         agent2_critique=debate.get("agent2_critique", {}),
+                        semantic_bridge_mode=getattr(
+                            self, "semantic_bridge_mode", "disabled"
+                        ),
+                        language_output=result.get("language_output", {}),
                     )
                 )
                 result["decision"] = resolved
                 result["evidence_ledger"] = verified_ledger
                 judge["tribunal_resolution"] = resolution
+                judge["execution_status"] = resolution.get("execution_status", "NOT_RUN")
+                judge["case_dossier"] = {
+                    "schema_version": review.get("_case_dossier_schema"),
+                    "supervisor_checkpoint": "POST_TARGETED_HEARING",
+                    "persistent_memory": "serialized_case_dossier",
+                    "model_residency": "stage_local",
+                }
                 feedback_candidate = judge_feedback_candidate(
                     {
                         "_format_valid": review.get("_format_valid", False),
@@ -406,12 +474,30 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 judge["feedback_candidate"] = feedback_candidate
                 session = dict(judge.get("tribunal_session", {}) or {})
                 prior_state = session.get("state")
-                if resolution.get("accepted"):
+                if resolution.get("execution_status") == "FAILED":
+                    session["state"] = "EXECUTION_FAILED"
+                elif resolution.get("context_status", "NOT_CHECKED") not in {"VALID", "NOT_CHECKED"}:
+                    session["state"] = resolution["context_status"]
+                elif resolution.get("schema_status") != "VALID":
+                    session["state"] = "INVALID_OUTPUT"
+                elif prior_state == "FOLLOW_UP_REQUIRED":
+                    session["state"] = "FOLLOW_UP_REQUIRED"
+                elif resolution.get("accepted"):
                     session["state"] = "RESOLVED"
-                elif review.get("status") == "ABSTAIN" or prior_state == "ABSTAINED":
+                elif (
+                    review.get("status") in {"ABSTAIN", "FOLLOW_UP"}
+                    or prior_state == "ABSTAINED"
+                ):
                     session["state"] = "ABSTAINED"
                 else:
                     session["state"] = "PRESERVED"
+                if (session["state"] == "PRESERVED" and round_number < session.get("max_rounds", 2)
+                        and not resolution.get("confirmation_valid") and self.debate_mode != "disabled"):
+                    from engine.tribunal import repair_followup_plan
+                    repair_plan = repair_followup_plan(review, result.get("comparison", {}), debate)
+                    if repair_plan.get("_usable"):
+                        judge["verification_followup_plan"] = repair_plan
+                        session["state"] = "FOLLOW_UP_REQUIRED"
                 session["stop_reason"] = (
                     session.get("stop_reason")
                     if prior_state == "ABSTAINED" and session.get("stop_reason")
@@ -419,11 +505,20 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 )
                 judge["tribunal_session"] = session
                 judge["status"] = (
-                    "tribunal_revision_accepted"
+                    "tribunal_execution_failed"
+                    if session.get("state") == "EXECUTION_FAILED"
+                    else "tribunal_context_blocked"
+                    if resolution.get("context_status", "NOT_CHECKED") not in {"VALID", "NOT_CHECKED"}
+                    else "tribunal_invalid_output"
+                    if session.get("state") == "INVALID_OUTPUT"
+                    else "tribunal_revision_accepted"
                     if resolution.get("accepted")
                     else "tribunal_abstained"
                     if session.get("state") == "ABSTAINED"
                     else "tribunal_revision_rejected"
+                )
+                self.stage_checkpoints.save(
+                    f"tribunal_round_{round_number}", sample, result
                 )
         finally:
             if reviewer is not None:
@@ -431,9 +526,11 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             if judge_runtime is not None:
                 del judge_runtime
             GPUManager.clear()
-        return followups, load_seconds
+        return load_seconds
 
     def run_samples(self, samples, on_result):
+        from engine.runtime_accounting import begin_accounting, sample_accounting
+        begin_accounting()
         run_started = time.time()
         load_totals = {
             "vision_model_load_seconds": 0.0,
@@ -450,20 +547,60 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             context = self._feedback_context(batch_index)
             visual_outputs = {}
             print(f"\nSTAGE 1: visual grounding (batch {batch_index})")
+            visual_pending = []
+            for sample in batch:
+                cached = self.stage_checkpoints.load("visual_grounding", sample)
+                if cached is None:
+                    visual_pending.append(sample)
+                    continue
+                visual_outputs[sample["index"]] = cached
+                print(
+                    "[resume] restored visual grounding for "
+                    f"{sample.get('raw', {}).get('id', sample['index'])}"
+                )
             vision_runtime = None
             agent1 = None
             try:
-                load_started = time.time()
-                vision_runtime = Qwen3VLVisionModel()
-                load_totals["vision_model_load_seconds"] += time.time() - load_started
-                agent1 = VisualGroundingAgent(vision_runtime)
-                for sample in batch:
-                    visual_outputs[sample["index"]] = agent1.analyze(
-                        sample["image"], feedback=None
+                if visual_pending:
+                    load_started = time.time()
+                    profile_name = getattr(
+                        getattr(self, "hardware_profile", None), "name", "8gb"
+                    )
+                    vision_runtime = Qwen3VLVisionModel(
+                        hardware_profile=profile_name
+                    )
+                    load_totals["vision_model_load_seconds"] += time.time() - load_started
+                    agent1 = VisualGroundingAgent(vision_runtime)
+                for sample in visual_pending:
+                    sample_id = sample.get("raw", {}).get("id", sample["index"])
+                    width, height = getattr(sample["image"], "size", (None, None))
+                    print(
+                        f"[sample={sample_id}][model=agent1] start "
+                        f"image={width}x{height} profile={self.hardware_profile.name}"
+                    )
+                    self._seed_sample(sample, "visual_grounding")
+                    visual_outputs[sample["index"]] = agent1.analyze(sample["image"], feedback=None)
+                    self.stage_checkpoints.save(
+                        "visual_grounding", sample,
+                        visual_outputs[sample["index"]],
                     )
                     # Preserve decoded evidence in system RAM while releasing
                     # only temporary CUDA allocations before the next image.
                     vision_runtime.release_generation_memory()
+                if (self.judge_mode == "tribunal" or self.control_mode != "none") and self.candidate_mode == "independent":
+                    from engine.candidate_cases import candidate_case
+                    for sample in batch:
+                        candidate = self.stage_checkpoints.load("visual_candidate", sample)
+                        if candidate is None:
+                            if vision_runtime is None:
+                                started = time.time()
+                                vision_runtime = Qwen3VLVisionModel(hardware_profile=self.hardware_profile.name)
+                                load_totals["vision_model_load_seconds"] += time.time() - started
+                            self._seed_sample(sample, "visual_candidate")
+                            candidate = candidate_case(vision_runtime, sample["image"], sample["caption"],
+                                                       model_family="Qwen3-VL")
+                            self.stage_checkpoints.save("visual_candidate", sample, candidate)
+                        visual_outputs[sample["index"]]["_independent_candidate"] = candidate
             finally:
                 if agent1 is not None:
                     del agent1
@@ -498,7 +635,23 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     ),
                 )
                 for sample in batch:
+                    cached = self.stage_checkpoints.load("initial_reasoning", sample)
+                    if cached is not None:
+                        results[sample["index"]] = cached
+                        if (
+                            cached.get("debate_level", 0) > 0
+                            and self.debate_mode == "enabled"
+                        ):
+                            debate_candidates.append(sample)
+                        print(
+                            "[resume] restored initial reasoning for "
+                            f"{sample.get('raw', {}).get('id', sample['index'])}"
+                        )
+                        continue
                     visual_output = visual_outputs[sample["index"]]
+                    sample_id = sample.get("raw", {}).get("id", sample["index"])
+                    print(f"[sample={sample_id}][model=agent2] start")
+                    self._seed_sample(sample, "initial_reasoning")
                     language_output = agent2.analyze(
                         sample["caption"], feedback=None
                     )
@@ -615,6 +768,13 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                         evidence_ledger,
                         evidence_verification,
                     )
+                    result["reproducibility"] = {
+                        "global_seed": self.global_seed,
+                        "sample_seed": seed_stage(
+                            self.global_seed, sample_id, "sample_identity"
+                        ),
+                    }
+                    result["runtime_profile"] = self.hardware_profile.as_dict()
                     result["pre_feedback_decision"] = baseline_decision
                     result["feedback_candidate_decision"] = feedback_candidate
                     baseline_timing = baseline_decision.get("_timing", {}) or {}
@@ -662,6 +822,32 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     )
                     if debate_assessment.get("trigger") and self.debate_mode == "enabled":
                         debate_candidates.append(sample)
+                    baseline_cache = deepcopy(result)
+                    baseline_cache["visual_output"].pop("_independent_candidate", None)
+                    self.stage_checkpoints.save("initial_reasoning", sample, baseline_cache)
+
+                if (self.judge_mode == "tribunal" or self.control_mode != "none") and self.candidate_mode == "independent":
+                    from engine.candidate_cases import candidate_case, TextCandidateRuntime, candidate_dispute
+                    for sample in batch:
+                        result = results[sample["index"]]
+                        result["visual_output"]["_independent_candidate"] = visual_outputs[sample["index"]].get("_independent_candidate")
+                        candidate = self.stage_checkpoints.load("text_candidate", sample)
+                        if candidate is None:
+                            self._seed_sample(sample, "text_candidate")
+                            observations = [item.get("text", "") for item in result["evidence_ledger"]
+                                            if item.get("source") == "agent1" and item.get("grounded")]
+                            candidate = candidate_case(
+                                TextCandidateRuntime(mistral.model, mistral.tokenizer), None,
+                                sample["caption"], observations, model_family="Mistral")
+                            self.stage_checkpoints.save("text_candidate", sample, candidate)
+                        result["language_output"]["_independent_candidate"] = candidate
+                        dispute = candidate_dispute(result["visual_output"], result["language_output"])
+                        result["candidate_dispute"] = dispute
+                        if dispute["decisive_questions"] and (dispute["genuine_disagreement"] or dispute["unresolved"]):
+                            result.setdefault("pre_hearing", {})["requires_live_hearing"] = True
+                        result["timing"]["candidate_seconds"] = sum(
+                            float((output.get("_independent_candidate") or {}).get("_generation_seconds", 0.0))
+                            for output in (result["visual_output"], result["language_output"]))
 
                 level1_candidates = [
                     sample for sample in debate_candidates
@@ -694,7 +880,14 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     del mistral
                 GPUManager.clear()
 
+            if self.control_mode != "none":
+                from engine.control_conditions import run_control_batch
+                control_loads = run_control_batch(batch, results, self.control_mode,
+                    self.hardware_profile.name, self.global_seed)
+                for key, value in control_loads.items():
+                    load_totals[key] += value
             if self.judge_mode in {"mediated", "tribunal"}:
+                tribunal_candidates = []
                 if self.judge_mode == "tribunal":
                     debate_candidates = [
                         sample for sample in debate_candidates
@@ -709,6 +902,8 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     result = results[sample["index"]]
                     reasons = judge_request_reasons(result, self.judge_scope)
                     requested = bool(reasons)
+                    if self.judge_mode == "tribunal" and requested:
+                        tribunal_candidates.append(sample)
                     # Tribunal eligibility is independent from the ordinary
                     # debate router.  Invalid claim contracts and ungrounded
                     # decisions must still receive agent questions rather
@@ -745,12 +940,7 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                         "requested": requested,
                         "trigger_reasons": reasons,
                         "status": (
-                            "pending" if requested and (
-                                self.judge_mode != "tribunal"
-                                or result["tribunal_hearing"]
-                            )
-                            else "pre_hearing_closed"
-                            if requested else "not_escalated"
+                            "pending" if requested else "not_escalated"
                         ),
                     }
                 if debate_candidates:
@@ -785,6 +975,9 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                                 "_usable": bool(plan.get("agent1_question")),
                                 "_generation_seconds": 0.0,
                             }
+                            from engine.candidate_cases import candidate_hearing_plan
+                            mediation = candidate_hearing_plan(mediation, result.get("candidate_dispute", {}))
+                            mediation["hearing_round"] = 1
                             result["mediation_plan"] = mediation
                             result["judge"]["mediation"] = mediation
                             result["judge"]["status"] = "hearing_planned"
@@ -794,13 +987,16 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                         mediator_agent = None
                         try:
                             load_started = time.time()
-                            judge_runtime = QwenJudgeModel()
+                            judge_runtime = QwenJudgeModel(
+                                hardware_profile=self.hardware_profile.name
+                            )
                             load_totals["judge_model_load_seconds"] += (
                                 time.time() - load_started
                             )
                             mediator_agent = MultimodalMediatorAgent(judge_runtime)
                             for sample in debate_candidates:
                                 result = results[sample["index"]]
+                                self._seed_sample(sample, "mediation_plan")
                                 mediation = mediator_agent.analyze(
                                     sample["image"],
                                     sample["caption"],
@@ -881,57 +1077,61 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                                 if accepted else "mediated_revision_rejected"
                             )
 
-            if self.judge_mode == "tribunal" and debate_candidates:
+            if self.judge_mode == "tribunal" and tribunal_candidates:
                 print(
-                    f"\nSTAGE 4: tribunal reviews both agent responses "
-                    f"({len(debate_candidates)} cases)"
+                    f"\nSTAGE 4: checkpointed supervisor review "
+                    f"({len(tribunal_candidates)} cases)"
                 )
-                followups, tribunal_load = self._run_tribunal_review_round(
-                    debate_candidates, results, 1
+                tribunal_load = self._run_tribunal_review_round(
+                    tribunal_candidates, results, 1
                 )
                 load_totals["judge_model_load_seconds"] += tribunal_load
-                if followups:
-                    print(
-                        f"\nSTAGE 5: bounded tribunal follow-up "
-                        f"({len(followups)} cases)"
-                    )
-                    prior_debate_seconds = {
-                        sample["index"]: results[sample["index"]]["timing"].get(
-                            "debate_seconds", 0.0
-                        )
-                        for sample in followups
-                    }
+
+                # Follow-up is an actual new witness hearing, only on explicit
+                # unresolved questions. No forced opposing answer is fabricated.
+                followup_samples = []
+                previous_evidence = {}
+                from engine.deliberation import deliberation_signature
+                for sample in tribunal_candidates:
+                    if self.debate_mode == "disabled":
+                        continue
+                    result = results[sample["index"]]
+                    judge = result.get("judge", {})
+                    if judge.get("tribunal_session", {}).get("state") != "FOLLOW_UP_REQUIRED":
+                        continue
+                    review = (judge.get("tribunal_reviews") or [{}])[-1]
+                    plan = judge.get("verification_followup_plan") or followup_plan(review, result.get("comparison", {}))
+                    if not plan.get("_usable"):
+                        judge["tribunal_session"].update(
+                            state="PRESERVED", stop_reason="no_actionable_followup")
+                        continue
+                    previous_evidence[sample["index"]] = deliberation_signature(result)
+                    plan["hearing_round"] = 2
+                    result["mediation_plan"] = plan
+                    result["force_visual_review"] = bool(plan.get("agent1_questions"))
+                    result["tribunal_hearing"] = True
+                    followup_samples.append(sample)
+                if followup_samples:
                     followup_results = self.debate.run_debate_batch(
-                        self._build_debate_cases(followups, results)
-                    )
-                    load_totals["debate_vision_model_load_seconds"] += (
-                        self.debate.last_batch_timing.get(
-                            "vision_model_load_seconds", 0.0
-                        )
-                    )
-                    load_totals["debate_language_model_load_seconds"] += (
-                        self.debate.last_batch_timing.get(
-                            "language_model_load_seconds", 0.0
-                        )
-                    )
-                    self._merge_debate_results(
-                        followups, results, followup_results
-                    )
-                    for sample in followups:
+                        self._build_debate_cases(followup_samples, results))
+                    self._merge_debate_results(followup_samples, results, followup_results)
+                    for key in ("vision_model_load_seconds", "language_model_load_seconds"):
+                        load_totals["debate_" + key] += self.debate.last_batch_timing.get(key, 0.0)
+                    ready = []
+                    for sample in followup_samples:
                         result = results[sample["index"]]
-                        result["timing"]["debate_seconds"] = round(
-                            prior_debate_seconds[sample["index"]]
-                            + result["timing"].get("debate_seconds", 0.0),
-                            4,
-                        )
-                    print(
-                        f"\nSTAGE 6: final tribunal review "
-                        f"({len(followups)} cases)"
-                    )
-                    _, final_load = self._run_tribunal_review_round(
-                        followups, results, 2
-                    )
-                    load_totals["judge_model_load_seconds"] += final_load
+                        changed = deliberation_signature(result) != previous_evidence[sample["index"]]
+                        result["judge"]["tribunal_session"].setdefault("hearing_transitions", []).append({
+                            "round": 2, "before": previous_evidence[sample["index"]],
+                            "after": deliberation_signature(result), "reconsidered": changed,
+                            "repair_reasons": list((result["judge"].get("verification_followup_plan") or {}).get("repair_reasons", [])),
+                            "agent2_response": result.get("debate_details", {}).get("agent2_critique", {})})
+                        if changed:
+                            ready.append(sample)
+                        else:
+                            result["judge"]["tribunal_session"].update(
+                                state="PRESERVED", stop_reason="no_new_admissible_evidence")
+                    load_totals["judge_model_load_seconds"] += self._run_tribunal_review_round(ready, results, 2)
 
             if self.judge_mode in {"shadow", "appellate"}:
                 judge_candidates = []
@@ -957,13 +1157,16 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     judge_agent = None
                     try:
                         load_started = time.time()
-                        judge_runtime = QwenJudgeModel()
+                        judge_runtime = QwenJudgeModel(
+                            hardware_profile=self.hardware_profile.name
+                        )
                         load_totals["judge_model_load_seconds"] += (
                             time.time() - load_started
                         )
                         judge_agent = MultimodalJudgeAgent(judge_runtime)
                         for sample in judge_candidates:
                             result = results[sample["index"]]
+                            self._seed_sample(sample, "appellate_judge")
                             judgment = judge_agent.analyze(
                                 sample["image"],
                                 sample["caption"],
@@ -1016,6 +1219,9 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             for sample in batch:
                 result = results[sample["index"]]
                 self._finish_timing(result)
+                from engine.final_artifact import final_artifact
+                result["final_artifact"] = final_artifact(sample["caption"], result)
+                result["runtime_accounting"] = sample_accounting(sample.get("raw", {}).get("id", sample["index"]))
                 on_result(
                     sample["index"], sample["raw"], result,
                     result["timing"]["sample_inference_seconds"],
@@ -1071,6 +1277,7 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             ),
             "wall_clock_seconds": round(time.time() - run_started, 4),
         }
+        self.run_timing["stage_reuse_events"] = deepcopy(self.stage_checkpoints.reuse_events)
         return self.run_timing
 
     def export_feedback_examples(self):

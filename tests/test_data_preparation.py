@@ -9,9 +9,10 @@ class _ClassLabel:
 
 
 class DataPreparationTests(unittest.TestCase):
-    def test_label_normalization_supports_locked_numeric_mapping(self):
-        self.assertEqual(normalize_label(0), "ENTAILS")
-        self.assertEqual(normalize_label(1), "CONTRADICTS")
+    def test_untyped_numeric_labels_must_not_be_guessed(self):
+        for value in (0, 1, "0", "1"):
+            with self.assertRaises(ValueError):
+                normalize_label(value)
 
     def test_label_normalization_uses_dataset_class_label(self):
         self.assertEqual(normalize_label(0, _ClassLabel()), "ENTAILS")

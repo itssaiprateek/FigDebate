@@ -15,6 +15,11 @@ class FigDebate:
         judge_mode="disabled",
         judge_scope="escalated",
         verified_feedback_path=None,
+        hardware_profile="8gb",
+        semantic_bridge_mode="disabled",
+        global_seed=42,
+        candidate_mode="independent",
+        control_mode="none",
     ):
         from engine.orchestrator import Orchestrator
 
@@ -25,6 +30,11 @@ class FigDebate:
             judge_mode=judge_mode,
             judge_scope=judge_scope,
             verified_feedback_path=verified_feedback_path,
+            hardware_profile=hardware_profile,
+            semantic_bridge_mode=semantic_bridge_mode,
+            global_seed=global_seed,
+            candidate_mode=candidate_mode,
+            control_mode=control_mode,
         )
 
     def predict(self, image, caption):

@@ -543,38 +543,6 @@ class FeedbackLoop:
         )
         return accepted, reason
 
-    def record_reliability_outcome(
-        self, memory_ids, original_label, final_label, ground_truth
-    ):
-        """Update reliability after a held-out batch, never during inference."""
-        updates = []
-        for item in self.arbiter_memory:
-            if item.get("memory_id") not in set(memory_ids or []):
-                continue
-            reliability = item.setdefault("reliability", {})
-            reliability["applications"] = int(
-                reliability.get("applications", 0) or 0
-            ) + 1
-            if original_label != final_label:
-                if original_label != ground_truth and final_label == ground_truth:
-                    reliability["corrections"] = int(
-                        reliability.get("corrections", 0) or 0
-                    ) + 1
-                elif original_label == ground_truth and final_label != ground_truth:
-                    reliability["harms"] = int(
-                        reliability.get("harms", 0) or 0
-                    ) + 1
-            corrections = int(reliability.get("corrections", 0) or 0)
-            harms = int(reliability.get("harms", 0) or 0)
-            reliability["beta_mean"] = round(
-                (corrections + 1) / (corrections + harms + 2), 6
-            )
-            updates.append({
-                "memory_id": item.get("memory_id"),
-                **reliability,
-            })
-        return updates
-
     def calibration_rule(self, language_output, comparison, decision, ground_truth, phenomenon=None):
         """Return a pre-approved general rule for a known development error.
 

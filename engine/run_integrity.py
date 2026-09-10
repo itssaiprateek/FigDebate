@@ -5,13 +5,17 @@ import os
 
 
 IMMUTABLE_RUN_KEYS = (
+    "data_usage", "evaluation_reference_sha256",
+    "candidate_mode", "control_mode", "selection_seed", "stage_fingerprints",
     "dataset", "requested_samples", "execution_mode", "debate_mode",
     "evidence_mode", "judge_mode", "judge_scope", "feedback_mode",
+    "semantic_bridge_mode", "hardware_profile", "ablation_signature",
     "verified_feedback_sha256",
     "model_vision", "model_vision_revision", "model_language",
     "model_language_revision", "seed", "selection_strategy",
     "model_judge", "model_judge_revision",
     "dataset_selection_sha256",
+    "selection_manifest_sha256", "selection_manifest_schema",
     "pipeline_source_sha256", "evidence_ledger_version",
 )
 

@@ -410,7 +410,7 @@ class JudgeEvaluationTests(unittest.TestCase):
             "judge_revision_accepted": [True],
             "pre_judge_prediction": ["ENTAILS"],
             "tribunal_state": ["RESOLVED"],
-            "tribunal_round_count": [2],
+            "tribunal_round_count": [1],
             "tribunal_review_status": ["RESOLVE"],
             "tribunal_verified_evidence_id": ["AV001"],
         })
@@ -420,7 +420,7 @@ class JudgeEvaluationTests(unittest.TestCase):
             rows.to_csv(input_path, index=False)
             metrics = evaluate_predictions(input_path, output_path)
         self.assertEqual(metrics["judge"]["tribunal_requested_count"], 1)
-        self.assertEqual(metrics["judge"]["tribunal_mean_rounds"], 2.0)
+        self.assertEqual(metrics["judge"]["tribunal_mean_rounds"], 1.0)
         self.assertEqual(
             metrics["judge"]["tribunal_state_distribution"],
             {"RESOLVED": 1},
@@ -451,6 +451,40 @@ class JudgeEvaluationTests(unittest.TestCase):
             metrics = evaluate_predictions(input_path, output_path)
         self.assertEqual(metrics["debate"]["harm_count"], 0)
         self.assertEqual(metrics["judge"]["accepted_harms"], 1)
+
+    def test_semantic_abstention_is_separate_from_procedural_rejection(self):
+        rows = pd.DataFrame({
+            "ground_truth": ["CONTRADICTS", "ENTAILS"],
+            "prediction": ["ENTAILS", "ENTAILS"],
+            "phenomenon": ["metaphor", "humor"],
+            "judge_requested": [True, True],
+            "judge_mode": ["tribunal", "tribunal"],
+            "judge_verdict": ["CONTRADICTS", "ABSTAIN"],
+            "judge_format_valid": [True, True],
+            "tribunal_semantic_judgment_valid": [True, False],
+            "tribunal_semantic_abstained": [False, True],
+            "tribunal_computed_admissibility": ["REJECTED", "REJECTED"],
+            "tribunal_revision_reason": [
+                "tribunal_cited_unknown_evidence", "tribunal_not_resolved",
+            ],
+            "tribunal_contract_normalizations": ["confidence_string", ""],
+            "tribunal_claim_dependency_reason": [
+                "claim_dependencies_satisfied",
+                "directional_claim_dependencies_invalid",
+            ],
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            input_path = Path(temporary) / "predictions.csv"
+            output_path = Path(temporary) / "metrics"
+            rows.to_csv(input_path, index=False)
+            metrics = evaluate_predictions(input_path, output_path)
+        judge = metrics["judge"]
+        self.assertEqual(judge["semantic_binary_judgment_count"], 1)
+        self.assertEqual(judge["semantic_abstention_count"], 1)
+        self.assertEqual(
+            judge["procedural_rejection_after_binary_judgment_count"], 1
+        )
+        self.assertEqual(judge["contract_normalized_count"], 1)
 
 
 if __name__ == "__main__":

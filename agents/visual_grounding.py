@@ -424,9 +424,14 @@ describe clothing, people, or objects as text.
         prompt = self.question_controller.build_prompt(
             question.text, question.question_type
         )
-        raw, elapsed = self._generate_response(
-            image, prompt, question.max_new_tokens
+        profile = getattr(getattr(self, "runtime", None), "hardware_profile", None)
+        profile_tokens = (
+            getattr(profile, "agent1_ocr_tokens", question.max_new_tokens)
+            if question.question_type == "ocr"
+            else getattr(profile, "agent1_default_tokens", question.max_new_tokens)
         )
+        token_budget = max(int(question.max_new_tokens), int(profile_tokens))
+        raw, elapsed = self._generate_response(image, prompt, token_budget)
         diagnostics = dict(self._last_generation_diagnostics or {})
         answer, status, valid, error = self.question_controller.validate_answer(
             raw,
@@ -443,7 +448,7 @@ describe clothing, people, or objects as text.
                 self.question_controller.retry_prompt(
                     question.text, question.question_type
                 ),
-                question.max_new_tokens,
+                token_budget,
             )
             elapsed += retry_elapsed
             retry_diagnostics = dict(self._last_generation_diagnostics or {})
@@ -1462,9 +1467,12 @@ Text Binding: exact visible phrase -> attached visible entity, or None
             else "ABSENT" if answer_status == "ABSENT"
             else "UNCLEAR"
         )
-        subject = self._prompt_field(critique_prompt, "Claim subject") or (
-            "question-targeted visual entity"
-        )
+        witness_only = "TRIBUNAL_VISUAL_WITNESS_ONLY" in str(critique_prompt)
+        # A caption subject (for example "I") is not an observed visual entity.
+        # The atomic answer has no separate entity field; retain an honest
+        # generic scope instead of attributing model-unobserved role bindings.
+        subject = ("question-targeted visual entities" if witness_only else
+                   self._prompt_field(critique_prompt, "Claim subject") or "question-targeted visual entity")
         observed_state = answer.get("answer") if observation_status == "OBSERVED" else ""
         relation_value = "UNRESOLVED"
         relation_raw = ""
@@ -1478,7 +1486,6 @@ Text Binding: exact visible phrase -> attached visible entity, or None
             "_raw_response": "Claim Relation: UNRESOLVED",
         }
         relation_retry_raw = ""
-        witness_only = "TRIBUNAL_VISUAL_WITNESS_ONLY" in str(critique_prompt)
         if (
             answer.get("valid")
             and observation_status == "OBSERVED"

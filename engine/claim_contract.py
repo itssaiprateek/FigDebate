@@ -225,7 +225,13 @@ def _field_contamination(language_output):
 
 def _affirmative_opposite(value):
     normalized = " ".join(str(value or "").split()).strip()
-    return bool(normalized) and not ABSENCE_PREFIX_RE.match(normalized)
+    absence_only = re.search(
+        r"\b(?:not|isn['’]?t|aren['’]?t|no)\s+"
+        r"(?:visible|shown|present|depicted|readable|observed|provided)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    return bool(normalized) and not ABSENCE_PREFIX_RE.match(normalized) and not absence_only
 
 
 def audit_relation_pair(expected_state, opposite_state, subject=""):
@@ -321,6 +327,9 @@ def _has_human_coreference(source_value, entity_value):
     )
 
 
+from engine.claim_frame import audit_claim_frame
+
+
 def audit_claim_contract(caption, language_output):
     """Audit preservation without pretending to solve semantic equivalence."""
     language_output = language_output or {}
@@ -369,7 +378,8 @@ def audit_claim_contract(caption, language_output):
             or _has_human_coreference(source_caption, value)
         )
 
-    warnings = []
+    frame_audit = audit_claim_frame(source_caption, language_output)
+    warnings = ["caption_entity_roles_reversed"] if frame_audit["role_swap_detected"] else []
     contaminated_fields = _field_contamination(language_output)
     if contaminated_fields:
         warnings.extend(
@@ -398,7 +408,8 @@ def audit_claim_contract(caption, language_output):
         if preserved is not None
     ]
     entity_frame_preserved = (
-        all(required_entity_checks) if required_entity_checks else False
+        (all(required_entity_checks) if required_entity_checks else False)
+        and not frame_audit["role_swap_detected"]
     )
     proposition_preserved = not any(
         warning in {
@@ -455,14 +466,119 @@ def audit_claim_contract(caption, language_output):
         and predicate_specific is not False
         and opposite_is_affirmative
     )
+    semantic_audit = language_output.get("_caption_semantic_audit")
+    if semantic_audit is not None:
+        from engine.claim_validation import core_errors
+        content_errors = core_errors(language_output)
+        graph = language_output.get("claim_graph")
+        if graph is not None and semantic_audit.get("claim_graph_fingerprint") != graph.get("fingerprint"):
+            content_errors.append("STALE_GRAPH_SEMANTIC_AUDIT")
+        valid_audit = bool(semantic_audit.get("_format_valid") and not content_errors)
+        warnings.extend(content_errors)
+        semantic_source_safe = valid_audit and all(semantic_audit.get(key) is True for key in (
+            "expressed_claim_preserved", "entity_roles_preserved",
+            "negation_quantities_preserved", "modifiers_scope_preserved"))
+        semantic_relation_safe = valid_audit and all(semantic_audit.get(key) is True for key in (
+            "expected_state_supports_full_claim", "opposite_state_conflicts_with_full_claim"))
+        # Heuristics remain diagnostics; fresh audited relation semantics decide
+        # admissibility for the new extraction contract.
+        relation_pair["heuristic_valid"] = relation_pair["valid"]
+        relation_pair["valid"] = bool(semantic_source_safe and semantic_relation_safe and relation_pair_complete)
+        relation_pair["validation_method"] = "caption_only_model_audit"
+        entity_frame_preserved = bool(semantic_source_safe and not frame_audit["role_swap_detected"]
+                                      and not contaminated_fields)
+        proposition_preserved = bool(proposition_preserved and semantic_source_safe)
+        source_safe = bool(semantic_source_safe and semantic_relation_safe and relation_pair_complete
+                           and not contaminated_fields and not frame_audit["role_swap_detected"])
+        tribunal_safe = source_safe
+        if not semantic_source_safe:
+            warnings.append("caption_semantic_source_check_failed")
+        if not semantic_relation_safe:
+            warnings.append("caption_semantic_relation_check_failed")
+    from engine.claim_validation import core_errors
+    from engine.claim_graph import conditions_are_compiled
+    source_graph = language_output.get("claim_graph") or {}
+    source_identity_graph_valid = bool(source_graph.get("representation") == "UNDECOMPOSED_SOURCE"
+        and source_caption and source_caption == proposition and not core_errors(language_output)
+        and conditions_are_compiled(source_graph))
+    if source_identity_graph_valid:
+        # All authoritative content is the unchanged source. An unsuccessful
+        # interpretation audit cannot falsify identity or its Boolean projection.
+        # Flat semantic metadata remains diagnostic, never certified by this.
+        proposition_preserved = entity_frame_preserved = source_safe = tribunal_safe = True
+        relation_pair["valid"] = True
+        relation_pair["validation_method"] = "exact_source_graph_boolean_projection"
+    immutable_group_valid = bool(proposition_preserved and entity_frame_preserved)
+    relation_group_valid = bool(
+        relation_pair_complete
+        and relation_pair["valid"]
+        and opposite_is_affirmative
+        and predicate_specific is not False
+    )
+    # Compiled graph obligations are authoritative; legacy flat-predicate
+    # specificity remains diagnostic and cannot invalidate their projection.
+    from engine.claim_graph import conditions_are_compiled
+    compiled = conditions_are_compiled(language_output.get("claim_graph") or {})
+    if compiled:
+        relation_group_valid = bool(relation_pair_complete and relation_pair["valid"])
+    reasoning_group_valid = bool(
+        str(language_output.get("structural_reasoning_type") or "").strip()
+        and str(language_output.get("literal_polarity") or "").strip()
+        and str(language_output.get("intended_polarity") or "").strip()
+    )
+    field_groups = {
+        "immutable_proposition": {
+            "valid": immutable_group_valid,
+            "fields": [
+                "source_caption", "caption_proposition", "claim_subject",
+                "claim_object", "claim_target", "negation", "numbers",
+            ],
+        },
+        "relation": {
+            "valid": relation_group_valid,
+            "fields": [
+                "claim_predicate", "relation_family",
+                "expected_visual_state", "opposite_visual_state",
+            ],
+        },
+        "reasoning_profile": {
+            "valid": reasoning_group_valid,
+            "fields": [
+                "literal_polarity", "intended_polarity", "evaluation_target",
+                "time_or_panel_scope", "structural_reasoning_type",
+                "figurative_mechanism_candidates",
+            ],
+        },
+    }
+    if compiled:
+        field_groups["relation"]["fields"] = ["claim_graph", "expected_visual_state", "opposite_visual_state"]
+        field_groups["relation"]["validation_scope"] = "compiled_hypothetical_conditions_not_visual_truth"
+    if source_identity_graph_valid:
+        field_groups["immutable_proposition"]["fields"] = ["source_caption", "caption_proposition", "claim_graph"]
+        field_groups["immutable_proposition"]["validation_scope"] = "exact_source_identity_not_flat_metadata_semantics"
+    field_groups["reasoning_profile"]["validation_scope"] = "metadata_presence_not_semantic_correctness"
     return {
-        "schema_version": "3.0",
+        "schema_version": "3.1",
+        "validity_scope": "source_and_required_representation_fields_not_image_truth",
+        "source_identity_preserved": bool(source_caption and source_caption == proposition),
+        "decomposition_status": "UNDECOMPOSED_SOURCE" if (language_output.get("claim_graph") or {}).get("representation") == "UNDECOMPOSED_SOURCE" else "REQUIRES_QUALIFICATION",
+        "semantic_qualified": bool((semantic_audit or {}).get("semantic_qualification") == "qualified"),
+        "flat_predicate_authoritative": not compiled,
+        "source_identity_graph_valid": source_identity_graph_valid,
+        "semantic_interpretation_status": (semantic_audit or {}).get("audit_status", "NOT_RUN"),
         "source_caption": source_caption,
         "caption_proposition": proposition,
         "source_numbers": source_numbers,
         "proposition_numbers": proposition_numbers,
         "source_negations": source_negations,
         "proposition_negations": proposition_negations,
+        "claim_frame_audit": frame_audit,
+        "caption_semantic_audit": semantic_audit,
+        "claim_graph": language_output.get("claim_graph"),
+        "semantic_correctness_human_evaluated": False,
+        **{key: language_output.get(key) for key in (
+            "claim_subject", "claim_predicate", "claim_object", "claim_source",
+            "claim_target", "asserted_property")},
         "entity_checks": entity_checks,
         "entity_frame_preserved": entity_frame_preserved,
         "proposition_preserved": proposition_preserved,
@@ -501,12 +617,128 @@ def audit_claim_contract(caption, language_output):
         "safe_for_automatic_directional_reasoning": bool(
             source_safe and not background_required and not normative_required
         ),
+        "field_groups": field_groups,
+        "invalid_field_groups": [
+            name for name, group in field_groups.items() if not group["valid"]
+        ],
+        "fully_valid": bool(source_safe and all(group["valid"] for group in field_groups.values())),
         "warnings": sorted(set(warnings + relation_pair["warnings"])),
+    }
+
+
+def assess_tribunal_claim_dependencies(
+    contract,
+    *,
+    agent2_requirements_valid=False,
+    cited_evidence=None,
+    proposed_relation=None,
+):
+    """Validate only claim fields required by the proposed evidence path.
+
+    Immutable caption meaning is always mandatory.  A generated expected/
+    opposite pair is mandatory only when no independently verified relation is
+    already cited.  Optional pragmatic diagnostics never invalidate a direct
+    visual or text relation.  This avoids rejecting a sound correction because
+    an unused metadata field was incomplete.
+    """
+    contract = contract or {}
+    cited = list(cited_evidence or [])
+    groups = contract.get("field_groups", {}) or {}
+    legacy_safe = bool(
+        contract.get(
+            "safe_for_tribunal_reasoning",
+            contract.get("safe_for_directional_reasoning", False),
+        )
+    )
+    immutable_group = groups.get("immutable_proposition", {}) or {}
+    relation_group = groups.get("relation", {}) or {}
+    immutable_safe = bool(
+        immutable_group.get(
+            "valid",
+            legacy_safe or (
+                contract.get("proposition_preserved", False)
+                and contract.get("entity_frame_preserved", False)
+            ),
+        )
+    )
+    fatal_warnings = {
+        "missing_caption_proposition",
+        "caption_number_changed_or_dropped",
+        "caption_negation_changed_or_dropped",
+        "caption_proposition_has_no_source_anchor",
+    }
+    present_fatal = sorted(
+        fatal_warnings & set(contract.get("warnings", []) or [])
+    )
+    immutable_safe = bool(immutable_safe and not present_fatal)
+    relation = str(proposed_relation or "").upper()
+    independent_direction = any(
+        item.get("grounded", False)
+        and item.get("relation") == relation
+        and (
+            item.get("decision_grade", False)
+            or (item.get("verification", {}) or {}).get(
+                "decision_grade", False
+            )
+        )
+        for item in cited
+    )
+    generated_relation_safe = bool(
+        relation_group.get(
+            "valid", contract.get("relation_pair_valid", legacy_safe)
+        )
+    )
+    relation_safe = bool(
+        independent_direction
+        or generated_relation_safe
+        or agent2_requirements_valid
+    )
+    checks = [
+        {
+            "name": "immutable_caption_dependencies",
+            "passed": immutable_safe,
+            "detail": ",".join(present_fatal),
+        },
+        {
+            "name": "directional_claim_dependencies",
+            "passed": relation_safe,
+            "detail": (
+                "independent_verified_relation" if independent_direction
+                else "validated_agent2_requirements" if agent2_requirements_valid
+                else "validated_generated_relation_pair" if generated_relation_safe
+                else "missing_directional_claim_frame"
+            ),
+        },
+        {
+            "name": "optional_reasoning_profile_non_blocking",
+            "passed": True,
+            "detail": "diagnostic_only",
+        },
+    ]
+    return {
+        "safe": bool(immutable_safe and relation_safe),
+        "immutable_safe": immutable_safe,
+        "relation_safe": relation_safe,
+        "independent_direction": independent_direction,
+        "required_groups": [
+            "immutable_proposition",
+            *([] if independent_direction else ["relation"]),
+        ],
+        "ignored_optional_groups": ["reasoning_profile"],
+        "checks": checks,
+        "reason": (
+            "claim_dependencies_satisfied"
+            if immutable_safe and relation_safe
+            else "immutable_caption_dependencies_invalid"
+            if not immutable_safe
+            else "directional_claim_dependencies_invalid"
+        ),
     }
 
 
 def attach_claim_contract(language_output, caption):
     output = deepcopy(language_output or {})
+    output["source_caption_raw"] = str(caption or "")
     output["original_caption"] = " ".join(str(caption or "").split())
     output["claim_contract"] = audit_claim_contract(caption, output)
     return output

@@ -10,16 +10,24 @@ import os
 from pathlib import Path
 import pickle
 
+import sys
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from PIL import Image
 
 
-DATASET_ID = "ColumbiaNLP/V-FLUTE"
+from dataset.protocol import (DATASET_ID, DATASET_REVISION, PROTOCOL_VERSION,
+                              included, validate_subset, image_identity)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROCESSED_DIR = PROJECT_ROOT / "dataset" / "data" / "processed"
 DEV_MANIFEST = (
     PROJECT_ROOT / "dataset" / "data" / "splits" / "vflute_train_dev50.json"
 )
 EXPECTED_SIZES = {
+    "vflute_train": 3992,
     "vflute_train_dev50": 50,
     "vflute_val": 573,
     "vflute_test": 569,
@@ -35,8 +43,6 @@ def normalize_label(value, label_feature=None) -> str:
 
     normalized = str(candidate).strip().upper()
     aliases = {
-        "0": "ENTAILS",
-        "1": "CONTRADICTS",
         "ENTAILMENT": "ENTAILS",
         "ENTAILS": "ENTAILS",
         "CONTRADICTION": "CONTRADICTS",
@@ -48,17 +54,17 @@ def normalize_label(value, label_feature=None) -> str:
 
 
 def encode_image(image_value) -> bytes:
+    if isinstance(image_value, dict) and image_value.get("bytes"):
+        return bytes(image_value["bytes"])
     if isinstance(image_value, Image.Image):
         image = image_value
-    elif isinstance(image_value, dict) and image_value.get("bytes"):
-        image = Image.open(BytesIO(image_value["bytes"]))
     elif isinstance(image_value, dict) and image_value.get("path"):
         image = Image.open(image_value["path"])
     else:
         raise TypeError(f"Unsupported image value: {type(image_value).__name__}")
 
     output = BytesIO()
-    image.convert("RGB").save(output, format="JPEG", quality=85)
+    image.convert("RGB").save(output, format="PNG")
     return output.getvalue()
 
 
@@ -66,11 +72,20 @@ def build_record(row, sample_id: str, label_feature=None) -> dict:
     caption = row.get("claim", row.get("caption"))
     if caption is None:
         raise KeyError("V-FLUTE row has neither 'claim' nor 'caption'.")
+    image_bytes = encode_image(row["image"])
     return {
         "id": sample_id,
+        "source_dataset": row.get("source_dataset", "UNKNOWN_UPSTREAM"),
+        "upstream_dataset_id": DATASET_ID,
+        "upstream_split": sample_id.rsplit("_", 1)[0].removeprefix("vflute_"),
+        "native_label": row["label"],
+        "upstream_row_index": int(sample_id.rsplit("_", 1)[1]),
+        "dataset_revision": DATASET_REVISION,
+        "dataset_protocol": PROTOCOL_VERSION,
+        **image_identity(image_bytes),
         "source": "vflute",
         "phenomenon": str(row["phenomenon"]).strip().lower(),
-        "image_bytes": encode_image(row["image"]),
+        "image_bytes": image_bytes,
         "caption": str(caption),
         "label": normalize_label(row["label"], label_feature),
         "explanation": str(row.get("explanation", "")),
@@ -86,6 +101,7 @@ def atomic_pickle(records: list[dict], target: Path) -> None:
 
 
 def validate_records(name: str, records: list[dict]) -> None:
+    validate_subset(records)
     expected = EXPECTED_SIZES[name]
     if len(records) != expected:
         raise ValueError(f"{name} has {len(records)} rows; expected {expected}.")
@@ -107,30 +123,38 @@ def validate_pickle(name: str, path: Path) -> None:
     validate_records(name, records)
 
 
-def prepare(force: bool = False) -> None:
+def prepare(force: bool = False, output_dir=None) -> None:
+    if force:
+        raise ValueError("In-place replacement is disabled. Use a new --output-dir for a versioned rebuild.")
+    destination = Path(output_dir).resolve() if output_dir else PROCESSED_DIR
+    if output_dir and destination.exists() and any(destination.iterdir()):
+        raise FileExistsError("Versioned output directory must be new or empty")
     targets = {
-        name: PROCESSED_DIR / f"{name}.pkl" for name in EXPECTED_SIZES
+        name: destination / f"{name}.pkl" for name in EXPECTED_SIZES
     }
     pending = set()
     for name, path in targets.items():
-        if force or not path.exists():
+        if not path.exists():
             pending.add(name)
             continue
         try:
             validate_pickle(name, path)
         except Exception as error:
-            print(f"Existing {path.name} is invalid ({error}); rebuilding it.")
-            pending.add(name)
+            raise ValueError(
+                f"Existing {path.name} is invalid ({error}); refusing silent replacement. "
+                "Inspect the data and use a new --output-dir for an intentional versioned rebuild."
+            ) from error
     if not pending:
-        print("V-FLUTE processed splits are present and valid.")
+        print("V-FLUTE files pass structural checks only; source and semantic qualification are separate.")
         return
 
-    from datasets import load_dataset
+    from datasets import load_dataset, Image as DatasetImage
 
     print(f"Downloading {DATASET_ID} for: {', '.join(sorted(pending))}")
 
     if "vflute_train_dev50" in pending:
-        train = load_dataset(DATASET_ID, split="train")
+        train = load_dataset(DATASET_ID, revision=DATASET_REVISION, split="train")
+        train = train.cast_column("image", DatasetImage(decode=False))
         label_feature = train.features.get("label")
         with DEV_MANIFEST.open("r", encoding="utf-8") as handle:
             selected = json.load(handle)
@@ -148,30 +172,33 @@ def prepare(force: bool = False) -> None:
         atomic_pickle(records, targets["vflute_train_dev50"])
 
     for output_name, source_split in (
+        ("vflute_train", "train"),
         ("vflute_val", "validation"),
         ("vflute_test", "test"),
     ):
         if output_name not in pending:
             continue
-        dataset = load_dataset(DATASET_ID, split=source_split)
+        dataset = load_dataset(DATASET_ID, revision=DATASET_REVISION, split=source_split)
+        dataset = dataset.cast_column("image", DatasetImage(decode=False))
         label_feature = dataset.features.get("label")
         records = [
             build_record(row, f"vflute_{source_split}_{index}", label_feature)
-            for index, row in enumerate(dataset)
+            for index, row in enumerate(dataset) if included(row)
         ]
         validate_records(output_name, records)
         atomic_pickle(records, targets[output_name])
 
-    print(f"Prepared V-FLUTE data in {PROCESSED_DIR}")
+    print(f"Prepared V-FLUTE data in {destination}; this does not establish semantic qualification.")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--force", action="store_true", help="Rebuild existing processed files."
+        "--force", action="store_true", help="Deprecated: in-place replacement is refused."
     )
+    parser.add_argument("--output-dir", help="New versioned destination; never overwrites legacy splits")
     args = parser.parse_args()
-    prepare(force=args.force)
+    prepare(force=args.force, output_dir=args.output_dir)
     return 0
 
 

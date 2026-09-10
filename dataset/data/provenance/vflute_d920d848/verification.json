@@ -1,0 +1,143 @@
+{
+  "dataset_id": "ColumbiaNLP/V-FLUTE",
+  "revision": "d920d848e21b6aba96e03704b134c546f89b74f4",
+  "upstream_files": [
+    {
+      "file": "test-00000-of-00002.parquet",
+      "sha256": "889884255f8929a20f9ffbd45a590fe5b642c05252d26b613e32cd1c100d6760",
+      "bytes": 290189394
+    },
+    {
+      "file": "test-00001-of-00002.parquet",
+      "sha256": "71516fbb85a6a76bc957e7d9879b99f491d485b96f66f7b3fe41c3f85780c7c5",
+      "bytes": 272526568
+    },
+    {
+      "file": "train-00000-of-00008.parquet",
+      "sha256": "152f4f3b56b4a9c34437d125d5770c4161e397ae529ea1ac43fb4332660205b9",
+      "bytes": 429779597
+    },
+    {
+      "file": "train-00001-of-00008.parquet",
+      "sha256": "242cb8bc52332f4be85b568d5bee725735c39b4bdd6b3fd1cf6713c313c07209",
+      "bytes": 480356930
+    },
+    {
+      "file": "train-00002-of-00008.parquet",
+      "sha256": "7b0c98c2b54bb3b35916e3a78095f1ccdc4535858dc9106e560cd9322723c392",
+      "bytes": 454646276
+    },
+    {
+      "file": "train-00003-of-00008.parquet",
+      "sha256": "c5301422ec09df1453f04c439f69de69eea157e305e4422a1eb5f8552b2083f6",
+      "bytes": 425080704
+    },
+    {
+      "file": "train-00004-of-00008.parquet",
+      "sha256": "e0b05181403213699835bd000aff51003404218de59bf985450534e3c3337e77",
+      "bytes": 451624484
+    },
+    {
+      "file": "train-00005-of-00008.parquet",
+      "sha256": "094efba27c1ad4541e3999acd58668c35d86b7d2d6f6d7f20ec4568e60b057b1",
+      "bytes": 469848439
+    },
+    {
+      "file": "train-00006-of-00008.parquet",
+      "sha256": "a9759f5dd864c6fa5eac4c5a59a681fda94fd29d27cd45bca8a42f011f6d15b0",
+      "bytes": 494762533
+    },
+    {
+      "file": "train-00007-of-00008.parquet",
+      "sha256": "e55b7f8da98d77eee6cf912475bfa04df42209467b4df640c426e31742f9cb81",
+      "bytes": 451747071
+    },
+    {
+      "file": "validation-00000-of-00002.parquet",
+      "sha256": "4833a4ce0f13ac93b7db4b1b3d9f1d514acdd21fc197a8057acdea08a5e8d0f1",
+      "bytes": 276155450
+    },
+    {
+      "file": "validation-00001-of-00002.parquet",
+      "sha256": "e0b403a3b758128248debe86b07133c6e9784ab37f9605b437422e536be292df",
+      "bytes": 271337374
+    }
+  ],
+  "splits": [
+    {
+      "split": "vflute_train",
+      "upstream_total": 4578,
+      "selected_upstream": 3992,
+      "local_rows": 3992,
+      "extra_local_ids": [],
+      "local_file_sha256": "002ebac831cf5d322362af15cf0cede891fe91372c316234fbce652c1a88078e",
+      "local_unchanged": true,
+      "verified_rows": 3992,
+      "native_source_counts": {
+        "memecap": 1566,
+        "irfl": 496,
+        "muse": 830,
+        "vismet": 649,
+        "nycartoons": 451
+      }
+    },
+    {
+      "split": "vflute_val",
+      "upstream_total": 726,
+      "selected_upstream": 573,
+      "local_rows": 573,
+      "extra_local_ids": [],
+      "local_file_sha256": "f63f9a92da6e3a65c92605be69ce4470e7d80ddd0e238db333667ba365c267de",
+      "local_unchanged": true,
+      "verified_rows": 573,
+      "native_source_counts": {
+        "irfl": 64,
+        "nycartoons": 100,
+        "memecap": 196,
+        "muse": 106,
+        "vismet": 107
+      }
+    },
+    {
+      "split": "vflute_test",
+      "upstream_total": 723,
+      "selected_upstream": 569,
+      "local_rows": 569,
+      "extra_local_ids": [],
+      "local_file_sha256": "b7805f8f082973e7ff291011e407f03814902308834ec2d03fe68683c0452be5",
+      "local_unchanged": true,
+      "verified_rows": 569,
+      "native_source_counts": {
+        "muse": 106,
+        "memecap": 196,
+        "vismet": 101,
+        "nycartoons": 100,
+        "irfl": 66
+      }
+    }
+  ],
+  "dev50_rows": 50,
+  "dev50_matches_verified_train": true,
+  "dev50_file_sha256": "3803beb04a0efb00bfb31549ba2154fbfd8ff00dcd948fd6e298680d31333966",
+  "image_lineage_counts": {
+    "EXACT_REPRODUCED_JPEG85": 5132,
+    "EXACT_DECODED_PIXELS": 2
+  },
+  "text_transformation_counts": {
+    "explanation": 46,
+    "caption": 11
+  },
+  "all_source_lineage_verified": true,
+  "publication_qualified": false,
+  "remaining_gates": [
+    "independent semantic annotation and adjudication",
+    "review near-duplicate candidates",
+    "freeze contamination-aware evaluation protocol",
+    "image readability review"
+  ],
+  "legacy_task_status": {
+    "capcon": "QUARANTINED_UNVERIFIED_NEGATIVE_CONSTRUCTION",
+    "mmsd2": "QUARANTINED_NATIVE_SARCASM_NOT_VISUAL_ENTAILMENT"
+  },
+  "provenance_sha256": "bf0af77004af7af0d79cffba35804f518e6c90ea117ae303ce3c841bbb58a3fb"
+}

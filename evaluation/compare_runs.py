@@ -32,7 +32,12 @@ def _truth_rate(rows, key):
 
 def _read(path):
     with open(path, newline="", encoding="utf-8") as handle:
-        rows = {row["id"]: row for row in csv.DictReader(handle)}
+        records = list(csv.DictReader(handle))
+        rows = {row["id"]: row for row in records}
+        if len(rows) != len(records) or any(not key.strip() for key in rows):
+            raise ValueError("Duplicate prediction IDs cannot be paired")
+        if any(row.get("ground_truth") not in LABELS for row in records):
+            raise ValueError("Paired evaluation requires native binary gold labels")
     if not rows:
         raise ValueError(f"No prediction rows found in {path}")
     return rows
@@ -64,7 +69,19 @@ def _exact_mcnemar_p(control_only, treatment_only):
     return min(1.0, 2 * tail)
 
 
-def compare(control_path, treatment_path, output_dir):
+def compare(control_path, treatment_path, output_dir, allow_legacy=False, allowed_changes=(), code_change_description=None):
+    import pandas as pd
+    from evaluation.input_coverage import reconcile
+    coverage = []
+    for path in (control_path, treatment_path):
+        _, audit = reconcile(pd.read_csv(path), path)
+        coverage.append(audit)
+        if audit["status"] != "RECONCILED" and not allow_legacy:
+            raise ValueError("Paired evaluation requires verified intended manifests; legacy mode is diagnostic only")
+        if audit.get("missing_ids"):
+            raise ValueError("Incomplete paired run: finish missing outputs before reporting treatment gains")
+    from evaluation.configuration_pairing import verify_configuration
+    configuration = verify_configuration(control_path, treatment_path, allowed_changes, allow_legacy, code_change_description)
     control = _read(control_path)
     treatment = _read(treatment_path)
     if set(control) != set(treatment):
@@ -76,6 +93,8 @@ def compare(control_path, treatment_path, output_dir):
             f"missing from treatment={missing_treatment[:5]}"
         )
 
+    from evaluation.grouped_metrics import grouped_accuracy_difference, verify_pair_identity
+    identity_verified = verify_pair_identity(control, treatment, allow_legacy=allow_legacy)
     paired = []
     for sample_id in sorted(control):
         left = control[sample_id]
@@ -87,6 +106,7 @@ def compare(control_path, treatment_path, output_dir):
         right_correct = right["prediction"] == gold
         paired.append({
             "id": sample_id,
+            "image_group_id": left.get("image_group_id", ""),
             "phenomenon": left.get("phenomenon", ""),
             "ground_truth": gold,
             "control_prediction": left["prediction"],
@@ -111,7 +131,13 @@ def compare(control_path, treatment_path, output_dir):
     control_rows = list(control.values())
     treatment_rows = list(treatment.values())
     metrics = {
+        "input_coverage": coverage,
+        "publication_qualified": False,
         "samples": total,
+        "configuration_audit": configuration,
+        "input_identity_verified": identity_verified,
+        "grouped_inference": grouped_accuracy_difference(paired) if identity_verified else None,
+        "mcnemar_role": "supplementary_row_level_only",
         "control_accuracy": control_accuracy,
         "treatment_accuracy": treatment_accuracy,
         "accuracy_delta": treatment_accuracy - control_accuracy,
@@ -186,8 +212,12 @@ def main():
     parser.add_argument("--control", required=True)
     parser.add_argument("--treatment", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--allow-legacy", action="store_true", help="Diagnostic only: permit missing input hashes; no grouped significance claim.")
+    parser.add_argument("--allow-setting-change", nargs="*", default=[], help="Exact treatment keys expected to differ; all input/model/code identities must match.")
+    parser.add_argument("--code-change-description", help="Explicit before/after code comparison: explain the revision; input/model identities must still match")
     args = parser.parse_args()
-    metrics = compare(args.control, args.treatment, args.output_dir)
+    metrics = compare(args.control, args.treatment, args.output_dir, allow_legacy=args.allow_legacy,
+                      allowed_changes=args.allow_setting_change, code_change_description=args.code_change_description)
     print(json.dumps(metrics, indent=2))
 
 
