@@ -224,12 +224,17 @@ class Qwen3VLVisionModel:
                 clean_up_tokenization_spaces=False,
             )[0].strip()
             generated_count = int(completion_ids.shape[-1])
+            eos_value = getattr(getattr(self.model, "generation_config", None), "eos_token_id", None)
+            eos_ids = set(eos_value if isinstance(eos_value, (list, tuple)) else [eos_value])
+            eos_ids.discard(None)
+            last_token = int(completion_ids[0, -1].item()) if generated_count else None
             diagnostics = {
                 "backend": self.backend,
                 "quantization": self.quantization,
                 "generated_tokens": generated_count,
                 "max_new_tokens": int(max_new_tokens),
                 "hit_token_limit": generated_count >= int(max_new_tokens),
+                "ended_by_eos": last_token in eos_ids,
                 "elapsed_seconds": round(elapsed, 4),
                 "use_cache": bool(use_cache),
                 "input_tokens": prompt_length,

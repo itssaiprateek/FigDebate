@@ -10,6 +10,11 @@ def summarize_tribunal(records, wall_seconds=None):
     verification_failures = {}
     failed_verification_cases = 0
     invalid_verification_cases = 0
+    initial_visual_diagnostics_cases = 0
+    initial_visual_answers = 0
+    failed_initial_visual_answers = 0
+    cases_with_failed_initial_visual_answers = 0
+    initial_visual_answer_errors = {}
     for r in records:
         gold, initial, final = r.get("ground_truth"), r.get("initial_prediction"), r.get("prediction")
         if gold not in {"ENTAILS", "CONTRADICTS"}:
@@ -19,6 +24,17 @@ def summarize_tribunal(records, wall_seconds=None):
         counts["final_correct"] += final == gold
         counts["helpful_changes"] += initial != gold and final == gold
         counts["harmful_changes"] += initial == gold and final != gold
+        visual = r.get("trace", {}).get("visual_output", {}).get("_internal", {})
+        if "atomic_answers" in visual:
+            initial_visual_diagnostics_cases += 1
+            answers = visual["atomic_answers"]
+            initial_visual_answers += len(answers)
+            failures = [answer for answer in answers if not answer.get("valid")]
+            failed_initial_visual_answers += len(failures)
+            cases_with_failed_initial_visual_answers += bool(failures)
+            for answer in failures:
+                error = answer.get("error") or answer.get("status") or "UNKNOWN"
+                initial_visual_answer_errors[error] = initial_visual_answer_errors.get(error, 0) + 1
         requested = r.get("judge_requested", True)
         counts["reviews_not_requested"] += not requested
         valid = requested and bool(r.get("judge_format_valid"))
@@ -76,4 +92,9 @@ def summarize_tribunal(records, wall_seconds=None):
         verification_short_circuits=verification_failures,
         cases_with_failed_verification_execution=failed_verification_cases,
         cases_with_invalid_verification_output=invalid_verification_cases,
+        cases_with_initial_visual_diagnostics=initial_visual_diagnostics_cases,
+        initial_visual_answers=initial_visual_answers,
+        failed_initial_visual_answers=failed_initial_visual_answers,
+        cases_with_failed_initial_visual_answers=cases_with_failed_initial_visual_answers,
+        initial_visual_answer_errors=initial_visual_answer_errors,
         interpretation="Diagnostic counts; no claim of generalization or independent model errors.")

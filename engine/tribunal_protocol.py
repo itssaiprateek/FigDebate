@@ -1,6 +1,7 @@
 """Compact tribunal proposal contract. Transport validity is not semantic truth."""
 from copy import deepcopy
 import json
+import re
 
 from engine.output_contracts import object_schema, validate_shape, incomplete_clause
 
@@ -17,23 +18,48 @@ LITERAL_TYPES = {"visual_fact", "visual_relation", "visible_text", "ocr_text", "
                  "reaction_cue", "entity_bound_observation"}
 
 
-def unfinished_generated_field(value, path=""):
-    """Reject obvious dangling generated clauses, preserving exact source quotations."""
+def _unfinished_generated_fields(value, path=""):
     prose = {"observation", "observed", "attachment", "image_state", "decisive_reason", "reason", "argument"}
     if isinstance(value, dict):
         for key, child in value.items():
             location = f"{path}.{key}" if path else key
             if key in prose and isinstance(child, str) and incomplete_clause(child):
-                return location
-            found = unfinished_generated_field(child, location)
-            if found:
-                return found
+                yield location, child
+            yield from _unfinished_generated_fields(child, location)
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            found = unfinished_generated_field(child, f"{path}[{index}]")
-            if found:
-                return found
-    return ""
+            yield from _unfinished_generated_fields(child, f"{path}[{index}]")
+
+
+def unfinished_generated_field(value, path=""):
+    """Reject obvious dangling generated clauses, preserving exact source quotations."""
+    return next(_unfinished_generated_fields(value, path), ("", ""))[0]
+
+
+def generated_clause_error(value):
+    """Give a bounded, concrete repair diagnostic without accepting partial prose."""
+    location, text = next(_unfinished_generated_fields(value), ("", ""))
+    if not location:
+        return ""
+    return (
+        f"Incomplete generated clause at {location}. Previous field ending (data): "
+        f"{json.dumps(text[-120:])}. Rewrite that field as one complete factual sentence. "
+        "Do not copy an unfinished quotation or end after a comma."
+    )
+
+
+def source_quote_error(quote, source):
+    """Explain an exact-span mismatch; never silently normalize a model quotation."""
+    source, quote = " ".join(str(source or "").split()), " ".join(str(quote or "").split())
+    if quote and quote in source:
+        return ""
+    message = ("caption_quote must copy an exact substring of source_caption, including "
+               f"capitalization, NOT image text. Invalid quotation (data): {json.dumps(quote)}.")
+    matches = list(re.finditer(re.escape(quote), source, flags=re.IGNORECASE)) if quote else []
+    if len(matches) == 1:
+        message += (" If that is the intended span, its exact source spelling is "
+                    + json.dumps(matches[0].group()) + ".")
+    return message
 
 
 def proposal_schema(graph, catalog_ids, context_ids):
@@ -72,9 +98,9 @@ def expand_proposal(raw, graph, packet, catalog_ids, context_ids):
         value = None
     if not validate_shape(value, schema):
         return {"_format_valid": False, "_format_error": "invalid_compact_proposal", "_raw_output": raw}
-    unfinished = unfinished_generated_field(value)
+    unfinished = generated_clause_error(value)
     if unfinished:
-        return {"_format_valid": False, "_format_error": "Rewrite as one short complete clause: " + unfinished, "_raw_output": raw}
+        return {"_format_valid": False, "_format_error": unfinished, "_raw_output": raw}
     nodes = value["node_relations"]
     typed_relations = [{k: n[k] for k in ("claim_node_id", "relation", "evidence_ids")} for n in nodes]
     resolution = resolve_nodes(graph, typed_relations, catalog_ids)

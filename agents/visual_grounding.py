@@ -442,6 +442,9 @@ describe clothing, people, or objects as text.
         retry_attempted = not valid
         retry_success = False
         raw_responses = [raw]
+        validation_attempts = [
+            {"attempt": "primary", "status": status, "valid": valid, "error": error}
+        ]
         if retry_attempted:
             retry_budget = min(token_budget * 2, 360) if error in {"truncated_response", "incomplete_clause"} else token_budget
             retry_raw, retry_elapsed = self._generate_response(
@@ -462,15 +465,20 @@ describe clothing, people, or objects as text.
                 )
             )
             raw_responses.append(retry_raw)
+            validation_attempts.append({
+                "attempt": "retry", "status": retry_status,
+                "valid": retry_valid, "error": retry_error,
+            })
             diagnostics = {
                 "primary": diagnostics,
                 "retry": retry_diagnostics,
             }
-            if retry_valid:
-                answer, status, valid, error = (
-                    retry_answer, retry_status, retry_valid, retry_error
-                )
-                retry_success = True
+            # The public outcome describes the final attempt, including failures.
+            # Keep both validations and raw responses for causal diagnosis.
+            answer, status, valid, error = (
+                retry_answer, retry_status, retry_valid, retry_error
+            )
+            retry_success = retry_valid
 
         return VisualAnswer(
             question_id=question.question_id,
@@ -485,6 +493,7 @@ describe clothing, people, or objects as text.
             retry_attempted=retry_attempted,
             retry_success=retry_success,
             generation_diagnostics=diagnostics,
+            validation_attempts=validation_attempts,
         )
 
     def answer_visual_question(

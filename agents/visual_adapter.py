@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import re
 
 
@@ -88,6 +88,7 @@ class VisualAnswer:
     retry_attempted: bool = False
     retry_success: bool = False
     generation_diagnostics: dict | None = None
+    validation_attempts: list[dict] = field(default_factory=list)
 
     def to_dict(self):
         return asdict(self)
@@ -260,8 +261,8 @@ class AtomicVisualQuestionController:
             f"Visual question: {question}\n{ending}"
         )
 
-    @staticmethod
-    def retry_prompt(question, question_type):
+    @classmethod
+    def retry_prompt(cls, question, question_type):
         if question_type == "ocr":
             ending = "Return only the requested visible text or NONE."
         elif question_type == "count":
@@ -269,7 +270,12 @@ class AtomicVisualQuestionController:
         elif question_type == "yes_no":
             ending = "Return YES, NO, or UNCLEAR."
         else:
-            ending = "Return one short factual answer or UNCLEAR."
+            target_words = max(2, cls.TYPE_WORD_LIMITS.get(question_type, 65) // 2)
+            ending = (
+                f"Use at most {target_words} words in total. Give short, complete "
+                "observations using only visible evidence; omit repeated descriptions. "
+                "Return UNCLEAR if the requested detail cannot be seen."
+            )
         return (
             "Reinspect the image and answer this single visual question. "
             "Do not repeat instructions. "
@@ -286,11 +292,13 @@ class AtomicVisualQuestionController:
         if not answer:
             return "", "INVALID_RESPONSE", False, "empty_response"
         from engine.output_contracts import incomplete_clause
-        # At a token cap, only self-delimited scalar answers can be certified
-        # complete without a rewrite. Free-form OCR/prose can hide missing items.
+        # At a token cap, require an explicit EOS or a self-delimited scalar.
+        # Otherwise free-form OCR/prose can hide missing items despite punctuation.
         scalar_complete = ((question_type == "count" and re.fullmatch(r"\d+", answer))
                            or (question_type == "yes_no" and answer.upper() in {"YES", "NO", "UNCLEAR"}))
-        if (diagnostics or {}).get("hit_token_limit") and not scalar_complete:
+        termination = diagnostics or {}
+        if (termination.get("hit_token_limit") and termination.get("ended_by_eos") is not True
+                and not scalar_complete):
             return answer, "INVALID_RESPONSE", False, "truncated_response"
         if question_type != "ocr" and incomplete_clause(answer):
             return answer, "INVALID_RESPONSE", False, "incomplete_clause"
