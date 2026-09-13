@@ -1,5 +1,7 @@
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
+from types import SimpleNamespace
 
 from PIL import Image
 
@@ -14,6 +16,35 @@ from models.vision_model import Qwen3VLVisionModel
 
 
 class RuntimeProfileTests(unittest.TestCase):
+    def test_prefill_cleanup_runs_once_and_preserves_forward_output(self):
+        runtime = QwenJudgeModel.__new__(QwenJudgeModel)
+        runtime.hardware_profile = PROFILES["paper-8gb"]
+        runtime.model = Mock()
+        cuda = Mock()
+        cuda.is_available.return_value = True
+        fake_torch = SimpleNamespace(cuda=cuda)
+        with patch.object(runtime, "_cuda_memory", return_value={"allocated_gb": 3.2}):
+            handle, measurement = runtime._install_prefill_cleanup(fake_torch, True)
+            callback = runtime.model.register_forward_hook.call_args.args[0]
+            output = {"past_key_values": object(), "logits": object()}
+            retained = dict(output)
+            self.assertIsNone(callback(runtime.model, (), output))
+            self.assertIsNone(callback(runtime.model, (), output))
+            self.assertEqual(output, retained)
+        cuda.empty_cache.assert_called_once()
+        cuda.synchronize.assert_called_once()
+        self.assertTrue(measurement["succeeded"])
+        self.assertIs(handle, runtime.model.register_forward_hook.return_value)
+
+    def test_cache_free_fallback_does_not_install_prefill_cleanup(self):
+        runtime = QwenJudgeModel.__new__(QwenJudgeModel)
+        runtime.hardware_profile = PROFILES["paper-8gb"]
+        runtime.model = Mock()
+        handle, measurement = runtime._install_prefill_cleanup(SimpleNamespace(cuda=Mock()), False)
+        self.assertIsNone(handle)
+        self.assertFalse(measurement["performed"])
+        runtime.model.register_forward_hook.assert_not_called()
+
     def test_auto_profile_is_conservative_and_deterministic(self):
         self.assertEqual(resolve_runtime_profile("auto", 7.9).name, "8gb")
         self.assertEqual(resolve_runtime_profile("auto", 11.9).name, "12gb")

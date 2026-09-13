@@ -24,6 +24,7 @@ class RuntimeProfile:
     judge_retrieval_cycles: int = 2
     judge_evidence_first: bool = False
     judge_min_followup_seconds: float = 90.0
+    judge_release_prefill_workspace: bool = False
 
     def as_dict(self):
         payload = asdict(self)
@@ -36,11 +37,11 @@ PROFILES = {
     # the conservative 8 GB budget so a larger GPU changes speed, not inputs.
     "paper-8gb": RuntimeProfile(
         "paper-8gb", 0.0, 2_359_296, 1_048_576, 96, 180, 1024, 18,
-        (),
+        (), judge_release_prefill_workspace=True,
     ),
     "8gb": RuntimeProfile(
         "8gb", 0.0, 2_359_296, 1_048_576, 96, 180, 1024, 18,
-        (1_048_576, 589_824, 262_144),
+        (1_048_576, 589_824, 262_144), judge_release_prefill_workspace=True,
     ),
     "12gb": RuntimeProfile(
         "12gb", 10.0, 3_500_000, 1_572_864, 128, 240, 1024, 22,

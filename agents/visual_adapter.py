@@ -252,7 +252,7 @@ class AtomicVisualQuestionController:
         }
         ending = rules.get(
             question_type,
-            "Give at most three short factual clauses (30 words total). Use UNCLEAR if the detail cannot be seen.",
+            "Answer briefly using only directly visible evidence. Use UNCLEAR if the requested detail cannot be seen.",
         )
         return (
             "Inspect only the supplied image. Do not decide a dataset label, "

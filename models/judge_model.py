@@ -164,6 +164,33 @@ class QwenJudgeModel:
         except RuntimeError:
             return {}
 
+    def _install_prefill_cleanup(self, torch, use_cache):
+        """Release unused prefill allocations once; retain weights and KV state.
+
+        The matched diagnostic established memory headroom, not a decode-speed
+        improvement. This never lowers image resolution or changes model inputs.
+        """
+        enabled = bool(getattr(self.hardware_profile, "judge_release_prefill_workspace", False))
+        measurement = {"enabled": enabled, "performed": False}
+        if not enabled or not use_cache or not torch.cuda.is_available():
+            return None, measurement
+
+        def after_forward(module, args, output):
+            if measurement["performed"]:
+                return
+            measurement["performed"] = True
+            measurement["before"] = self._cuda_memory(torch)
+            started = time.perf_counter()
+            try:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                measurement["succeeded"] = True
+            finally:
+                measurement["cleanup_seconds"] = time.perf_counter() - started
+                measurement["after"] = self._cuda_memory(torch)
+
+        return self.model.register_forward_hook(after_forward), measurement
+
     def _generate_once(
         self, image, prompt, max_new_tokens, *, use_cache
     ):
@@ -191,6 +218,8 @@ class QwenJudgeModel:
         inputs = None
         generated = None
         completion_ids = None
+        prefill_hook = None
+        prefill_cleanup = {}
         messages = [
             {
                 "role": "system",
@@ -254,6 +283,8 @@ class QwenJudgeModel:
                 from engine.output_contracts import complete_json_stopper
                 generation_options["stopping_criteria"].append(
                     complete_json_stopper(self.processor.tokenizer, prompt_length, schema))
+            prefill_hook, prefill_cleanup = self._install_prefill_cleanup(torch, use_cache)
+            self._last_generation_diagnostics["prefill_workspace_cleanup"] = prefill_cleanup
             with torch.inference_mode():
                 generated = self.model.generate(
                     **inputs,
@@ -307,10 +338,13 @@ class QwenJudgeModel:
                 ),
                 "elapsed_seconds": round(elapsed, 4),
                 "use_cache": bool(use_cache),
+                "prefill_workspace_cleanup": prefill_cleanup,
                 "image_size": list(self._image_size(image) or ()),
             }
             return response, elapsed, diagnostics
         finally:
+            if prefill_hook is not None:
+                prefill_hook.remove()
             completion_ids = None
             generated = None
             inputs = None

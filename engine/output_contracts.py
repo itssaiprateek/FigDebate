@@ -34,6 +34,8 @@ INTERPRETATION = object_schema({
 
 
 def validate_shape(value, schema):
+    if isinstance(schema, bool):
+        return schema
     kind = schema.get("type")
     if isinstance(kind, list):
         return any(validate_shape(value, dict(schema, type=item)) for item in kind)
@@ -51,9 +53,11 @@ def validate_shape(value, schema):
         if value < schema.get("minimum", -math.inf) or value > schema.get("maximum", math.inf):
             return False
     if kind == "array":
+        prefix = schema.get("prefixItems", [])
         return (isinstance(value, list)
                 and schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", math.inf)
-                and all(validate_shape(item, schema["items"]) for item in value))
+                and all(validate_shape(item, prefix[index] if index < len(prefix) else schema.get("items", True))
+                        for index, item in enumerate(value)))
     if kind == "object":
         if not isinstance(value, dict) or set(value) != set(schema["required"]):
             return False

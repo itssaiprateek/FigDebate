@@ -44,6 +44,60 @@ class Runtime:
 
 
 class EvidenceReviewTests(unittest.TestCase):
+    def test_visual_slots_require_each_id_once_without_forcing_agreement(self):
+        from engine.evidence_verification import visual_obligation_schema, visual_valid
+        from engine.output_contracts import validate_shape
+        schema = visual_obligation_schema({"OBS_B", "OBS_A"})
+        value = {"observations": [dict(evidence_id=i, supported=False,
+                    observed="The requested detail is not visible.", attachment="No matching region.")
+                    for i in ("OBS_A", "OBS_B")], "reason": "Insufficient visible detail."}
+        self.assertTrue(validate_shape(value, schema))
+        self.assertFalse(visual_valid(dict(value, _format_valid=True, _execution_status="SUCCEEDED"), {"OBS_A", "OBS_B"}))
+        duplicate = deepcopy(value)
+        duplicate["observations"][1]["evidence_id"] = "OBS_A"
+        self.assertFalse(validate_shape(duplicate, schema))
+        self.assertFalse(validate_shape(dict(value, observations=value["observations"][:1]), schema))
+        self.assertFalse(validate_shape(dict(value, observations=value["observations"] + value["observations"][:1]), schema))
+
+    def test_complete_explanation_can_exceed_old_character_cap(self):
+        from engine.evidence_verification import CHALLENGE
+        from engine.output_contracts import validate_shape
+        text = ("The image places the two products in separate panels and explicitly labels the first as lasting for months "
+                "and the second as gone in a week, so the observed ordering of their durations opposes the ordering "
+                "asserted in the caption while preserving the same two subjects.")
+        self.assertGreater(len(text), 240)
+        value = fixture()[-1][-1]
+        value["reason"] = text
+        self.assertTrue(validate_shape(value, CHALLENGE))
+        self.assertEqual(unfinished_generated_field(value), "")
+        value["reason"] = text[:-1] + ","
+        self.assertEqual(unfinished_generated_field(value), "reason")
+
+    def test_visual_input_order_and_text_match_fixed_id_slots(self):
+        image, p, ledger, answers = fixture()
+        p["visual_evidence_ids"] = ["OBS_B", "OBS_A"]
+        ledger = [dict(ledger[0], id="OBS_B", text="A red square."),
+                  dict(ledger[0], id="OBS_A", text="A blue circle.")]
+        answers[0]["observations"] = [dict(answers[0]["observations"][0], evidence_id=i, supported=False)
+                                      for i in ("OBS_A", "OBS_B")]
+        rt = Runtime(answers)
+        verify(rt, image, p, ledger)
+        presented = json.loads(rt.prompts[0].rsplit("\n", 1)[-1])["observations"]
+        self.assertEqual(presented, [{"id": "OBS_A", "text": "A blue circle."},
+                                     {"id": "OBS_B", "text": "A red square."}])
+
+    def test_semantic_followup_is_not_dispatched_as_visual_observation(self):
+        from engine.tribunal import followup_plan
+        review = {"status": "FOLLOW_UP", "_protocol": "evidence-review-4.0", "_format_valid": True,
+                  "requested_follow_up": "COUNTER_INTERPRETATION",
+                  "targeted_question": "Does the text imply the object is useful or useless?"}
+        self.assertEqual(followup_plan(review), {})
+        self.assertEqual(review["_follow_up_question_status"], "BLOCKED_WITNESS_SCOPE")
+        self.assertEqual(review["_follow_up_question_audit"][0]["status"], "NOT_DISPATCHED_TO_VISUAL_WITNESS")
+        self.assertEqual(review["status"], "FOLLOW_UP")
+        review["targeted_question"] = "Read the exact visible text above the object."
+        self.assertEqual(followup_plan(review)["agent1_questions"], [review["targeted_question"]])
+
     def test_dangling_generated_clause_cannot_be_accepted_as_evidence(self):
         self.assertEqual(unfinished_generated_field({"condition_checks": [{"image_state": "He appears shocked,"}]}),
                          "condition_checks[0].image_state")

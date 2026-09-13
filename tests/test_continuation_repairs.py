@@ -108,6 +108,30 @@ class ContinuationRepairsTests(unittest.TestCase):
 
 
 class InstalledTokenizerTests(unittest.TestCase):
+    def test_live_grammar_requires_distinct_visual_ids_and_allows_unsupported(self):
+        from models.judge_model import default_judge_model_path
+        location = Path(default_judge_model_path())
+        if not (location / "tokenizer.json").is_file():
+            self.skipTest("Local qualified tokenizer unavailable")
+        import torch
+        from transformers import AutoTokenizer
+        from engine.output_contracts import prefix_constraint
+        from engine.evidence_verification import visual_obligation_schema
+        tokenizer = AutoTokenizer.from_pretrained(str(location), local_files_only=True)
+        schema = visual_obligation_schema({"DW001", "SB020"})
+        value = {"observations": [dict(evidence_id=i, supported=False, observed="Not visible.", attachment="Unknown.")
+                                  for i in ("DW001", "SB020")], "reason": "Unresolved."}
+        def accept(payload):
+            constraint = prefix_constraint(tokenizer, schema)
+            ids = tokenizer.encode("Input:", add_special_tokens=False)
+            constraint(0, torch.tensor(ids))
+            ids += tokenizer.encode(json.dumps(payload, separators=(",", ":")), add_special_tokens=False)
+            return constraint(0, torch.tensor(ids))
+        self.assertIn(tokenizer.eos_token_id, accept(value))
+        value["observations"][1]["evidence_id"] = "DW001"
+        with self.assertRaisesRegex(ValueError, "Invalid generated token"):
+            accept(value)
+
     def test_decoder_bounds_formatting_without_altering_quoted_spaces(self):
         from models.judge_model import default_judge_model_path
         location = Path(default_judge_model_path())

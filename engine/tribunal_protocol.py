@@ -7,6 +7,10 @@ from engine.output_contracts import object_schema, validate_shape, incomplete_cl
 PROTOCOL = "evidence-review-4.0"
 RELATION = {"type": "string", "enum": ["SUPPORT", "CONFLICT", "UNRESOLVED"]}
 SHORT = {"type": "string", "maxLength": 240}
+# A 240-character grammar cap repeatedly closed a string mid-sentence in live
+# qualification. Keep source spans compact, but let explanations finish within
+# the unchanged call-level token/time budgets. Completeness is still validated.
+PROSE = {"type": "string", "maxLength": 480}
 IDS = {"type": "array", "maxItems": 4, "items": {"type": "string"}}
 LITERAL_TYPES = {"visual_fact", "visual_relation", "visible_text", "ocr_text", "ocr_region_binding",
                  "spatial_binding", "panel_event_or_comparison", "symbol_or_text_attachment",
@@ -37,10 +41,10 @@ def proposal_schema(graph, catalog_ids, context_ids):
     evidence = dict(IDS, items={"type": "string", "enum": sorted(catalog_ids)}) if catalog_ids else IDS
     nodes = object_schema({
         "claim_node_id": {"type": "string", **({"enum": ids} if ids else {})},
-        "observation": SHORT,
+        "observation": PROSE,
         "role_scope": SHORT,
         "condition_checks": {"type": "array", "minItems": 1, "maxItems": 4, "items": object_schema({
-            "caption_quote": SHORT, "image_state": SHORT, "relation": RELATION})},
+            "caption_quote": SHORT, "image_state": PROSE, "relation": RELATION})},
         "relation": RELATION,
         "evidence_ids": evidence,
         "unestablished_condition": SHORT,
@@ -48,7 +52,7 @@ def proposal_schema(graph, catalog_ids, context_ids):
     return object_schema({
         "node_relations": {"type": "array", "minItems": len(ids), "maxItems": max(1, len(ids)), "items": nodes},
         "alternative": SHORT,
-        "decisive_reason": SHORT,
+        "decisive_reason": PROSE,
         "follow_up": object_schema({
             "target": {"type": "string", "enum": ["NONE", "VISUAL_PREMISE", "CAPTION_PREMISE", "ENTITY_BINDING", "SCOPE_BINDING", "COUNTER_INTERPRETATION"]},
             "question": SHORT,

@@ -96,6 +96,26 @@ def followup_plan(review, comparison=None):
             agent2_questions = [question]
         else:
             agent1_questions = [question]
+    if review.get("_protocol") == "evidence-review-4.0" and agent1_questions:
+        from agents.visual_adapter import AtomicVisualQuestionController
+        approved, rejected = [], []
+        for question in agent1_questions:
+            kind = AtomicVisualQuestionController.infer_question_type(question)
+            valid, error = AtomicVisualQuestionController.validate_question(question, kind)
+            if valid:
+                approved.append(question)
+            else:
+                rejected.append({"question": question, "error": error,
+                                 "status": "NOT_DISPATCHED_TO_VISUAL_WITNESS"})
+        agent1_questions = approved
+        if rejected:
+            # A semantic question cannot be answered by a literal visual witness.
+            # Preserve the planner defect; do not invent an answer or an unrelated
+            # replacement question simply to manufacture another hearing.
+            review["_follow_up_question_audit"] = rejected
+            review["_follow_up_question_status"] = "BLOCKED_WITNESS_SCOPE"
+            if not (agent1_questions or agent2_questions or verification_requests):
+                return {}
     if review.get("requested_follow_up") and not (
         agent1_questions or agent2_questions
     ):
