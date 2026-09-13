@@ -1,6 +1,20 @@
 # Tribunal qualification, September 13
 
-Status: implementation candidate; live qualification in progress. The September 10 baseline remains unchanged in the original checkout.
+Status: engineering repair batch completed; full evaluation reserved for the user. The September 10 baseline remains unchanged in the original checkout. See `CHANGE_COMPLETION_20260913.md` for the final change list, verified checks and run command. The sections below retain earlier diagnostic checkpoints and negative experiments; they are not a claim that every experimental candidate qualified.
+
+## Final repair and user handoff
+
+Final implementation: `21324b42bd693076ec886085071146c5c5f39727`. The final code suite ran 493 tests: 492 passed, one known expected failure, no skips. The remaining expected failure concerns assessment-conditioned initial scoring and is explicitly delimited below.
+
+At the user's request, the second full-pipeline diagnostic (`full12_candidate_v9_20260913`, source `a0fddad`) was stopped after eight first-round reviews. `termination.json` records that it is incomplete. No completed 12-case accuracy or wall-time result is claimed for that run. No full dev50 evaluation, direct-judge batch control or 17-question replay was launched after that instruction.
+
+The last focused checks addressed three observed defects. Case 1264's relations retry ended normally but exceeded an unstated word limit; revised retry prompts now state a conservative prose target, and a live request completed successfully. The last attempt's actual error now replaces the primary error in the public result, with both validations and raw responses retained. Optional failures are counted independently of the outer visual schema. Explicit EOS at the output limit is recorded and distinguished from truncation, while the prose/word-limit validators remain active.
+
+Case 2240's 86-character incomplete quoted observation was not a character-cap failure. Showing the failing field ending in the repair diagnostic produced a complete observation in a focused live call. This proves the format repair on that request, not the semantic correctness of its proposed label.
+
+Case 3351's mapping quote differed only by an uppercase initial letter. A more explicit prompt still failed. An exact-span enumeration experiment generated valid quotes but assigned both caption clauses to both bottles; its valid formatting did not make it a successful semantic fix, and it was rejected. The final implementation performs a narrowly bounded source-copy operation: a unique multiword phrase may be bound after changing only its initial uppercase letter back to the exact source case. All other characters, observed entities, roles and judgments remain unchanged. Single-word names, internal case changes, substantive or ambiguous mismatches remain invalid. The raw response, repair method and normalized-source offsets are recorded, and the audit reconstructs this operation. The saved real mapping response passes this source check without changing any nonquotation field; this does not certify the remaining semantic obligations.
+
+Evidence: `runs/qualification_20260913/unit_tests_release_handoff.log`, `focused_final_repairs.json`, `focused_source_bound_mapping.json` (rejected experiment), and `final_saved_quote_binding_handoff.json`. Full evaluation and any performance or paper-readiness claim remain pending the user's run.
 
 ## Completed full-pipeline diagnostic and corrective batch
 
