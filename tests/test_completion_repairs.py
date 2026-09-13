@@ -165,6 +165,10 @@ class CompletionRepairTests(unittest.TestCase):
         proposal['independent_verification'] = verify(runtime, image, proposal, ledger)
         self.assertFalse(audit(proposal, ledger)['valid'])
         self.assertEqual(proposal['independent_verification']['stopped_after'], 'entity_scope_mapping')
+        call = proposal['independent_verification']['obligations']['mapping']
+        call['unmatched_roles'] = []
+        call['verified'] = True
+        self.assertFalse(mapping_valid(call, {'VF1'}, proposal['source_caption']))
 
     def test_forged_source_binding_audit_cannot_hide_a_malformed_raw_output(self):
         call = dict(fixture()[-1][1], _format_valid=True, _execution_status='SUCCEEDED',

@@ -113,7 +113,7 @@ def mapping_valid(call, known, source):
         if not validate_shape(raw, MAPPING):
             return False
         rebound = bind_mapping_source_spans(raw, source)
-        if (rebound.get("bindings") != bindings
+        if (any(rebound.get(key) != call.get(key) for key in MAPPING["required"])
                 or rebound.get("_source_quote_bindings") != call["_source_quote_bindings"]):
             return False
     return bool(payload_valid(call, MAPPING)
