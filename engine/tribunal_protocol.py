@@ -2,7 +2,7 @@
 from copy import deepcopy
 import json
 
-from engine.output_contracts import object_schema, validate_shape
+from engine.output_contracts import object_schema, validate_shape, incomplete_clause
 
 PROTOCOL = "evidence-review-4.0"
 RELATION = {"type": "string", "enum": ["SUPPORT", "CONFLICT", "UNRESOLVED"]}
@@ -11,6 +11,25 @@ IDS = {"type": "array", "maxItems": 4, "items": {"type": "string"}}
 LITERAL_TYPES = {"visual_fact", "visual_relation", "visible_text", "ocr_text", "ocr_region_binding",
                  "spatial_binding", "panel_event_or_comparison", "symbol_or_text_attachment",
                  "reaction_cue", "entity_bound_observation"}
+
+
+def unfinished_generated_field(value, path=""):
+    """Reject obvious dangling generated clauses, preserving exact source quotations."""
+    prose = {"observation", "observed", "attachment", "image_state", "decisive_reason", "reason", "argument"}
+    if isinstance(value, dict):
+        for key, child in value.items():
+            location = f"{path}.{key}" if path else key
+            if key in prose and isinstance(child, str) and incomplete_clause(child):
+                return location
+            found = unfinished_generated_field(child, location)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found = unfinished_generated_field(child, f"{path}[{index}]")
+            if found:
+                return found
+    return ""
 
 
 def proposal_schema(graph, catalog_ids, context_ids):
@@ -49,6 +68,9 @@ def expand_proposal(raw, graph, packet, catalog_ids, context_ids):
         value = None
     if not validate_shape(value, schema):
         return {"_format_valid": False, "_format_error": "invalid_compact_proposal", "_raw_output": raw}
+    unfinished = unfinished_generated_field(value)
+    if unfinished:
+        return {"_format_valid": False, "_format_error": "Rewrite as one short complete clause: " + unfinished, "_raw_output": raw}
     nodes = value["node_relations"]
     typed_relations = [{k: n[k] for k in ("claim_node_id", "relation", "evidence_ids")} for n in nodes]
     resolution = resolve_nodes(graph, typed_relations, catalog_ids)

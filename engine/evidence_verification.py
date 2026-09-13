@@ -8,7 +8,7 @@ import hashlib
 import json
 
 from engine.output_contracts import object_schema, validate_shape
-from engine.tribunal_protocol import RELATION, SHORT, IDS
+from engine.tribunal_protocol import RELATION, SHORT, IDS, unfinished_generated_field
 
 VERSION = "4.0"
 VISUAL = object_schema({"observations": {"type": "array", "minItems": 1, "maxItems": 4,
@@ -41,16 +41,21 @@ def quotation(quote, source):
     return bool(norm(quote)) and norm(quote) in norm(source)
 
 
+def payload_valid(call, schema):
+    payload = {k: call[k] for k in schema["required"] if k in call}
+    return executed(call) and validate_shape(payload, schema) and not unfinished_generated_field(payload)
+
+
 def visual_valid(call, known):
     items = call.get("observations", [])
-    return bool(executed(call) and validate_shape({k: call[k] for k in VISUAL["required"] if k in call}, VISUAL)
+    return bool(payload_valid(call, VISUAL)
                 and {x["evidence_id"] for x in items} == known and len(items) == len(known)
                 and all(x["supported"] is True and x["observed"].strip() and x["attachment"].strip() for x in items))
 
 
 def mapping_valid(call, known, source):
     bindings = call.get("bindings", [])
-    return bool(executed(call) and validate_shape({k: call[k] for k in MAPPING["required"] if k in call}, MAPPING)
+    return bool(payload_valid(call, MAPPING)
                 and not call["unmatched_roles"] and bindings and all(
                     quotation(b["caption_quote"], source)
                     and b["observed_entity"].strip() and b["role_scope"].strip()
@@ -58,7 +63,7 @@ def mapping_valid(call, known, source):
 
 
 def decision_valid(call, known, source):
-    return bool(executed(call) and validate_shape({k: call[k] for k in DECISION["required"] if k in call}, DECISION)
+    return bool(payload_valid(call, DECISION)
                 and quotation(call.get("decisive_caption_quote"), source)
                 and all(quotation(q, source) for q in call["unestablished_conditions"])
                 and str(call.get("decisive_observation", "")).strip() and call["evidence_ids"]
@@ -70,7 +75,7 @@ def decision_valid(call, known, source):
 
 
 def challenge_valid(call, known, relation):
-    if not (executed(call) and validate_shape({k: call[k] for k in CHALLENGE["required"] if k in call}, CHALLENGE)):
+    if not payload_valid(call, CHALLENGE):
         return False
     if call["decision_errors"] or call["role_scope_errors"] or not set(call["deciding_evidence_ids"]) <= known:
         return False
@@ -178,6 +183,9 @@ def verify(runtime, image, proposal, ledger):
                 value = None
             if not validate_shape(value, schema):
                 return {"_format_valid": False, "_format_error": "invalid_evidence_obligation"}
+            unfinished = unfinished_generated_field(value)
+            if unfinished:
+                return {"_format_valid": False, "_format_error": "Rewrite as one short complete clause: " + unfinished}
             error = validator(value) if validator else None
             if error:
                 return {"_format_valid": False, "_format_error": error}

@@ -9,7 +9,7 @@ from PIL import Image
 from engine.claim_graph import source_identity_graph
 from engine.evidence_verification import verify, audit, repair_plan, repair_argument
 from engine.independent_review import image_subject_hash
-from engine.tribunal_protocol import proposal_schema, expand_proposal
+from engine.tribunal_protocol import proposal_schema, expand_proposal, unfinished_generated_field
 from engine.case_budget import case_budget, require_time, CaseBudgetExceeded
 from evaluation.tribunal_quality import summarize_tribunal
 
@@ -44,6 +44,20 @@ class Runtime:
 
 
 class EvidenceReviewTests(unittest.TestCase):
+    def test_dangling_generated_clause_cannot_be_accepted_as_evidence(self):
+        self.assertEqual(unfinished_generated_field({"condition_checks": [{"image_state": "He appears shocked,"}]}),
+                         "condition_checks[0].image_state")
+        self.assertEqual(unfinished_generated_field({"caption_quote": "with the", "image_state": "A visible meeting."}), "")
+        image, p, ledger, answers = fixture()
+        wrong = deepcopy(answers[0]); wrong["observations"][0]["observed"] = "People look alarmed,"
+        rt = Runtime([wrong, wrong])
+        p["independent_verification"] = verify(rt, image, p, ledger)
+        self.assertFalse(audit(p, ledger)["valid"])
+        self.assertEqual(len(rt.prompts), 2)
+        _, p, ledger = self.run_proof()
+        p["independent_verification"]["obligations"]["visual"]["observations"][0]["observed"] = "People look alarmed,"
+        self.assertFalse(audit(p, ledger)["valid"])
+
     def run_proof(self, mutate=None):
         image, p, ledger, answers = fixture()
         if mutate:
@@ -108,6 +122,21 @@ class EvidenceReviewTests(unittest.TestCase):
         self.assertFalse(audit(p, ledger)["valid"])
         plan = repair_plan({"_independent_verification": p["independent_verification"]})
         self.assertIn("Speaker is reversed", plan["agent1_questions"][0])
+        self.assertTrue(plan["_usable"])
+
+    def test_late_followup_is_skipped_without_changing_the_review(self):
+        from engine.tribunal import followup_plan, repair_followup_plan
+        _, p, _ = self.run_proof(lambda a: a[3].update(role_scope_errors=["Speaker is reversed."]))
+        review = {"status": "FOLLOW_UP", "_format_valid": True,
+                  "targeted_question": "Who is speaking?", "requested_follow_up": "ENTITY_BINDING",
+                  "_independent_verification": p["independent_verification"],
+                  "_case_budget": {"remaining_seconds": 28, "minimum_followup_seconds": 90}}
+        self.assertEqual(followup_plan(review), {})
+        self.assertEqual(repair_followup_plan(review), {})
+        self.assertEqual(review["_follow_up_budget_status"], "SKIPPED_INSUFFICIENT_REMAINING_BUDGET")
+        self.assertTrue(review["_format_valid"])
+        review["_case_budget"]["remaining_seconds"] = 120
+        self.assertTrue(repair_followup_plan(review)["_usable"])
 
     def test_empty_proposer_counter_does_not_override_new_alternative(self):
         rt, p, ledger = self.run_proof(lambda a: a[3].update(alternative="The scene is a performance.",

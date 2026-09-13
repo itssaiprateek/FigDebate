@@ -22,7 +22,8 @@ class RuntimeProfile:
     tribunal_protocol: str = "evidence-review-4.0"
     judge_case_seconds: float = 240.0
     judge_retrieval_cycles: int = 2
-    judge_evidence_first: bool = True
+    judge_evidence_first: bool = False
+    judge_min_followup_seconds: float = 90.0
 
     def as_dict(self):
         payload = asdict(self)

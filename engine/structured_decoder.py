@@ -3,13 +3,14 @@
 Uses llguidance's public tokenizer and matcher API (MIT). The small prefix
 adapter supports the project's batch-one greedy generation, not beam search.
 """
-from copy import copy
+from copy import copy, deepcopy
 from importlib.metadata import version
 import json
 import numpy as np
 from llguidance import LLTokenizer, LLMatcher
 
-DECODER_ID = "llguidance-1.8.0-prefix-v1"
+DECODER_ID = "llguidance-1.8.0-prefix-v2-bounded-whitespace-32"
+MAX_STRUCTURAL_WHITESPACE = 32
 
 
 def prefix_constraint(tokenizer, schema):
@@ -25,7 +26,13 @@ def prefix_constraint(tokenizer, schema):
         tokenizer._figdebate_llguidance_data = data
     # SentencePiece completion tokens can carry leading whitespace. JSON allows
     # it; llguidance's bare JSON compiler does not allow it outside the object.
-    grammar = 'start: /[ \\t\\r\\n]*/ body /[ \\t\\r\\n]*/\nbody: %json ' + json.dumps(schema)
+    # Bound structural formatting, never whitespace inside JSON string values.
+    # Otherwise greedy decoding can spend its entire budget on indentation.
+    constrained = deepcopy(schema)
+    constrained["x-guidance"] = {**constrained.get("x-guidance", {}),
+                                  "whitespace_pattern": rf"[\x20\x0A\x0D\x09]{{1,{MAX_STRUCTURAL_WHITESPACE}}}"}
+    padding = '/[ \\t\\r\\n]{0,' + str(MAX_STRUCTURAL_WHITESPACE) + '}/'
+    grammar = 'start: ' + padding + ' body ' + padding + '\nbody: %json ' + json.dumps(constrained)
     matcher = LLMatcher(data, LLMatcher.grammar_from_lark(grammar))
     if matcher.is_error() or matcher.get_grammar_warnings():
         raise ValueError("Unsupported grammar: " + str(matcher.get_error() or matcher.get_grammar_warnings()))

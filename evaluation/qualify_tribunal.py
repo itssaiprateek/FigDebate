@@ -16,7 +16,7 @@ def main():
     parser.add_argument("--baseline-run", required=True)
     parser.add_argument("--sample-ids", nargs="+", required=True)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--evidence-view", choices=("first", "current"), default="first")
+    parser.add_argument("--evidence-view", choices=("first", "current"), default="current")
     args = parser.parse_args()
     from dataset.loaders import load_split, decode_image
     from models.judge_model import QwenJudgeModel

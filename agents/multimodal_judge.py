@@ -608,14 +608,17 @@ class TribunalMediatorAgent:
         evidence_ledger, debate_details, round_number=1,
         current_decision=None, pre_hearing=None, _verification_repair=None,
     ):
-        from engine.case_budget import case_budget
+        from engine.case_budget import case_budget, remaining_seconds
         profile = getattr(self.runtime, "hardware_profile", None)
         from engine.independent_review import image_subject_hash
         key = (caption, image_subject_hash(image))
         with case_budget(self.runtime, key, getattr(profile, "judge_case_seconds", None)):
-            return self._review(image, caption, visual_output, language_output, comparison,
+            result = self._review(image, caption, visual_output, language_output, comparison,
                                 evidence_ledger, debate_details, round_number, current_decision,
                                 pre_hearing, _verification_repair)
+            result["_case_budget"] = {"remaining_seconds": remaining_seconds(self.runtime),
+                                     "minimum_followup_seconds": getattr(profile, "judge_min_followup_seconds", 90)}
+            return result
 
     def _review(
         self, image, caption, visual_output, language_output, comparison,

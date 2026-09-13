@@ -73,8 +73,19 @@ def record_tribunal_round(session, review, debate_details=None):
     return output
 
 
+def followup_has_budget(review):
+    budget = (review or {}).get("_case_budget", {})
+    remaining = budget.get("remaining_seconds")
+    if remaining is not None and remaining < budget.get("minimum_followup_seconds", 90):
+        review["_follow_up_budget_status"] = "SKIPPED_INSUFFICIENT_REMAINING_BUDGET"
+        return False
+    return True
+
+
 def followup_plan(review, comparison=None):
     if (review or {}).get("status") != "FOLLOW_UP":
+        return {}
+    if not followup_has_budget(review):
         return {}
     agent1_questions = list(review.get("agent1_questions", []) or [])
     agent2_questions = list(review.get("agent2_questions", []) or [])
@@ -125,6 +136,8 @@ def followup_plan(review, comparison=None):
 def repair_followup_plan(review, comparison=None, debate_details=None):
     """Route repairable resolution defects into one label-blind hearing."""
     review = review or {}
+    if not followup_has_budget(review):
+        return {}
     debate = debate_details or {}
     agent2 = debate.get("agent2_critique", {}) or {}
     reasons = []

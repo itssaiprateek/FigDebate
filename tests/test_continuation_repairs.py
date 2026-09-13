@@ -108,6 +108,33 @@ class ContinuationRepairsTests(unittest.TestCase):
 
 
 class InstalledTokenizerTests(unittest.TestCase):
+    def test_decoder_bounds_formatting_without_altering_quoted_spaces(self):
+        from models.judge_model import default_judge_model_path
+        location = Path(default_judge_model_path())
+        if not (location / "tokenizer.json").is_file():
+            self.skipTest("Local qualified tokenizer unavailable")
+        import torch
+        from transformers import AutoTokenizer
+        from engine.output_contracts import prefix_constraint, object_schema
+        from engine.structured_decoder import MAX_STRUCTURAL_WHITESPACE
+        tokenizer = AutoTokenizer.from_pretrained(str(location), local_files_only=True)
+        schema = object_schema({"a": {"type": "string"}, "b": {"type": "boolean"}})
+        def start(partial):
+            constraint = prefix_constraint(tokenizer, schema)
+            ids = tokenizer.encode("Input:", add_special_tokens=False)
+            constraint(0, torch.tensor(ids))
+            ids += tokenizer.encode(partial, add_special_tokens=False)
+            return constraint, ids, constraint(0, torch.tensor(ids))
+        # The model must eventually emit the next required property, not padding.
+        _, _, options = start('{"a":"value"' + ' ' * MAX_STRUCTURAL_WHITESPACE)
+        self.assertFalse(any(tokenizer.decode([n]).strip() == "" for n in options))
+        self.assertIn(tokenizer.encode(',', add_special_tokens=False)[0], options)
+        self.assertNotIn(tokenizer.eos_token_id, options)
+        # Formatting bounds do not rewrite a quoted OCR/source span.
+        constraint, ids, options = start('{"a":"one' + ' ' * 12 + 'two","b":true}')
+        self.assertIn(tokenizer.eos_token_id, options)
+        self.assertNotIn("x-guidance", schema)
+
     def test_current_transformers_adapter_accepts_complete_json(self):
         # CPU-only integration: catches the removed Transformers alias which
         # mocked model tests missed. No download and no GPU/model weights.
