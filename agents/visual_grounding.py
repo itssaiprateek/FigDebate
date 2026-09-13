@@ -443,12 +443,13 @@ describe clothing, people, or objects as text.
         retry_success = False
         raw_responses = [raw]
         if retry_attempted:
+            retry_budget = min(token_budget * 2, 360) if error in {"truncated_response", "incomplete_clause"} else token_budget
             retry_raw, retry_elapsed = self._generate_response(
                 image,
                 self.question_controller.retry_prompt(
                     question.text, question.question_type
                 ),
-                token_budget,
+                retry_budget,
             )
             elapsed += retry_elapsed
             retry_diagnostics = dict(self._last_generation_diagnostics or {})

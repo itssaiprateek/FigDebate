@@ -14,12 +14,17 @@ EXPECTED_SPLITS = [
 
 def _package_root():
     here = os.path.abspath(os.path.dirname(__file__))
+    configured = os.environ.get("FIGDEBATE_DATA_ROOT")
+    if configured:
+        return os.path.abspath(configured)
     if os.path.isdir(os.path.join(here, "data", "processed")):
         return here
     parent = os.path.abspath(os.path.join(here, os.pardir))
     if os.path.isdir(os.path.join(parent, "data", "processed")):
         return parent
-    raise FileNotFoundError("Could not locate data/processed relative to loaders.py")
+    # Importing pure validation helpers must not require a downloaded dataset.
+    # Actual loads retain their explicit missing-file and provenance checks.
+    return here
 
 BASE = _package_root()
 PROCESSED_DIR = os.path.join(BASE, "data", "processed")

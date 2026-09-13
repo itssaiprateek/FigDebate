@@ -252,7 +252,7 @@ class AtomicVisualQuestionController:
         }
         ending = rules.get(
             question_type,
-            "Answer briefly using only directly visible evidence. Use UNCLEAR if the requested detail cannot be seen.",
+            "Give at most three short factual clauses (30 words total). Use UNCLEAR if the detail cannot be seen.",
         )
         return (
             "Inspect only the supplied image. Do not decide a dataset label, "
@@ -285,8 +285,15 @@ class AtomicVisualQuestionController:
         answer_norm = normalized(answer)
         if not answer:
             return "", "INVALID_RESPONSE", False, "empty_response"
-        if (diagnostics or {}).get("hit_token_limit"):
+        from engine.output_contracts import incomplete_clause
+        # At a token cap, only self-delimited scalar answers can be certified
+        # complete without a rewrite. Free-form OCR/prose can hide missing items.
+        scalar_complete = ((question_type == "count" and re.fullmatch(r"\d+", answer))
+                           or (question_type == "yes_no" and answer.upper() in {"YES", "NO", "UNCLEAR"}))
+        if (diagnostics or {}).get("hit_token_limit") and not scalar_complete:
             return answer, "INVALID_RESPONSE", False, "truncated_response"
+        if question_type != "ocr" and incomplete_clause(answer):
+            return answer, "INVALID_RESPONSE", False, "incomplete_clause"
         if PLACEHOLDER_PATTERN.search(answer):
             return answer, "INVALID_RESPONSE", False, "placeholder_copy"
         question_norm = normalized(question)

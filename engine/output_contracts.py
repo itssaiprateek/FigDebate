@@ -1,6 +1,7 @@
 """Shared generation schemas; syntax constraints do not prove semantic truth."""
 import json
 import math
+import re
 
 
 def object_schema(properties):
@@ -65,8 +66,17 @@ def prefix_constraint(tokenizer, schema):
     return build(tokenizer, schema)
 
 
+def incomplete_clause(text):
+    """Conservative signal of an unfinished clause, not a fluency/truth classifier."""
+    text = str(text or "").strip()
+    if not text or len(text.split()) < 2:
+        return False
+    return bool(re.search(r"\b(?:a|an|the|because|although|whereas|which|whose|with|without|such as|due to|rather than)\s*$", text, re.I)
+                or text.endswith((",", ";", ":", "(", "[")))
+
+
 def saturated_text_fields(text, schema):
-    """Detect visibly cut clauses at grammar field limits, separate from JSON validity."""
+    """Report clear unfinished clauses; a missing final period is not truncation."""
     if not schema:
         return []
     try:
@@ -77,8 +87,7 @@ def saturated_text_fields(text, schema):
         return []
     return [key for key, definition in schema.get("properties", {}).items()
             if isinstance(value.get(key), str) and definition.get("maxLength")
-            and len(value[key].rstrip()) >= definition["maxLength"] - 2
-            and not value[key].rstrip().endswith((".", "!", "?"))]
+            and incomplete_clause(value[key])]
 
 
 def complete_json_stopper(tokenizer, prompt_length, schema):

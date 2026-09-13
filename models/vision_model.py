@@ -6,6 +6,7 @@ import gc
 import math
 from pathlib import Path
 import time
+import os
 
 from engine.runtime_profile import resolve_runtime_profile
 
@@ -37,7 +38,8 @@ VISION_MODEL_FILES = (
 
 
 def local_vision_model_path() -> Path:
-    return Path(__file__).resolve().parent / "vision" / VISION_MODEL_DIRECTORY
+    root = Path(os.environ.get("FIGDEBATE_MODEL_ROOT") or Path(__file__).resolve().parent)
+    return root / "vision" / VISION_MODEL_DIRECTORY
 
 
 def vision_model_source():

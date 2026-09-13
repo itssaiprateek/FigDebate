@@ -20,12 +20,10 @@ class CriticalDiagnosticReproductions(unittest.TestCase):
             result = audit_claim_witness(agent, "The line rises.", "Claim subject: line")
         self.assertFalse(result["requirements_valid"])
 
-    @unittest.expectedFailure
     def test_complete_unpunctuated_clause_is_not_truncation(self):
         schema = object_schema({"reason": {"type": "string", "maxLength": 20}})
         self.assertEqual(saturated_text_fields('{"reason":"The sky appears blue"}', schema), [])
 
-    @unittest.expectedFailure
     def test_short_dangling_clause_is_not_complete(self):
         schema = object_schema({"reason": {"type": "string", "maxLength": 20}})
         self.assertEqual(saturated_text_fields('{"reason":"because the"}', schema), ["reason"])
