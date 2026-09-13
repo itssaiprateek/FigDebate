@@ -180,3 +180,20 @@ class InstalledTokenizerTests(unittest.TestCase):
             prefix.append(token)
         stopper = complete_json_stopper(tokenizer, 0, schema)
         self.assertTrue(stopper(torch.tensor([tokenizer.encode('{"ok":true}', add_special_tokens=False)]), None))
+
+    def test_compact_judge_grammar_preserves_internal_spaces(self):
+        from models.judge_model import default_judge_model_path
+        location = Path(default_judge_model_path())
+        if not (location / "tokenizer.json").is_file():
+            self.skipTest("Local qualified tokenizer unavailable")
+        import torch
+        from transformers import AutoTokenizer
+        from engine.output_contracts import prefix_constraint, object_schema
+        tokenizer = AutoTokenizer.from_pretrained(str(location), local_files_only=True)
+        schema = object_schema({"quote": {"type": "string"}})
+        allowed = prefix_constraint(tokenizer, schema, compact=True)
+        prefix = tokenizer.encode("Input:", add_special_tokens=False)
+        for token in tokenizer.encode('{"quote":"a            b"}', add_special_tokens=False):
+            self.assertIn(token, allowed(0, torch.tensor(prefix)))
+            prefix.append(token)
+        self.assertIn(tokenizer.eos_token_id, allowed(0, torch.tensor(prefix)))

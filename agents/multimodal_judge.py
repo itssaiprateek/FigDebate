@@ -337,6 +337,19 @@ def _run_structured_generation(
     repair_prompt_builder=None, output_schema=None,
 ):
     """Generate, validate, and perform one bounded format-repair retry."""
+    from engine.case_budget import reserve_for_verification
+    reserve = (getattr(getattr(runtime, "hardware_profile", None), "judge_verification_reserve_seconds", 0)
+               if contract_name == "tribunal_review" else 0)
+    with reserve_for_verification(runtime, reserve):
+        result = _generate_with_repair(runtime, image, prompt, parser,
+            max_new_tokens=max_new_tokens, contract_name=contract_name,
+            repair_prompt_builder=repair_prompt_builder, output_schema=output_schema)
+    result["_verification_reserve_seconds"] = reserve
+    return result
+
+
+def _generate_with_repair(runtime, image, prompt, parser, *, max_new_tokens,
+                          contract_name, repair_prompt_builder=None, output_schema=None):
     total_seconds = 0.0
     started = time.perf_counter()
     execution_status = "SUCCEEDED"
@@ -546,7 +559,8 @@ def bound_review_contract(graph, packet, catalog_ids):
         from engine.tribunal_protocol import proposal_schema, expand_proposal, LITERAL_TYPES
         literal_ids = {item["id"] for key in ("evidence_ledger", "remaining_evidence_index")
                        for item in packet.get(key, []) if item.get("type") in LITERAL_TYPES}
-        return (lambda raw: expand_proposal(raw, graph, packet, literal_ids, context_ids)), proposal_schema(graph, literal_ids, context_ids)
+        return (lambda raw: expand_proposal(raw, graph, packet, literal_ids, context_ids)), proposal_schema(
+            graph, literal_ids, context_ids, [p["id"] for p in packet.get("reasoning_precedents", [])])
     schema["properties"]["context_requests"] = {
         "type": "array", "maxItems": min(4, len(context_ids)),
         "items": {"type": "string", **({"enum": sorted(context_ids)} if context_ids else {})}}
@@ -607,6 +621,7 @@ class TribunalMediatorAgent:
         self, image, caption, visual_output, language_output, comparison,
         evidence_ledger, debate_details, round_number=1,
         current_decision=None, pre_hearing=None, _verification_repair=None,
+        precedents=None,
     ):
         from engine.case_budget import case_budget, remaining_seconds
         profile = getattr(self.runtime, "hardware_profile", None)
@@ -615,15 +630,58 @@ class TribunalMediatorAgent:
         with case_budget(self.runtime, key, getattr(profile, "judge_case_seconds", None)):
             result = self._review(image, caption, visual_output, language_output, comparison,
                                 evidence_ledger, debate_details, round_number, current_decision,
-                                pre_hearing, _verification_repair)
+                                pre_hearing, _verification_repair, None)
+            if precedents and not _verification_repair:
+                result = self._precedent_followup(result, precedents, image, caption, visual_output,
+                    language_output, comparison, evidence_ledger, debate_details, round_number,
+                    current_decision, pre_hearing)
             result["_case_budget"] = {"remaining_seconds": remaining_seconds(self.runtime),
-                                     "minimum_followup_seconds": getattr(profile, "judge_min_followup_seconds", 90)}
+                                     "minimum_followup_seconds": max(getattr(profile, "judge_min_followup_seconds", 90),
+                                         getattr(profile, "judge_verification_reserve_seconds", 0) + 45)}
             return result
+
+    def _precedent_followup(self, baseline, precedents, image, caption, visual_output,
+                            language_output, comparison, evidence_ledger, debate_details,
+                            round_number, current_decision, pre_hearing):
+        """Guidance revisits unresolved reasoning; it cannot replace a resolved base review."""
+        from engine.case_budget import remaining_seconds
+        profile = getattr(self.runtime, "hardware_profile", None)
+        remaining = remaining_seconds(self.runtime)
+        required = getattr(profile, "judge_verification_reserve_seconds", 0) + 45
+        audit = {"policy": "unresolved_only_verified_replacement", "attempted": False,
+                 "selected_guided_review": False, "precedent_ids": [p["id"] for p in precedents]}
+        if not baseline.get("_format_valid") or baseline.get("_context_valid") is False or baseline.get("relation") != "UNRESOLVED":
+            audit["reason"] = "baseline_not_semantically_unresolved"
+        elif remaining is not None and remaining < required:
+            audit["reason"] = "insufficient_budget_for_guidance_and_verification"
+        else:
+            audit["attempted"] = True
+            guided = self._review(image, caption, visual_output, language_output, comparison,
+                evidence_ledger, debate_details, round_number, current_decision, pre_hearing, None, precedents)
+            from engine.semantic_bridge import build_semantic_bridge
+            from engine.independent_review import audit_independent_record
+            contract = dict((language_output or {}).get("claim_contract", {}), source_caption=caption)
+            proposal = build_semantic_bridge(guided, evidence_ledger, contract, language_output)
+            checked = audit_independent_record(proposal, evidence_ledger)
+            use_guided = bool(guided.get("_format_valid") and guided.get("_context_valid", True)
+                              and guided.get("relation") in {"SUPPORT", "CONFLICT"} and checked.get("valid"))
+            audit.update(selected_guided_review=use_guided,
+                reason="verified_guidance_resolution" if use_guided else "retained_baseline_no_verified_resolution",
+                execution_status=guided.get("_execution_status"), format_valid=guided.get("_format_valid"),
+                checks=deepcopy(guided.get("_precedent_checks", [])))
+            selected, other = (guided, baseline) if use_guided else (baseline, guided)
+            selected["_feedback_review_history"] = [deepcopy(other)]
+            selected["_generation_seconds"] = baseline.get("_generation_seconds", 0) + guided.get("_generation_seconds", 0)
+            selected["_verification_seconds"] = baseline.get("_verification_seconds", 0) + guided.get("_verification_seconds", 0)
+            baseline = selected
+        baseline["_precedent_feedback"] = audit
+        return baseline
 
     def _review(
         self, image, caption, visual_output, language_output, comparison,
         evidence_ledger, debate_details, round_number=1,
         current_decision=None, pre_hearing=None, _verification_repair=None,
+        precedents=None,
     ):
         dossier = build_case_dossier(
             caption,
@@ -651,6 +709,8 @@ class TribunalMediatorAgent:
             packet["protocol"] = "evidence-review-4.0"
         if _verification_repair:
             packet["verification_repair"] = _verification_repair
+        if precedents:
+            packet["reasoning_precedents"] = deepcopy(precedents[:2])
         try:
             packet, budget = fit_judge_packet(
                 packet, lambda view: build_tribunal_review_prompt(view, round_number),
@@ -852,7 +912,7 @@ class TribunalMediatorAgent:
                     "instruction": "Reinspect the original image and source. Address the listed defects with a complete decisive justification. Correct any disagreement between the node relation and your own bridge. Consider the strongest material alternative; do not invent an opposing argument if none is supported. No target label is supplied."}
                 repaired = self.review(image, caption, visual_output, language_output, comparison,
                     evidence_ledger, debate_details, round_number, current_decision, pre_hearing,
-                    _verification_repair=challenge)
+                    _verification_repair=challenge, precedents=precedents)
                 repaired["_verification_repair_history"] = [review]
                 repaired["_generation_seconds"] += review.get("_generation_seconds", 0)
                 return repaired

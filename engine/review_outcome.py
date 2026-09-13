@@ -42,6 +42,7 @@ def review_timing(review):
     """
     review = review or {}
     prior = list(review.get("_verification_repair_history") or [])
+    prior.extend(review.get("_feedback_review_history") or [])
     retrieval = (review.get("_retrieval_audit") or {}).get("prior_review")
     if retrieval:
         prior.append(retrieval)

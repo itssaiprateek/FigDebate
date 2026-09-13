@@ -9,6 +9,8 @@ def summarize_tribunal(records, wall_seconds=None):
     times = []
     verification_failures = {}
     failed_verification_cases = 0
+    failed_feedback_cases = 0
+    feedback_attempted_cases = 0
     invalid_verification_cases = 0
     initial_visual_diagnostics_cases = 0
     initial_visual_answers = 0
@@ -54,10 +56,16 @@ def summarize_tribunal(records, wall_seconds=None):
             times.append(float(seconds))
         judge = r.get("trace", {}).get("judge", {})
         case_execution_failed = case_schema_failed = False
+        feedback_failed = feedback_attempted = False
         pending = list(judge.get("tribunal_reviews", []))
         while pending:
             review = pending.pop()
             pending.extend(review.get("_verification_repair_history", []))
+            pending.extend(review.get("_feedback_review_history", []))
+            feedback = review.get("_precedent_feedback", {})
+            feedback_attempted |= bool(feedback.get("attempted"))
+            feedback_failed |= bool(feedback.get("attempted") and (feedback.get("execution_status") != "SUCCEEDED"
+                                                                   or not feedback.get("format_valid")))
             proof = review.get("_independent_verification") or {}
             proof_calls = list(proof.get("calls", [])) + list(proof.get("obligations", {}).values())
             if review.get("_argument_repair"):
@@ -69,6 +77,8 @@ def summarize_tribunal(records, wall_seconds=None):
                 verification_failures[stage] = verification_failures.get(stage, 0) + 1
         failed_verification_cases += case_execution_failed
         invalid_verification_cases += case_schema_failed
+        failed_feedback_cases += feedback_failed
+        feedback_attempted_cases += feedback_attempted
     def ratio(n, d):
         return n / d if d else None
     def percentile(p):
@@ -86,11 +96,17 @@ def summarize_tribunal(records, wall_seconds=None):
         initial_error_discovery=ratio(counts["correct_change_proposals"], counts["samples"] - counts["initial_correct"]),
         harmful_proposal_rate=ratio(counts["harmful_change_proposals"], counts["initial_correct"]),
         accepted_change_precision=ratio(counts["helpful_changes"], changes),
+        initial_error_correction_rate=ratio(counts["helpful_changes"], counts["samples"] - counts["initial_correct"]),
+        harmful_flip_rate=ratio(counts["harmful_changes"], counts["initial_correct"]),
+        net_accuracy_gain_percentage_points=(100 * (counts["helpful_changes"] - counts["harmful_changes"]) / counts["samples"]
+                                             if counts["samples"] else None),
         net_correct_gain=counts["helpful_changes"] - counts["harmful_changes"],
         sample_median_seconds=percentile(.5), sample_p95_seconds=percentile(.95), wall_seconds=wall_seconds,
         tribunal_seconds=tribunal_seconds, tribunal_timing_is_subset_of_wall=True,
         verification_short_circuits=verification_failures,
         cases_with_failed_verification_execution=failed_verification_cases,
+        cases_with_feedback_attempt=feedback_attempted_cases,
+        cases_with_failed_feedback_review=failed_feedback_cases,
         cases_with_invalid_verification_output=invalid_verification_cases,
         cases_with_initial_visual_diagnostics=initial_visual_diagnostics_cases,
         initial_visual_answers=initial_visual_answers,

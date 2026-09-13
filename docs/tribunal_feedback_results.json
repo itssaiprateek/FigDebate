@@ -1,0 +1,89 @@
+{
+  "baseline3": {
+    "samples": 3,
+    "initial_correct": 1,
+    "final_correct": 1,
+    "helpful_changes": 0,
+    "harmful_changes": 0,
+    "failed_reviews": 0,
+    "cases_with_failed_verification_execution": 0,
+    "cases_with_feedback_attempt": 0,
+    "cases_with_failed_feedback_review": 0,
+    "tribunal_seconds": 327.201114,
+    "records_sha256": "74f179e910856496dbd40fa06ea81211d270ba217a7e9d44da07cbb03b897328"
+  },
+  "revised3": {
+    "samples": 3,
+    "initial_correct": 1,
+    "final_correct": 1,
+    "helpful_changes": 0,
+    "harmful_changes": 0,
+    "failed_reviews": 0,
+    "cases_with_failed_verification_execution": 0,
+    "cases_with_feedback_attempt": 0,
+    "cases_with_failed_feedback_review": 0,
+    "tribunal_seconds": 198.926371,
+    "records_sha256": "b08cd5f3450d10121d2d12a50ab465e05f77fd090e53abbb075a9df0d8b4c83e"
+  },
+  "feedback3": {
+    "samples": 3,
+    "initial_correct": 1,
+    "final_correct": 1,
+    "helpful_changes": 0,
+    "harmful_changes": 0,
+    "failed_reviews": 1,
+    "cases_with_failed_verification_execution": 0,
+    "cases_with_feedback_attempt": 3,
+    "cases_with_failed_feedback_review": 1,
+    "tribunal_seconds": 277.076508,
+    "records_sha256": "fec16bda529cdc4f89e2fa418b1baeabfc104183379191fdc1476e2fad1540af",
+    "policy": "rejected_unconditional_guidance"
+  },
+  "final5": {
+    "samples": 5,
+    "initial_correct": 3,
+    "final_correct": 4,
+    "helpful_changes": 1,
+    "harmful_changes": 0,
+    "failed_reviews": 0,
+    "cases_with_failed_verification_execution": 0,
+    "cases_with_feedback_attempt": 1,
+    "cases_with_failed_feedback_review": 0,
+    "tribunal_seconds": 413.253373,
+    "records_sha256": "b5e5bdf688d59852c8b84c890c57e952154734d237c68309a3d9259abc3718d1"
+  },
+  "retrieval_final1": {
+    "samples": 1,
+    "independent_new_samples": 0,
+    "purpose": "same unresolved case after general retrieval refinement",
+    "final": "CONTRADICTS",
+    "feedback": {
+      "policy": "unresolved_only_verified_replacement",
+      "attempted": true,
+      "selected_guided_review": false,
+      "precedent_ids": [
+        "figurative_scope"
+      ],
+      "reason": "retained_baseline_no_verified_resolution",
+      "execution_status": "SUCCEEDED",
+      "format_valid": true,
+      "checks": [
+        {
+          "precedent_id": "figurative_scope",
+          "applies": false,
+          "current_evidence_ids": [],
+          "reason": "The interpretation requires invented events or outcomes not present in the image."
+        }
+      ]
+    },
+    "tribunal_seconds": 88.930647,
+    "records_sha256": "7aa228d1ebb910af6d446c6d4ab4b6ebb111ee76330a6ea909753e859d751136"
+  },
+  "limitations": [
+    "Selected development diagnostics; not held-out accuracy.",
+    "First-review and production-gate replay; no new upstream inference or later witness hearings.",
+    "Synthetic methodological precedents; no empirically validated case-memory claim.",
+    "Feedback supplied no demonstrated additional correct answer.",
+    "One pre-existing expected arbiter test failure remains."
+  ]
+}

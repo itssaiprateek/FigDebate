@@ -83,7 +83,7 @@ def main():
         decision, final_ledger, resolution = apply_tribunal_resolution(trace["initial_decision"], review, ledger,
             language.get("claim_contract", {}), agent2_requirements_valid=debate.get("agent2_requirements_valid", True),
             agent1_critique=debate.get("agent1_critique", {}), agent2_critique=debate.get("agent2_critique", {}),
-            semantic_bridge_mode="corroborated", language_output=language)
+            semantic_bridge_mode="corroborated", language_output=language, source_caption=item["caption"])
         result = dict(id=identifier, initial_prediction=row["initial_prediction"], prediction=decision["label"],
             ground_truth=item["label"], judge_verdict=review.get("best_semantic_judgment", "ABSTAIN"),
             judge_format_valid=review.get("_format_valid", False), judge_format_error=review.get("_format_error", ""),

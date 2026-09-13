@@ -64,7 +64,7 @@ class StagewiseRunner:
         readonly_stage_sources=(),
         control_mode="none",
     ):
-        if feedback_mode not in {"disabled", "collect", "calibrate", "verified"}:
+        if feedback_mode not in {"disabled", "collect", "calibrate", "verified", "precedent"}:
             raise ValueError(f"Unknown feedback mode: {feedback_mode}")
         if debate_mode not in {"enabled", "disabled"}:
             raise ValueError(f"Unknown debate mode: {debate_mode}")
@@ -103,6 +103,12 @@ class StagewiseRunner:
         )
         self.run_timing = {}
         self.feedback_events = []
+        self.tribunal_precedents = None
+        if feedback_mode == "precedent":
+            if judge_mode != "tribunal" or not verified_feedback_path:
+                raise ValueError("Precedent feedback requires tribunal mode and a frozen library file")
+            from engine.tribunal_feedback import TribunalPrecedents
+            self.tribunal_precedents = TribunalPrecedents(verified_feedback_path)
         if feedback_log_path:
             self.debate.feedback_loop.log_file = feedback_log_path
         if feedback_mode == "verified":
@@ -312,6 +318,13 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                         "pre_feedback_decision", {}
                     ).get("label") != result.get("decision", {}).get("label"),
                 }
+                if self.feedback_mode == "precedent":
+                    reviews = result.get("judge", {}).get("tribunal_reviews", [])
+                    matched = sorted({p for r in reviews for p in r.get("_retrieved_precedent_ids", [])})
+                    result["feedback"].update(feedback_target_agent="tribunal", role="reasoning_guidance_only",
+                        matched_rule_ids=matched, memory_active=bool(matched),
+                        library_sha256=self.tribunal_precedents.sha256,
+                        verifier_receives_precedents=False, attribution="requires_paired_ablation")
                 if self.feedback_mode == "verified":
                     self.feedback_events.append({
                         "sample_id": sample["raw"]["id"],
@@ -399,6 +412,9 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 self._seed_sample(sample, "tribunal_review", round_number)
                 debate = result.get("debate_details", {}) or {}
                 from engine.review_outcome import failed_review
+                precedent_kwargs = {}
+                if getattr(self, "tribunal_precedents", None):
+                    precedent_kwargs["precedents"] = self.tribunal_precedents.retrieve(result.get("language_output", {}))
                 review = failed_review(load_error, "model_load", load_seconds / len(samples)) if load_error else reviewer.review(
                     sample["image"],
                     sample["caption"],
@@ -410,7 +426,15 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     round_number=round_number,
                     current_decision=result.get("decision", {}),
                     pre_hearing=result.get("pre_hearing", {}),
+                    **precedent_kwargs,
                 )
+                if precedent_kwargs:
+                    review["_precedent_library_sha256"] = self.tribunal_precedents.sha256
+                    review["_retrieved_precedent_ids"] = [p["id"] for p in precedent_kwargs["precedents"]]
+                    self.feedback_events.append({"sample_id": sample_id, "round": round_number,
+                        "mode": "precedent", "matched_rule_ids": review["_retrieved_precedent_ids"],
+                        "library_sha256": self.tribunal_precedents.sha256,
+                        "feedback_audit": review.get("_precedent_feedback", {}), "online_update": False})
                 result["timing"]["mediator_seconds"] = round(
                     float(result["timing"].get("mediator_seconds", 0.0))
                     + float(review.get("_generation_seconds", 0.0)),
@@ -441,6 +465,7 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                             self, "semantic_bridge_mode", "disabled"
                         ),
                         language_output=result.get("language_output", {}),
+                        source_caption=sample["caption"],
                     )
                 )
                 result["decision"] = resolved
@@ -529,6 +554,10 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
         return load_seconds
 
     def run_samples(self, samples, on_result):
+        if getattr(self, "tribunal_precedents", None):
+            import hashlib
+            self.tribunal_precedents.assert_disjoint([
+                dict(s["raw"], caption_sha256=hashlib.sha256(s["caption"].encode()).hexdigest()) for s in samples])
         from engine.runtime_accounting import begin_accounting, sample_accounting
         begin_accounting()
         run_started = time.time()

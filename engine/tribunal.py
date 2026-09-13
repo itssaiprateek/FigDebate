@@ -262,7 +262,7 @@ def apply_tribunal_resolution(
     current_decision, review, ledger, claim_contract=None,
     agent2_requirements_valid=True, agent1_critique=None,
     agent2_critique=None,
-    semantic_bridge_mode="disabled", language_output=None,
+    semantic_bridge_mode="disabled", language_output=None, source_caption=None,
 ):
     """Promote corroborated evidence and apply the ordinary review board."""
     current_decision = current_decision or {}
@@ -333,7 +333,13 @@ def apply_tribunal_resolution(
         review_confidence = float(review.get("confidence") or 0.0)
     except (TypeError, ValueError):
         review_confidence = 0.0
-    contract = claim_contract or {}
+    contract = dict(claim_contract or {})
+    # The verifier uses the immutable dataset caption. Rebuilding its subject
+    # from an agent's whitespace-normalized extraction changes the proof hash.
+    # Carry that same external source into the gate; never trust a model rewrite
+    # or weaken subject hashing to make mismatched proofs pass.
+    if source_caption is not None:
+        contract["source_caption"] = source_caption
     if semantic_bridge_mode not in {"disabled", "shadow", "corroborated"}:
         raise ValueError(f"Unknown semantic bridge mode: {semantic_bridge_mode}")
     if semantic_bridge_mode != "disabled":

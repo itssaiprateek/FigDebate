@@ -65,9 +65,9 @@ def validate_shape(value, schema):
     return "enum" not in schema or value in schema["enum"]
 
 
-def prefix_constraint(tokenizer, schema):
+def prefix_constraint(tokenizer, schema, compact=False):
     from engine.structured_decoder import prefix_constraint as build
-    return build(tokenizer, schema)
+    return build(tokenizer, schema, compact=compact)
 
 
 def incomplete_clause(text):

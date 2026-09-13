@@ -25,6 +25,8 @@ class RuntimeProfile:
     judge_evidence_first: bool = False
     judge_min_followup_seconds: float = 90.0
     judge_release_prefill_workspace: bool = False
+    judge_verification_reserve_seconds: float = 120.0
+    judge_compact_json: bool = True
 
     def as_dict(self):
         payload = asdict(self)

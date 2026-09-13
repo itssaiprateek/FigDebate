@@ -260,6 +260,8 @@ class QwenJudgeModel:
                 "quantization": str(getattr(self.model.config, "quantization_config", None)),
                 "cold_call": not getattr(self, "_generation_started_before", False),
             }
+            from engine.judge_telemetry import runtime_snapshot
+            self._last_generation_diagnostics["runtime_before"] = runtime_snapshot()
             provenance = dict(self._last_generation_diagnostics)
             self._generation_started_before = True
             if prompt_length + int(max_new_tokens) > total_limit:
@@ -277,12 +279,17 @@ class QwenJudgeModel:
             deadline = Deadline(min(self.hardware_profile.judge_max_seconds, remaining)
                                 if remaining is not None else self.hardware_profile.judge_max_seconds)
             generation_options = {"stopping_criteria": StoppingCriteriaList([deadline])}
+            callback_seconds = {}
             schema = getattr(self, "_active_output_schema", None)
             if schema:
-                generation_options["prefix_allowed_tokens_fn"] = prefix_constraint(self.processor.tokenizer, schema)
+                from engine.judge_telemetry import measured_callback
+                generation_options["prefix_allowed_tokens_fn"] = measured_callback(prefix_constraint(
+                    self.processor.tokenizer, schema, compact=self.hardware_profile.judge_compact_json),
+                    callback_seconds, "grammar")
                 from engine.output_contracts import complete_json_stopper
                 generation_options["stopping_criteria"].append(
-                    complete_json_stopper(self.processor.tokenizer, prompt_length, schema))
+                    measured_callback(complete_json_stopper(self.processor.tokenizer, prompt_length, schema),
+                                      callback_seconds, "completion_check"))
             prefill_hook, prefill_cleanup = self._install_prefill_cleanup(torch, use_cache)
             self._last_generation_diagnostics["prefill_workspace_cleanup"] = prefill_cleanup
             with torch.inference_mode():
@@ -307,6 +314,8 @@ class QwenJudgeModel:
                     partial_response=self.processor.batch_decode(partial_ids,
                         skip_special_tokens=True, clean_up_tokenization_spaces=False)[0],
                     use_cache=bool(use_cache), partial_output_discarded=True)
+                self._last_generation_diagnostics["runtime_after"] = runtime_snapshot()
+                self._last_generation_diagnostics["callback_seconds"] = callback_seconds
                 del partial_ids
                 raise TimeoutError("judge generation timed out before a complete qualified response")
             # Generation kernels are asynchronous.  Synchronizing here makes
@@ -325,6 +334,9 @@ class QwenJudgeModel:
             diagnostics = {
                 **provenance,
                 "decoder": DECODER_ID if schema else None,
+                "compact_json": self.hardware_profile.judge_compact_json,
+                "runtime_after": runtime_snapshot(),
+                "callback_seconds": callback_seconds,
                 "input_tokens": prompt_length,
                 "generated_tokens": generated_tokens,
                 "max_new_tokens": int(max_new_tokens),

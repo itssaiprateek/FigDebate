@@ -1,0 +1,57 @@
+{
+  "schema_version": "tribunal-precedents-1",
+  "entries": [
+    {
+      "id": "figurative_scope",
+      "origin": "synthetic_methodological",
+      "review_note": "Methodological seed reviewed for label neutrality and explicit exclusions; not an empirically validated past case.",
+      "types": ["humor", "metaphor", "sarcasm"],
+      "features": ["figurative"],
+      "principle": "Evaluate a conventional expression under its context-supported meaning while preserving every asserted qualification.",
+      "applies_when": "Literal wording and a figurative interpretation compete, and the image or visible text grounds the intended mapping.",
+      "exclude_when": "The interpretation requires invented events, identities or outcomes, or merely shares a topic with the image.",
+      "example": "A depicted overflowing workload can ground a caption about drowning in tasks without visible water.",
+      "counterexample": "The same workload does not establish that a named person missed yesterday's deadline. Time and outcome still need evidence.",
+      "source": {}
+    },
+    {
+      "id": "comparison_roles",
+      "origin": "synthetic_methodological",
+      "review_note": "Synthetic role reversal pair; no dataset label or empirical effectiveness claim.",
+      "types": ["humor", "metaphor", "sarcasm"],
+      "features": ["figurative", "comparison"],
+      "principle": "Bind each side of a comparison to its own observed outcome before evaluating the direction.",
+      "applies_when": "Two subjects, panels or times have a comparative relationship.",
+      "exclude_when": "One side is unseen, the comparison is only desired, or the entities cannot be matched.",
+      "example": "A small vehicle passing a stalled large vehicle can depict reversed expectations about speed.",
+      "counterexample": "A large vehicle merely facing forward does not prove it outruns the smaller one.",
+      "source": {}
+    },
+    {
+      "id": "speaker_attribution",
+      "origin": "synthetic_methodological",
+      "review_note": "Synthetic attribution pair distinguishing speech from truth; no dataset-derived facts.",
+      "types": ["humor", "metaphor", "sarcasm"],
+      "features": ["figurative", "speaker_scope"],
+      "principle": "Distinguish a character's belief, the depicted outcome, and the author's stance.",
+      "applies_when": "The claim depends on who speaks, is evaluated, or experiences an outcome.",
+      "exclude_when": "The image does not identify the relevant speaker or the proposed attribution depends on outside biography.",
+      "example": "A boast beside a visibly failed attempt establishes the boast and its mismatch with the outcome.",
+      "counterexample": "A boast alone does not establish success, failure, or that the author agrees with it.",
+      "source": {}
+    },
+    {
+      "id": "polarity_scope",
+      "origin": "synthetic_methodological",
+      "review_note": "Synthetic polarity pair; preserves the original claim and requires present evidence.",
+      "types": ["humor", "metaphor", "sarcasm"],
+      "features": ["figurative", "polarity"],
+      "principle": "Locate the evaluative target and contrast before interpreting ironic praise or criticism; do not mechanically invert the claim.",
+      "applies_when": "Evaluative wording contrasts with an observed state of the same subject.",
+      "exclude_when": "The contrast concerns a different subject, or negative sentiment is inferred without an observable mismatch.",
+      "example": "Praise of an orderly desk alongside visible clutter can communicate an ironic evaluation of that desk.",
+      "counterexample": "An untidy desk does not make praise of a nearby finished painting ironic.",
+      "source": {}
+    }
+  ]
+}

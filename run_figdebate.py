@@ -278,16 +278,16 @@ def parse_args():
     )
     parser.add_argument(
         "--feedback-mode",
-        choices=("disabled", "collect", "calibrate", "verified"),
+        choices=("disabled", "collect", "calibrate", "verified", "precedent"),
         default="disabled",
         help=(
             "collect logs error candidates; calibrate builds gold-label rules from a development split; "
-            "verified applies an immutable feedback file before a held-out run."
+            "verified applies an immutable feedback file; precedent supplies frozen reasoning guidance only to the tribunal."
         ),
     )
     parser.add_argument(
         "--verified-feedback-file",
-        help="JSON file of human-reviewed prompt examples; required in verified mode.",
+        help="Frozen JSON feedback library; required in verified and precedent modes.",
     )
     parser.add_argument(
         "--debate-mode",
@@ -1400,7 +1400,7 @@ def main():
     set_reproducibility(args.seed)
     from engine.runtime_profile import resolve_runtime_profile
     hardware_profile = resolve_runtime_profile(args.hardware_profile)
-    if args.feedback_mode == "verified" and not args.verified_feedback_file:
+    if args.feedback_mode in {"verified", "precedent"} and not args.verified_feedback_file:
         raise ValueError("Verified feedback mode requires --verified-feedback-file.")
     if args.feedback_mode != "disabled" and args.execution_mode != "stagewise":
         raise ValueError(
@@ -1452,6 +1452,13 @@ def main():
     else:
         write_json_atomic(manifest_path, selection_manifest)
     pending = [(index, raw) for index, raw in enumerate(selected) if raw["id"] not in existing]
+    if args.feedback_mode == "precedent":
+        from engine.tribunal_feedback import TribunalPrecedents
+        if args.judge_mode != "tribunal":
+            raise ValueError("Precedent feedback requires --judge-mode tribunal")
+        library = TribunalPrecedents(args.verified_feedback_file)
+        library.assert_disjoint([dict(raw, caption_sha256=hashlib.sha256(raw["caption"].encode()).hexdigest())
+                                 for raw in selected])
     if set(existing) - {row["id"] for row in selected}:
         raise ValueError("Existing outputs are outside the requested selection")
     reference_path = os.path.join(run_dir, "evaluation_references.json")
@@ -1564,8 +1571,8 @@ def main():
             ),
         },
         "feedback_policy": {
-            "retrieval": "strict_procedural_case_similarity",
-            "role": "diagnostic_question_and_debate_routing_only",
+            "retrieval": "structural_precedents_max_two" if args.feedback_mode == "precedent" else "strict_procedural_case_similarity",
+            "role": "tribunal_guidance_verifier_blind" if args.feedback_mode == "precedent" else "diagnostic_question_and_debate_routing_only",
             "online_label_updates": False,
             "gold_direction_stored": False,
         },
