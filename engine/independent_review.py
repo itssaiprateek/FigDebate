@@ -63,6 +63,9 @@ def parse_verification(text):
     return _parser(schema)(text)
 
 def verify_independently(runtime, image, proposal, ledger):
+    if getattr(getattr(runtime, "hardware_profile", None), "tribunal_protocol", "legacy") == "evidence-review-4.0":
+        from engine.evidence_verification import verify
+        return verify(runtime, image, proposal, ledger)
     from agents.multimodal_judge import _run_structured_generation
     subject = verification_subject(proposal, ledger)
     record = {"schema_version": "3.0", "subject_sha256": subject_hash(proposal, ledger),
@@ -134,6 +137,9 @@ def verify_independently(runtime, image, proposal, ledger):
 
 def audit_independent_record(proposal, ledger):
     record = proposal.get("independent_verification", {}) or {}
+    if record.get("schema_version") == "4.0":
+        from engine.evidence_verification import audit
+        return audit(proposal, ledger)
     calls = record.get("calls", [])
     obligations = record.get("obligations", {})
     known = set(proposal.get("visual_evidence_ids", []))

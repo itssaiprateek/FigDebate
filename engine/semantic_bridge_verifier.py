@@ -116,8 +116,11 @@ def verify_semantic_bridge(proposal, ledger, claim_contract, agent2_requirements
         )
     )
     argument_audit = (proposal.get("independent_verification") or {}).get("obligations", {}).get("arguments", {})
-    factored = (proposal.get("independent_verification") or {}).get("schema_version") == "3.0"
-    if factored:
+    version = (proposal.get("independent_verification") or {}).get("schema_version")
+    factored = version in {"3.0", "4.0"}
+    if version == "4.0":
+        statement_relation_consistent = independent["bound_to_current_case"] and independent["arguments_verified"]
+    elif factored:
         statement_relation_consistent = bool(independent["bound_to_current_case"] and argument_audit.get("_format_valid")
             and argument_audit.get("bridge_grounded") is True
             and argument_audit.get("bridge_relation") == relation)
@@ -207,7 +210,10 @@ def verify_semantic_bridge(proposal, ledger, claim_contract, agent2_requirements
     reversed_choice, reversed_scores = _ordered_relation_score(
         proposal, ("CONFLICT", "SUPPORT")
     )
-    checked("position_reversed_consistency", first == reversed_choice == relation)
+    if version == "4.0":
+        checked("fresh_counterinterpretation_consistency", independent["arguments_verified"], independent.get("verification_control"))
+    else:
+        checked("position_reversed_consistency", first == reversed_choice == relation)
     visual_roots = {
         root for item_id in visual_ids for root in evidence_provenance_roots(ledger, item_id)
     }

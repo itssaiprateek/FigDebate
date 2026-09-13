@@ -19,6 +19,10 @@ class RuntimeProfile:
     judge_text_tokens: int = 3072
     judge_total_tokens: int = 6144
     judge_max_seconds: float = 120.0
+    tribunal_protocol: str = "evidence-review-4.0"
+    judge_case_seconds: float = 240.0
+    judge_retrieval_cycles: int = 2
+    judge_evidence_first: bool = True
 
     def as_dict(self):
         payload = asdict(self)

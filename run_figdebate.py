@@ -1674,6 +1674,9 @@ def main():
         json.dump(run_timing, handle, indent=2)
 
     records = [existing[raw["id"]] for raw in selected if raw["id"] in existing]
+    from evaluation.tribunal_quality import summarize_tribunal
+    write_json_atomic(os.path.join(run_dir, "tribunal_quality.json"),
+                      summarize_tribunal(records, run_timing["wall_clock_seconds"]))
     write_predictions(predictions_path, records)
     debate_jsonl, debate_csv = write_debate_logs(run_dir, records)
     feedback_jsonl, feedback_csv = write_feedback_decision_logs(run_dir, records)

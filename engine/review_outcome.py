@@ -23,6 +23,8 @@ def hearing_accounting(judge):
 
 def execution_error_type(error):
     text = str(error).casefold()
+    if "case budget" in text:
+        return "CASE_BUDGET"
     if "out of memory" in text or "vram profile" in text:
         return "OUT_OF_MEMORY"
     if "context budget" in text or "token budget" in text:
@@ -46,6 +48,7 @@ def review_timing(review):
     children = [review_timing(item) for item in prior]
     total = review.get("_generation_seconds")
     own_verification = (review.get("_independent_verification") or {}).get("_generation_seconds", 0.0)
+    own_verification += (review.get("_argument_repair") or {}).get("_generation_seconds", 0.0)
     verification = own_verification + sum(c["verification_seconds"] for c in children)
     diagnostics = review.get("_generation_diagnostics") or []
     if isinstance(diagnostics, dict):
@@ -54,6 +57,8 @@ def review_timing(review):
                   if d.get("termination_reason") == "TIMEOUT" or d.get("timeout_seconds") is not None)
     proof = review.get("_independent_verification") or {}
     proof_calls = list(proof.get("calls") or []) + list((proof.get("obligations") or {}).values())
+    if review.get("_argument_repair"):
+        proof_calls.append(review["_argument_repair"])
     timeout += sum(review_timing(call)["timeout_elapsed_seconds"] for call in proof_calls)
     timeout += sum(c["timeout_elapsed_seconds"] for c in children)
     return {"inclusive_seconds": total, "verification_seconds": verification,
@@ -92,8 +97,14 @@ def classify_review(review):
         caption = obligations.get("caption") or {}
         if caption.get("method") != "exact_source_identity":
             required.append(caption)
+        if verification.get("schema_version") == "4.0":
+            calls = verification.get("calls", [])
+            required = [obligations.get(name, {}) for name in ("visual", "mapping", "arguments")]
+            expected_calls = 1
+        else:
+            expected_calls = 2
         verification_status = ("BLOCKED_IMAGE_BINDING" if verification.get("input_binding_error") else
-            "EXECUTED" if len(calls) == 2 and all(c.get("_execution_status") == "SUCCEEDED"
+            "EXECUTED" if len(calls) == expected_calls and all(c.get("_execution_status") == "SUCCEEDED"
                 and c.get("_format_valid") for c in calls + required) else "INCOMPLETE_VERIFICATION")
     else:
         verification_status = ("NOT_RUN" if not review else "BLOCKED_EXECUTION" if execution == "FAILED" else

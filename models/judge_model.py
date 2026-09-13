@@ -26,6 +26,9 @@ JUDGE_MODEL_FILES = (
 
 
 def default_judge_model_path():
+    configured = os.environ.get("FIGDEBATE_MODEL_ROOT")
+    if configured:
+        return os.path.join(os.path.abspath(configured), "judge", "Qwen3.5-4B")
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(project_root, JUDGE_MODEL_DIRECTORY)
 
@@ -240,7 +243,10 @@ class QwenJudgeModel:
                 torch.cuda.reset_peak_memory_stats()
                 torch.cuda.synchronize()
             started = time.perf_counter()
-            deadline = Deadline(self.hardware_profile.judge_max_seconds)
+            from engine.case_budget import require_time
+            remaining = require_time(self)
+            deadline = Deadline(min(self.hardware_profile.judge_max_seconds, remaining)
+                                if remaining is not None else self.hardware_profile.judge_max_seconds)
             generation_options = {"stopping_criteria": StoppingCriteriaList([deadline])}
             schema = getattr(self, "_active_output_schema", None)
             if schema:
@@ -260,7 +266,7 @@ class QwenJudgeModel:
                 # Keep failure diagnostics, never promote partial text to proof.
                 partial_ids = generated[:, prompt_length:]
                 self._last_generation_diagnostics.update(
-                    timeout_seconds=self.hardware_profile.judge_max_seconds,
+                    timeout_seconds=deadline.seconds,
                     elapsed_seconds=time.perf_counter() - started,
                     termination_reason="TIMEOUT",
                     generated_tokens=int(partial_ids.shape[-1]),

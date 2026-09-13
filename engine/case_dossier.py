@@ -327,6 +327,33 @@ def render_judge_dossier(dossier, detailed_evidence_limit=18):
     return packet
 
 
+def compact_evidence_record(item):
+    # Provenance remains in the durable ledger; exact text and IDs remain here.
+    return {k: deepcopy(item[k]) for k in ("id", "text", "type", "source") if k in item}
+
+
+def compact_evidence_packet(packet, evidence_first=True):
+    """Remove repeated presentation metadata, never evidence or source content."""
+    packet = deepcopy(packet)
+    packet["evidence_ledger"] = [compact_evidence_record(i) for i in packet.get("evidence_ledger", [])]
+    packet["claim_agent"] = {"claim_graph": packet.get("claim_agent", {}).get("claim_graph")}
+    packet.pop("visual_agent", None)  # Its exact observations are already in the ledger.
+    if evidence_first:
+        for item in packet.get("candidate_cases", []):
+            packet.setdefault("remaining_context_index", []).append({
+                "context_id": item["context_id"], "kind": "fallible_candidate_argument", "requires_retrieval": True})
+        packet["candidate_cases"] = []
+    for role in packet.get("targeted_hearing", {}).values():
+        if role.get("question_answers") is not None:
+            # Compatibility aliases repeat the same latest answer.
+            retained = {key: role[key] for key in ("question_answers", "status", "content_withheld") if key in role}
+            role.clear()
+            role.update(retained)
+    # Render observations before interpretations without changing what is available.
+    first = {key: packet[key] for key in ("source_caption", "evidence_ledger", "claim_agent") if key in packet}
+    return dict(first, **{key: value for key, value in packet.items() if key not in first})
+
+
 def _update_rendering(packet, active_count):
     detailed = packet.get("evidence_ledger", [])
     indexed = packet.get("remaining_evidence_index", [])
@@ -334,7 +361,7 @@ def _update_rendering(packet, active_count):
         "active_count": active_count, "detailed_count": len(detailed),
         "indexed_count": len(indexed),
         "all_active_ids_visible": len(detailed) + len(indexed) == active_count,
-        "citable_ids": [item["id"] for item in detailed],
+        **({} if packet.get("protocol") else {"citable_ids": [item["id"] for item in detailed]}),
     }
 
 

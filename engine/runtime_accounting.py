@@ -8,7 +8,12 @@ _STATE = ContextVar("figdebate_generation_accounting", default=None)
 
 
 def begin_accounting():
-    _STATE.set({"events": [], "sample_id": None, "stage": None})
+    _STATE.set({"events": [], "sample_id": None, "stage": None, "judge_case_times": {}})
+
+
+def judge_case_times():
+    state = _STATE.get()
+    return None if state is None else state.setdefault("judge_case_times", {})
 
 
 def set_scope(sample_id, stage, attempt=0):

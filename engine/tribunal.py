@@ -79,6 +79,12 @@ def followup_plan(review, comparison=None):
     agent1_questions = list(review.get("agent1_questions", []) or [])
     agent2_questions = list(review.get("agent2_questions", []) or [])
     verification_requests = list(review.get("verification_requests", []) or [])
+    if review.get("targeted_question"):
+        question = review["targeted_question"]
+        if review.get("requested_follow_up") == "CAPTION_PREMISE":
+            agent2_questions = [question]
+        else:
+            agent1_questions = [question]
     if review.get("requested_follow_up") and not (
         agent1_questions or agent2_questions
     ):
@@ -123,6 +129,9 @@ def repair_followup_plan(review, comparison=None, debate_details=None):
     agent2 = debate.get("agent2_critique", {}) or {}
     reasons = []
     verification = review.get("_independent_verification") or {}
+    if verification.get("schema_version") == "4.0":
+        from engine.evidence_verification import repair_plan
+        return repair_plan(review)
     if verification.get("schema_version") == "3.0":
         obligations = verification.get("obligations") or {}
         # Route actual failed obligations; self-rated confidence/strength is
@@ -353,6 +362,11 @@ def apply_tribunal_resolution(
         proposed_relation=proposed_relation,
     )
     metadata["claim_dependency_audit"] = dependency_audit
+    if (review.get("_protocol") == "evidence-review-4.0" and review.get("relation") in {"SUPPORT", "CONFLICT"}
+            and not metadata.get("semantic_bridge_applied_to_candidate")):
+        independent = metadata.get("semantic_bridge_verification", {}).get("independent_verification", {})
+        metadata["verification_failures"] = independent.get("root_failures", [])
+        return reject("tribunal_independent_evidence_unverified")
     checks = (
         (review.get("_format_valid", False), "invalid_tribunal_contract"),
         (review.get("status") == "RESOLVE", "tribunal_not_resolved"),

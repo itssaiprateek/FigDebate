@@ -111,7 +111,8 @@ class InstalledTokenizerTests(unittest.TestCase):
     def test_current_transformers_adapter_accepts_complete_json(self):
         # CPU-only integration: catches the removed Transformers alias which
         # mocked model tests missed. No download and no GPU/model weights.
-        location = Path(__file__).resolve().parents[1] / "models/judge/Qwen3.5-4B"
+        from models.judge_model import default_judge_model_path
+        location = Path(default_judge_model_path())
         if not (location / "tokenizer.json").is_file():
             self.skipTest("Local qualified tokenizer unavailable")
         import torch
