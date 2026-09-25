@@ -32,8 +32,10 @@ VISUAL_SOURCES = {
 }
 
 
-def _clean(value, limit=1200):
-    return " ".join(str(value or "").split())[:limit]
+def _clean(value):
+    # Identity and interpretation checks need the complete text. Inference
+    # context limits are checked at the model boundary, never by silent slicing.
+    return " ".join(str(value or "").split())
 
 
 def select_bridge_family(claim_contract, language_output=None):
@@ -141,7 +143,10 @@ def build_semantic_bridge(review, ledger, claim_contract, language_output=None):
             if not contract.get("source_identity_graph_valid") else
             {"source_caption": source_caption, "representation": "UNDECOMPOSED_SOURCE"},
         "source_caption": source_caption,
+        "interpreted_assertion": (review.get('_compact_value') or {}).get('interpreted_assertion', ''),
         "image_sha256": review.get("_case_image_sha256", ""),
+        "verification_task": review.get('_verification_task', {}),
+        "process_audit_version": review.get('_process_audit_version', ''),
         "independent_verification": review.get("_independent_verification", {}),
         "visual_premise": visual_premise,
         "visual_evidence_ids": visual_ids,

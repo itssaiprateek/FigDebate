@@ -59,6 +59,9 @@ def record_tribunal_round(session, review, debate_details=None):
     if outcome["schema_status"] != "VALID":
         output.update(state="INVALID_OUTPUT", stop_reason="invalid_tribunal_contract")
         return output
+    if (review or {}).get('_contract_error_kind') == 'SEMANTIC_INCONSISTENCY':
+        output.update(state='PRESERVED', stop_reason='contradictory_tribunal_judgment')
+        return output
     status = (review or {}).get("status")
     if status == "FOLLOW_UP" and round_number < output["max_rounds"]:
         output["state"] = "FOLLOW_UP_REQUIRED"
@@ -87,47 +90,16 @@ def followup_plan(review, comparison=None):
         return {}
     if not followup_has_budget(review):
         return {}
-    agent1_questions = list(review.get("agent1_questions", []) or [])
-    agent2_questions = list(review.get("agent2_questions", []) or [])
-    verification_requests = list(review.get("verification_requests", []) or [])
-    if review.get("targeted_question"):
-        question = review["targeted_question"]
-        if review.get("requested_follow_up") == "CAPTION_PREMISE":
-            agent2_questions = [question]
-        else:
-            agent1_questions = [question]
-    if review.get("_protocol") == "evidence-review-4.0" and agent1_questions:
-        from agents.visual_adapter import AtomicVisualQuestionController
-        approved, rejected = [], []
-        for question in agent1_questions:
-            kind = AtomicVisualQuestionController.infer_question_type(question)
-            valid, error = AtomicVisualQuestionController.validate_question(question, kind)
-            if valid:
-                approved.append(question)
-            else:
-                rejected.append({"question": question, "error": error,
-                                 "status": "NOT_DISPATCHED_TO_VISUAL_WITNESS"})
-        agent1_questions = approved
-        if rejected:
-            # A semantic question cannot be answered by a literal visual witness.
-            # Preserve the planner defect; do not invent an answer or an unrelated
-            # replacement question simply to manufacture another hearing.
-            review["_follow_up_question_audit"] = rejected
-            review["_follow_up_question_status"] = "BLOCKED_WITNESS_SCOPE"
-            if not (agent1_questions or agent2_questions or verification_requests):
-                return {}
-    if review.get("requested_follow_up") and not (
-        agent1_questions or agent2_questions
-    ):
-        from engine.question_router import build_question_plan
-        deterministic = build_question_plan(comparison or {}).to_dict()
-        requested = review.get("requested_follow_up")
-        if requested in {"VISUAL_PREMISE", "ENTITY_BINDING", "SCOPE_BINDING"}:
-            agent1_questions = [deterministic["agent1_question"]]
-        elif requested == "CAPTION_PREMISE":
-            agent2_questions = [deterministic["agent2_question"]]
-        else:
-            verification_requests = [deterministic["verification_request"]]
+    from engine.review_routing import route_followup
+    routed, audit = route_followup(review)
+    review["_follow_up_routing"] = audit
+    agent1_questions = routed["visual"]
+    agent2_questions = routed["language"]
+    verification_requests = routed["tribunal"]
+    if routed["blocked"]:
+        review["_follow_up_question_status"] = "BLOCKED_INVALID_QUESTION"
+    if not (agent1_questions or agent2_questions or verification_requests):
+        return {}
     return {
         "status": "MEDIATE",
         "provisional_verdict": "ABSTAIN",
@@ -293,6 +265,8 @@ def apply_tribunal_resolution(
     }
 
     metadata.update(classify_review(review))
+    from engine.review_outcome import decision_path, resolution_category
+    metadata['decision_path'] = decision_path(review)
 
     def checked(name, passed, detail=""):
         metadata["acceptance_checks"].append({
@@ -304,6 +278,11 @@ def apply_tribunal_resolution(
 
     def reject(reason, output_ledger=None):
         metadata["reason"] = reason
+        metadata['resolution_category'] = resolution_category(review, metadata)
+        if not metadata.get('first_blocking_stage') and not reason.startswith('same_label'):
+            metadata['first_blocking_stage'] = 'acceptance_gate'
+        if metadata.get('terminal_outcome') == 'PROPOSAL_REQUIRES_GATE':
+            metadata['terminal_outcome'] = 'REJECTED_PROPOSAL'
         metadata["admissibility"] = "REJECTED"
         trace = append_decision_checkpoint(
             current_decision.get("_decision_trace", []),
@@ -326,8 +305,13 @@ def apply_tribunal_resolution(
         return reject("tribunal_execution_failed")
     if metadata["schema_status"] != "VALID":
         return reject("invalid_tribunal_contract")
+    if review.get('_contract_error_kind') == 'SEMANTIC_INCONSISTENCY':
+        return reject('contradictory_tribunal_judgment')
     if review.get("_context_valid") is False:
         return reject("tribunal_context:" + review.get("_context_status", "INVALID"))
+    if (review.get('_protocol') == 'evidence-review-5.0' and review.get('relation') in {'SUPPORT', 'CONFLICT'}
+            and (review.get('_independent_verification') or {}).get('schema_version') != '5.0'):
+        return reject('incompatible_or_missing_verification_version')
 
     try:
         review_confidence = float(review.get("confidence") or 0.0)
@@ -401,7 +385,7 @@ def apply_tribunal_resolution(
         proposed_relation=proposed_relation,
     )
     metadata["claim_dependency_audit"] = dependency_audit
-    if (review.get("_protocol") == "evidence-review-4.0" and review.get("relation") in {"SUPPORT", "CONFLICT"}
+    if (review.get("_protocol") in {"evidence-review-4.0", "evidence-review-5.0"} and review.get("relation") in {"SUPPORT", "CONFLICT"}
             and not metadata.get("semantic_bridge_applied_to_candidate")):
         independent = metadata.get("semantic_bridge_verification", {}).get("independent_verification", {})
         metadata["verification_failures"] = independent.get("root_failures", [])
@@ -462,6 +446,7 @@ def apply_tribunal_resolution(
                  or (by_id.get(key, {}).get("verification") or {}).get("decision_grade"))
             for key in cited_ids)
         if metadata["confirmation_valid"]:
+            metadata['terminal_outcome'] = 'VERIFIED_CONCLUSION'
             current_decision = deepcopy(current_decision)
             current_decision["_model_cited_evidence_ids"] = cited_ids
             current_decision = attach_evidence_audit(current_decision, verified_ledger)
@@ -600,6 +585,8 @@ def apply_tribunal_resolution(
     )
     candidate = attach_decision_trace(candidate, trace)
     metadata["accepted"] = True
+    metadata['resolution_category'] = resolution_category(review, metadata)
+    metadata['terminal_outcome'] = 'VERIFIED_CONCLUSION'
     metadata["admissibility"] = "ACCEPTED"
     metadata["changed_decision"] = (
         current_decision.get("label") != candidate.get("label")

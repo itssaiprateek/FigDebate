@@ -276,7 +276,10 @@ CASE PACKET:
 
 
 def build_tribunal_review_prompt(packet, round_number):
-    if packet.get("protocol") == "evidence-review-4.0":
+    if packet.get('protocol') == 'evidence-review-5.0':
+        from engine.compact_proposal import prompt
+        return prompt(packet, round_number)
+    if packet.get("protocol") in {"evidence-review-4.0", "evidence-review-5.0"}:
         from engine.tribunal_protocol import proposal_prompt
         return proposal_prompt(packet, round_number)
     return f"""Review the current image and original caption, not the hidden gold label or prior verdict.
@@ -337,14 +340,16 @@ def _run_structured_generation(
     repair_prompt_builder=None, output_schema=None,
 ):
     """Generate, validate, and perform one bounded format-repair retry."""
-    from engine.case_budget import reserve_for_verification
-    reserve = (getattr(getattr(runtime, "hardware_profile", None), "judge_verification_reserve_seconds", 0)
+    from engine.case_budget import reserve_for_verification, proposal_reserve, observe_cost
+    reserve = (proposal_reserve(runtime)
                if contract_name == "tribunal_review" else 0)
     with reserve_for_verification(runtime, reserve):
         result = _generate_with_repair(runtime, image, prompt, parser,
             max_new_tokens=max_new_tokens, contract_name=contract_name,
             repair_prompt_builder=repair_prompt_builder, output_schema=output_schema)
     result["_verification_reserve_seconds"] = reserve
+    if contract_name == "tribunal_review" and result.get("_format_valid"):
+        observe_cost(runtime, "proposal", result.get("_generation_seconds", 0))
     return result
 
 
@@ -359,13 +364,17 @@ def _generate_with_repair(runtime, image, prompt, parser, *, max_new_tokens,
     parsed = parser("")
     effective_limit = int(max_new_tokens)
     output_status = "NOT_PRODUCED"
+    field_retry = False
     try:
         for attempt in range(2):
             from engine.case_budget import require_time
             require_time(runtime)
             attempt_prompt = prompt
+            field_retry = field_retry or bool(attempt and parsed.get('_repair_schema'))
             if attempt:
-                if repair_prompt_builder is not None:
+                if parsed.get("_repair_instruction"):
+                    attempt_prompt += "\n" + parsed["_repair_instruction"]
+                if repair_prompt_builder is not None and not parsed.get('_repair_schema'):
                     attempt_prompt = prompt + "\n\n" + repair_prompt_builder(
                         last_output,
                         parsed.get("_format_error", "invalid output"),
@@ -389,7 +398,9 @@ def _generate_with_repair(runtime, image, prompt, parser, *, max_new_tokens,
                 from engine.output_contracts import schema_for_contract
                 generation_kwargs = {"max_new_tokens": effective_limit}
                 if "json_schema" in inspect.signature(runtime.generate).parameters:
-                    generation_kwargs["json_schema"] = output_schema or schema_for_contract(contract_name)
+                    generation_kwargs["json_schema"] = (parsed.get("_repair_schema") if attempt else None) or output_schema or schema_for_contract(contract_name)
+                    if attempt and parsed.get("_repair_schema"):
+                        generation_kwargs["max_new_tokens"] = min(effective_limit, parsed.get('_repair_max_tokens',160))
                 generated = runtime.generate(image, attempt_prompt, **generation_kwargs)
             else:
                 # Preserve compatibility with injected test/research runtimes
@@ -404,6 +415,9 @@ def _generate_with_repair(runtime, image, prompt, parser, *, max_new_tokens,
             diagnostics = dict(
                 getattr(runtime, "_last_generation_diagnostics", {}) or {}
             )
+            from engine.output_contracts import text_length_boundaries
+            diagnostics['text_length_boundaries'] = text_length_boundaries(
+                last_output, parsed.get('_repair_schema', output_schema) if attempt else output_schema)
             attempts.append(diagnostics)
             parsed = parser(last_output)
             output_status = ("VALID" if parsed.get("_format_valid", False) else
@@ -413,6 +427,8 @@ def _generate_with_repair(runtime, image, prompt, parser, *, max_new_tokens,
                                prompt_sha256=hashlib.sha256(attempt_prompt.encode()).hexdigest(),
                                contract=contract_name, format_error=parsed.get("_format_error"))
             if parsed.get("_format_valid", False):
+                break
+            if parsed.get('_stop_format_retry'):
                 break
             if output_status == "TRUNCATED" and not attempt:
                 # Specialize the existing single retry; do not add another layer.
@@ -439,7 +455,8 @@ def _generate_with_repair(runtime, image, prompt, parser, *, max_new_tokens,
         len(attempts) > 1 and parsed.get("_format_valid", False)
     )
     parsed["_format_retry_strategy"] = (
-        "targeted_contract_rewrite"
+        "multi_field_repair" if field_retry and parsed.get('_field_repair_count', 0) > 1 else
+        "single_field_repair" if field_retry else "targeted_contract_rewrite"
         if len(attempts) > 1 and repair_prompt_builder is not None
         else "full_prompt_retry" if len(attempts) > 1 else "not_used"
     )
@@ -555,12 +572,16 @@ def bound_review_contract(graph, packet, catalog_ids):
     node_ids = [n["id"] for n in (graph or {}).get("nodes", [])]
     context_ids = {item["context_id"] for key in ("candidate_cases", "context_records", "remaining_context_index")
                    for item in packet.get(key, []) if item.get("context_id")}
-    if packet.get("protocol") == "evidence-review-4.0":
+    if packet.get("protocol") in {"evidence-review-4.0", "evidence-review-5.0"}:
         from engine.tribunal_protocol import proposal_schema, expand_proposal, LITERAL_TYPES
         literal_ids = {item["id"] for key in ("evidence_ledger", "remaining_evidence_index")
                        for item in packet.get(key, []) if item.get("type") in LITERAL_TYPES}
-        return (lambda raw: expand_proposal(raw, graph, packet, literal_ids, context_ids)), proposal_schema(
-            graph, literal_ids, context_ids, [p["id"] for p in packet.get("reasoning_precedents", [])])
+        if packet.get('protocol') == 'evidence-review-5.0':
+            from engine.compact_proposal import contract
+            return contract(graph, packet, literal_ids, context_ids)
+        schema=proposal_schema(graph,literal_ids,context_ids,[p['id'] for p in packet.get('reasoning_precedents',[])])
+        parse=lambda raw: expand_proposal(raw,graph,packet,literal_ids,context_ids)
+        return parse,schema
     schema["properties"]["context_requests"] = {
         "type": "array", "maxItems": min(4, len(context_ids)),
         "items": {"type": "string", **({"enum": sorted(context_ids)} if context_ids else {})}}
@@ -621,23 +642,33 @@ class TribunalMediatorAgent:
         self, image, caption, visual_output, language_output, comparison,
         evidence_ledger, debate_details, round_number=1,
         current_decision=None, pre_hearing=None, _verification_repair=None,
-        precedents=None,
+        precedents=None, prior_review=None,
     ):
         from engine.case_budget import case_budget, remaining_seconds
         profile = getattr(self.runtime, "hardware_profile", None)
         from engine.independent_review import image_subject_hash
         key = (caption, image_subject_hash(image))
+        if prior_review:
+            from engine.case_budget import restore_spent_budget
+            restore_spent_budget(self.runtime, key, prior_review)
+        self.runtime._review_repair_reserve = None
+        if prior_review and _verification_repair and getattr(profile, 'tribunal_protocol', '') == 'evidence-review-5.0':
+            from engine.tribunal_repair import restore_proof_cache
+            self.runtime._review_repair_reserve = restore_proof_cache(
+                self.runtime, prior_review, evidence_ledger, language_output, caption, _verification_repair)
         with case_budget(self.runtime, key, getattr(profile, "judge_case_seconds", None)):
             result = self._review(image, caption, visual_output, language_output, comparison,
                                 evidence_ledger, debate_details, round_number, current_decision,
                                 pre_hearing, _verification_repair, None)
-            if precedents and not _verification_repair:
+            if precedents and not _verification_repair and getattr(profile, 'tribunal_protocol', '') != 'evidence-review-5.0':
                 result = self._precedent_followup(result, precedents, image, caption, visual_output,
                     language_output, comparison, evidence_ledger, debate_details, round_number,
                     current_decision, pre_hearing)
+            from engine.case_budget import budget_estimates
+            estimates = budget_estimates(self.runtime)
             result["_case_budget"] = {"remaining_seconds": remaining_seconds(self.runtime),
-                                     "minimum_followup_seconds": max(getattr(profile, "judge_min_followup_seconds", 90),
-                                         getattr(profile, "judge_verification_reserve_seconds", 0) + 45)}
+                                     "minimum_followup_seconds": estimates["followup"],
+                                     "estimates": estimates, "total_seconds": getattr(profile, "judge_case_seconds", None)}
             return result
 
     def _precedent_followup(self, baseline, precedents, image, caption, visual_output,
@@ -647,11 +678,21 @@ class TribunalMediatorAgent:
         from engine.case_budget import remaining_seconds
         profile = getattr(self.runtime, "hardware_profile", None)
         remaining = remaining_seconds(self.runtime)
-        required = getattr(profile, "judge_verification_reserve_seconds", 0) + 45
+        from engine.case_budget import budget_estimates
+        from engine.review_routing import route_followup
+        estimates = budget_estimates(self.runtime)
+        required = estimates["followup"]
+        routed, routing_audit = route_followup(baseline)
+        needs_witness = round_number < 2 and bool(routed["visual"] or routed["language"])
+        from engine.tribunal_feedback import select_for_review
+        precedents = select_for_review(precedents, baseline)
         audit = {"policy": "unresolved_only_verified_replacement", "attempted": False,
                  "selected_guided_review": False, "precedent_ids": [p["id"] for p in precedents]}
         if not baseline.get("_format_valid") or baseline.get("_context_valid") is False or baseline.get("relation") != "UNRESOLVED":
             audit["reason"] = "baseline_not_semantically_unresolved"
+        elif needs_witness:
+            audit["reason"] = "required_witness_before_optional_guidance"
+            audit["routing"] = routing_audit
         elif remaining is not None and remaining < required:
             audit["reason"] = "insufficient_budget_for_guidance_and_verification"
         else:
@@ -669,6 +710,9 @@ class TribunalMediatorAgent:
                 reason="verified_guidance_resolution" if use_guided else "retained_baseline_no_verified_resolution",
                 execution_status=guided.get("_execution_status"), format_valid=guided.get("_format_valid"),
                 checks=deepcopy(guided.get("_precedent_checks", [])))
+            audit.update(guided_relation=guided.get("relation"),
+                         guided_seconds=guided.get("_generation_seconds", 0),
+                         verification_rejection=checked)
             selected, other = (guided, baseline) if use_guided else (baseline, guided)
             selected["_feedback_review_history"] = [deepcopy(other)]
             selected["_generation_seconds"] = baseline.get("_generation_seconds", 0) + guided.get("_generation_seconds", 0)
@@ -683,6 +727,9 @@ class TribunalMediatorAgent:
         current_decision=None, pre_hearing=None, _verification_repair=None,
         precedents=None,
     ):
+        if getattr(getattr(self.runtime, 'hardware_profile', None), 'tribunal_protocol', '') == 'evidence-review-5.0':
+            from engine.simple_judge import review
+            return review(self.runtime, image, caption, language_output, evidence_ledger, _verification_repair)
         dossier = build_case_dossier(
             caption,
             visual_output,
@@ -703,21 +750,35 @@ class TribunalMediatorAgent:
         packet["supervisor_checkpoint"] = "POST_TARGETED_HEARING"
         packet["tribunal_round"] = round_number
         profile = getattr(self.runtime, "hardware_profile", None)
-        if getattr(profile, "tribunal_protocol", "legacy") == "evidence-review-4.0":
+        if getattr(profile, "tribunal_protocol", "legacy") in {"evidence-review-4.0", "evidence-review-5.0"}:
             from engine.case_dossier import compact_evidence_packet
             packet = compact_evidence_packet(packet, evidence_first=getattr(profile, "judge_evidence_first", True))
-            packet["protocol"] = "evidence-review-4.0"
+            packet["protocol"] = profile.tribunal_protocol
+            # Preserve the normal-profile prompt representation; no candidate switch exists.
+            packet['structured_interpretation'] = False
         if _verification_repair:
             packet["verification_repair"] = _verification_repair
+        from engine import tribunal_process as process
+        if process.enabled(self.runtime):
+            packet['assessment_task'] = process.task_record(caption)
         if precedents:
             packet["reasoning_precedents"] = deepcopy(precedents[:2])
+        protected_context = set()
+        text_budget = getattr(profile, 'judge_text_tokens', 6144)
         try:
+            if getattr(profile, 'tribunal_protocol', '') == 'evidence-review-5.0':
+                from engine.case_dossier import disclose_review_context
+                packet, protected_context = disclose_review_context(packet, dossier)
+                measure_budget = getattr(self.runtime, 'review_text_budget', None)
+                if measure_budget is not None:
+                    text_budget = measure_budget(image, getattr(profile, 'judge_output_tokens', 384))
             packet, budget = fit_judge_packet(
                 packet, lambda view: build_tribunal_review_prompt(view, round_number),
                 token_counter=getattr(self.runtime, "count_text_tokens", None),
-                max_tokens=getattr(getattr(self.runtime, "hardware_profile", None),
-                                   "judge_text_tokens", 6144),
+                max_tokens=text_budget, protected_ids=protected_context,
             )
+            budget['context_delivery'] = packet.get('context_delivery')
+            budget['multimodal_allocation'] = getattr(self.runtime, '_review_text_budget_audit', None)
         except (RuntimeError, ValueError) as error:
             return {
                 "_format_valid": False, "_execution_status": "FAILED",
@@ -751,7 +812,7 @@ class TribunalMediatorAgent:
         # unread text. The evidence gate itself is unchanged.
         catalog_ids = {item["id"] for item in dossier["evidence_catalog"]}
         from engine.case_dossier import retrieve_dossier_evidence, retrieve_dossier_context, context_catalog
-        retrieval_steps, protected = [], set()
+        retrieval_steps, protected = [], set(protected_context)
         generation_seconds = review.get("_generation_seconds", 0.0)
         max_cycles = min(len(catalog_ids) + len(context_catalog(dossier)),
                          getattr(profile, "judge_retrieval_cycles", len(catalog_ids) + len(context_catalog(dossier))))
@@ -783,7 +844,7 @@ class TribunalMediatorAgent:
                 packet, budget = fit_judge_packet(proposed_packet,
                     lambda view: build_tribunal_review_prompt(view, round_number),
                     token_counter=getattr(self.runtime, "count_text_tokens", None),
-                    max_tokens=getattr(getattr(self.runtime, "hardware_profile", None), "judge_text_tokens", 6144),
+                    max_tokens=text_budget,
                     protected_ids=protected)
                 parser, output_schema = bound_review_contract(graph, packet, catalog_ids)
                 review = _run_structured_generation(self.runtime, image,
@@ -805,6 +866,8 @@ class TribunalMediatorAgent:
                 "steps": retrieval_steps, "cycles": len(retrieval_steps),
                 "bound": "finite_catalogue_with_cumulative_disclosure"}
         review["_prompt_budget"] = budget
+        if process.enabled(self.runtime):
+            review['_process_audit_version'] = process.VERSION
         review["_judge_packet"] = deepcopy(packet)
         still_unread = {item["context_id"] for item in packet.get("remaining_context_index", [])}
         if still_unread.intersection(review.get("context_requests", [])):
@@ -858,6 +921,8 @@ class TribunalMediatorAgent:
         review["_normalized_evidence_ids"] = normalized_ids
         if (review.get("_format_valid") and review.get("_context_valid", True) and not invalid_ids and valid_ids
                 and review.get("relation") in {"SUPPORT", "CONFLICT"}):
+            if packet.get('protocol') == 'evidence-review-5.0' and _verification_repair:
+                review['_verification_task'] = {key: _verification_repair.get(key, '') for key in ('failed_requirement', 'question')}
             from engine.semantic_bridge import build_semantic_bridge
             from engine.independent_review import verify_independently
             if hasattr(image, "tobytes"):
@@ -870,13 +935,18 @@ class TribunalMediatorAgent:
             verification = verify_independently(self.runtime, image, proposal, evidence_ledger)
             review["_independent_verification"] = verification
             verification_seconds = verification.get("_generation_seconds", 0.0)
+            from engine.case_budget import observe_cost
+            if not verification.get("stopped_after"):
+                observe_cost(self.runtime, "proof", verification_seconds)
             review["_verification_seconds"] = verification_seconds
             review["_generation_seconds"] += verification_seconds
         review["_case_dossier_schema"] = dossier["schema_version"]
         review["_model_id"] = JUDGE_MODEL_ID
         review["_model_revision"] = JUDGE_MODEL_REVISION
         review["_schema_version"] = "tribunal-2.0"
-        if review.get("_independent_verification") and not _verification_repair:
+        # V5 uses the single scheduled repair hearing; nested semantic retries
+        # would exceed that allowance and obscure feedback attribution.
+        if review.get("_independent_verification") and not _verification_repair and packet.get('protocol') != 'evidence-review-5.0':
             from engine.independent_review import audit_independent_record
             proposal["independent_verification"] = review["_independent_verification"]
             checked = audit_independent_record(proposal, evidence_ledger)

@@ -44,6 +44,9 @@ def subject_hash(proposal, ledger):
     payload = {"case": verification_subject(proposal, ledger),
                "bridge": proposal.get("bridge_statement", ""),
                "counter": proposal.get("counter_interpretation", "")}
+    if proposal.get("advisor_check"):
+        # Preserve identity validation for archived experimental proofs only.
+        payload["advisor_check"] = proposal["advisor_check"]
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 def _parser(schema):
@@ -63,6 +66,9 @@ def parse_verification(text):
     return _parser(schema)(text)
 
 def verify_independently(runtime, image, proposal, ledger):
+    if getattr(getattr(runtime, "hardware_profile", None), "tribunal_protocol", "legacy") == "evidence-review-5.0":
+        from engine.evidence_review_v5 import verify
+        return verify(runtime, image, proposal, ledger)
     if getattr(getattr(runtime, "hardware_profile", None), "tribunal_protocol", "legacy") == "evidence-review-4.0":
         from engine.evidence_verification import verify
         return verify(runtime, image, proposal, ledger)
@@ -137,6 +143,9 @@ def verify_independently(runtime, image, proposal, ledger):
 
 def audit_independent_record(proposal, ledger):
     record = proposal.get("independent_verification", {}) or {}
+    if record.get("schema_version") == "5.0":
+        from engine.evidence_review_v5 import audit
+        return audit(proposal, ledger)
     if record.get("schema_version") == "4.0":
         from engine.evidence_verification import audit
         return audit(proposal, ledger)

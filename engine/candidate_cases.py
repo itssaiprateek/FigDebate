@@ -66,8 +66,8 @@ class TextCandidateRuntime:
             from transformers import StoppingCriteriaList
             from engine.output_contracts import prefix_constraint, complete_json_stopper
             options = {"prefix_allowed_tokens_fn": prefix_constraint(self.tokenizer, json_schema),
-                       "stopping_criteria": StoppingCriteriaList([
-                           complete_json_stopper(self.tokenizer, count, json_schema)])}
+                         "stopping_criteria": StoppingCriteriaList([
+                             complete_json_stopper(self.tokenizer, count, json_schema)])}
         with torch.inference_mode():
             generated = self.model.generate(
                 **inputs, **options, do_sample=False, max_new_tokens=max_new_tokens,
@@ -76,7 +76,7 @@ class TextCandidateRuntime:
         elapsed = time.perf_counter() - started
         self._last_generation_diagnostics = {
             "input_tokens": count, "generated_tokens": int(generated.shape[-1]),
-            "max_new_tokens": max_new_tokens, "elapsed_seconds": elapsed}
+              "max_new_tokens": max_new_tokens, "elapsed_seconds": elapsed}
         return self.tokenizer.decode(generated[0], skip_special_tokens=True).strip(), elapsed
 
 

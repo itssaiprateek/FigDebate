@@ -178,6 +178,10 @@ def _reading_view(record):
     if record.get("requested_question"):
         view["question"] = record["requested_question"]
     view["authority"] = "fallible_witness_testimony_not_verified_relation"
+    if record.get('response_status') == 'QUESTION_BINDING_MISMATCH':
+        for key in ('answer', 'observed_state', 'observed_entity', 'image_region'):
+            view.pop(key, None)
+        view['content_withheld_reason'] = 'question_binding_mismatch'
     if record.get("source_anchored") is False:
         view.pop("answer", None)
         view["content_withheld_reason"] = "invalid_source_identity"
@@ -217,6 +221,29 @@ def retrieve_dossier_context(dossier, identifiers):
     return [deepcopy(by_id[i]) for i in dict.fromkeys(identifiers)]
 
 
+def disclose_review_context(packet, dossier):
+    """Expose the complete finite argument/reading catalogue before proposing.
+
+    Observations stay in their own ledger. Context remains fallible testimony;
+    exposing it is not independent verification. Return IDs that must stay in
+    the prompt through every retrieval, or fail explicitly if they cannot fit.
+    """
+    packet = deepcopy(packet)
+    catalogue = context_catalog(dossier)
+    expected = {item['context_id'] for item in catalogue}
+    present = {item['context_id'] for key in ('candidate_cases', 'context_records')
+               for item in packet.get(key, [])}
+    unknown = {item['context_id'] for item in packet.get('remaining_context_index', [])} - expected
+    if unknown:
+        raise ValueError('Unknown or stale context IDs in review packet')
+    packet.setdefault('context_records', []).extend(
+        deepcopy(item) for item in catalogue if item['context_id'] not in present)
+    packet['remaining_context_index'] = []
+    packet['context_delivery'] = {'policy': 'complete_before_proposal',
+        'record_count': len(expected), 'semantic_correctness': 'not_established_by_delivery'}
+    return packet, expected
+
+
 def render_judge_dossier(dossier, detailed_evidence_limit=18):
     """Allowlisted inference view. The durable dossier is never mutated.
 
@@ -253,6 +280,8 @@ def render_judge_dossier(dossier, detailed_evidence_limit=18):
         "context_records": [],
         "remaining_context_index": [],
     }
+    if hearing.get("tribunal_semantic_questions"):
+        packet["tribunal_semantic_questions"] = deepcopy(hearing["tribunal_semantic_questions"])
     for item in context_catalog(dossier):
         if item["kind"] == "candidate_argument":
             packet["candidate_cases"].append(dict(item["content"], context_id=item["context_id"]))

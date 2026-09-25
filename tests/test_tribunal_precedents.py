@@ -113,11 +113,13 @@ class PrecedentTests(unittest.TestCase):
             missing["precedent_checks"][0]["current_evidence_ids"] = cited
             self.assertFalse(valid(missing))
 
-    def test_runner_precedent_mode_does_not_load_arbiter_memory(self):
+    def test_runner_retires_precedents_and_integrated_mode_does_not_load_arbiter_memory(self):
         from engine.batch_runner import StagewiseRunner
-        runner = StagewiseRunner(feedback_mode="precedent", verified_feedback_path=str(LIBRARY), judge_mode="tribunal")
+        with self.assertRaisesRegex(ValueError, 'V5 replaces'):
+            StagewiseRunner(feedback_mode="precedent", verified_feedback_path=str(LIBRARY), judge_mode="tribunal", hardware_profile='paper-8gb-review5')
+        runner = StagewiseRunner(feedback_mode="integrated", judge_mode="tribunal", hardware_profile='paper-8gb-review5')
         self.assertEqual(runner.debate.feedback_loop.arbiter_memory, [])
-        self.assertIsNotNone(runner.tribunal_precedents)
+        self.assertIsNone(runner.tribunal_precedents)
 
     def test_memory_cannot_override_unsupported_visual_evidence(self):
         from tests.test_evidence_review_v4 import fixture, Runtime

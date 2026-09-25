@@ -433,6 +433,11 @@ describe clothing, people, or objects as text.
         token_budget = max(int(question.max_new_tokens), int(profile_tokens))
         raw, elapsed = self._generate_response(image, prompt, token_budget)
         diagnostics = dict(self._last_generation_diagnostics or {})
+        diagnostics['model_bound_request'] = {
+            'question_id': question.question_id, 'question': question.text,
+            'prompt': prompt, 'max_new_tokens': token_budget,
+            'context_policy': 'image_and_observable_question_only',
+        }
         answer, status, valid, error = self.question_controller.validate_answer(
             raw,
             question.text,
@@ -447,15 +452,26 @@ describe clothing, people, or objects as text.
         ]
         if retry_attempted:
             retry_budget = min(token_budget * 2, 360) if error in {"truncated_response", "incomplete_clause"} else token_budget
-            retry_raw, retry_elapsed = self._generate_response(
-                image,
-                self.question_controller.retry_prompt(
-                    question.text, question.question_type
-                ),
-                retry_budget,
-            )
+            retry_prompt = self.question_controller.retry_prompt(question.text, question.question_type)
+            if error == "repetitive_generation":
+                retry_budget = min(token_budget, 180)
+                retry_prompt = ("Transcribe readable text in this image region in spatial order, at most eight lines. "
+                    "Do not repeatedly emit fragments of the same text location. Preserve repeated words at distinct "
+                    "locations. If text cannot be fully read, return UNCLEAR. Return only the transcription. "
+                    "Requested observation: " + question.text)
+            import inspect
+            if (error == "repetitive_generation" and question.question_type == "ocr"
+                    and "json_schema" in inspect.signature(self.runtime.generate).parameters):
+                retry_raw, retry_elapsed = self._recover_repeated_ocr(image, retry_budget)
+            else:
+                retry_raw, retry_elapsed = self._generate_response(image, retry_prompt, retry_budget)
             elapsed += retry_elapsed
             retry_diagnostics = dict(self._last_generation_diagnostics or {})
+            retry_diagnostics.setdefault('model_bound_request', {
+                'question_id': question.question_id, 'question': question.text,
+                'prompt': retry_prompt, 'max_new_tokens': retry_budget,
+                'context_policy': 'image_and_observable_question_only',
+            })
             retry_answer, retry_status, retry_valid, retry_error = (
                 self.question_controller.validate_answer(
                     retry_raw,
@@ -495,6 +511,50 @@ describe clothing, people, or objects as text.
             generation_diagnostics=diagnostics,
             validation_attempts=validation_attempts,
         )
+
+    def _recover_repeated_ocr(self, image, token_budget):
+        """One bounded selective transcription, with locations and no absence claim."""
+        import json
+        from engine.output_contracts import object_schema, validate_shape
+        schema = object_schema({
+            "status": {"type": "string", "enum": ["OBSERVED", "UNCLEAR"]},
+            "phrases": {"type": "array", "maxItems": 4, "items": object_schema({
+                "text": {"type": "string", "minLength": 1, "maxLength": 100},
+                "region": {"type": "string", "enum": ["top", "middle", "bottom", "whole"]}})}})
+        prompt = ("Read the image region. Return compact JSON. Report up to four distinct readable text phrases "
+            "with their relative location. Copy exact visible characters. Report each phrase/location pair once; "
+            "repeated logos need not be transcribed repeatedly. This is a SELECTIVE transcription, not an exhaustive "
+            "inventory or a claim that other text is absent. If nothing is confidently readable, return status UNCLEAR "
+            "and an empty phrases list. Do not infer missing characters or describe objects as text.")
+        previous_compact = getattr(self.runtime, "_compact_recovery", False)
+        self.runtime._compact_recovery = True
+        try:
+            raw, elapsed = self.runtime.generate(image, prompt, max_new_tokens=min(240, token_budget + 60), json_schema=schema)
+        finally:
+            self.runtime._compact_recovery = previous_compact
+        diagnostics = dict(getattr(self.runtime, "_last_generation_diagnostics", {}) or {})
+        diagnostics['model_bound_request'] = {
+            'prompt': prompt, 'max_new_tokens': min(240, token_budget + 60),
+            'json_schema': schema, 'context_policy': 'selective_region_transcription',
+        }
+        diagnostics.update(structured_ocr_response=raw, ocr_coverage="selective_positive_observations")
+        try:
+            value = json.loads(raw)
+            valid = validate_shape(value, schema) and not diagnostics.get("hit_token_limit")
+            items = value.get("phrases", []) if valid else []
+            pairs = [(item["text"], item["region"]) for item in items]
+            valid = bool(valid and len(pairs) == len(set(pairs)) and
+                         ((value["status"] == "OBSERVED" and items) or (value["status"] == "UNCLEAR" and not items)))
+        except (ValueError, TypeError):
+            valid, items = False, []
+        if valid:
+            diagnostics["ocr_phrase_locations"] = items
+            answer = "\n".join(item["text"] for item in items) if items else "UNCLEAR"
+        else:
+            diagnostics.update(repetition_detected=True, recovery_error="invalid_selective_ocr")
+            answer = str(raw)
+        self._last_generation_diagnostics = diagnostics
+        return answer, elapsed
 
     def answer_visual_question(
         self,
@@ -1929,4 +1989,3 @@ Return one line only: Claim Relation: SUPPORT, CONFLICT, or UNRESOLVED
             ),
         })
         return parsed
-    

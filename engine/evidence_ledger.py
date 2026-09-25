@@ -262,8 +262,9 @@ def add_semantic_bridge_evidence(ledger, proposal, verification):
         and relation in {"SUPPORT", "CONFLICT"}
     )
     derived = list(dict.fromkeys(
-        list(proposal.get("visual_evidence_ids", []) or [])
-        + list(proposal.get("caption_evidence_ids", []) or [])
+          list(proposal.get("visual_evidence_ids", []) or [])
+          + list(proposal.get("verified_visual_evidence_ids", []) or [])
+          + list(proposal.get("caption_evidence_ids", []) or [])
     ))
     text = (
         f"Visual premise: {_clean(proposal.get('visual_premise'))}. "

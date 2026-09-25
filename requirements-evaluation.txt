@@ -1,0 +1,2 @@
+# Optional, post-inference reference similarity. Install after requirements.txt.
+bert-score==0.3.13

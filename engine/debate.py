@@ -1333,6 +1333,14 @@ unclear, never contradiction.
             if requested is not None:
                 if not isinstance(requested, str) or not requested.strip():
                     raise ValueError("Visual questions must be nonempty strings")
+                if case.get("tribunal_hearing", False):
+                    from engine.review_routing import route_question
+                    role, reason = route_question(requested, "VISUAL_PREMISE")
+                    if role != "visual":
+                        replies.append({"_format_valid": False, "response_status": "NOT_DISPATCHED",
+                            "requested_question": requested, "question_id": question_id(case.get("caption", ""), requested, "agent1"),
+                            "reason": "witness_scope:" + reason, "routed_to": role})
+                        continue
                 current.update(_requested_visual_question=requested,
                     question_id=question_id(case.get("caption", ""), requested, "agent1"))
             prompt = self.build_agent1_challenge_prompt(case["visual_output"], case["decision"],
@@ -1348,13 +1356,23 @@ unclear, never contradiction.
                          "reason": str(error), "recommendation": "ABSTAIN"}
             reply["requested_question"] = requested or reply.get("question", "")
             if requested is not None:
-                reply["question_id"] = current["question_id"]
+                # Do not relabel a response from another question as this one.
+                returned_id = reply.get('question_id')
+                returned_question = reply.get('question')
+                same_text = returned_question is None or ' '.join(str(returned_question).split()) == ' '.join(requested.split())
+                if (returned_id is not None and returned_id != current['question_id']) or not same_text:
+                    reply.update(_format_valid=False, response_status='QUESTION_BINDING_MISMATCH',
+                                 reason='Returned witness response does not match the dispatched question')
+                reply['dispatched_question_id'] = current['question_id']
+                reply.setdefault('question_id', current['question_id'])
             reply["delivered_prompt"] = prompt
             replies.append(reply)
         primary = deepcopy(next((r for r in replies if r.get("_format_valid")), replies[0]))
         primary["question_answers"] = replies
         primary["communication"] = {"requested": len(replies), "recorded": len(replies),
             "valid_responses": sum(bool(r.get("_format_valid")) for r in replies),
+            "not_dispatched": sum(r.get('response_status') == 'NOT_DISPATCHED' for r in replies),
+            "binding_mismatches": sum(r.get('response_status') == 'QUESTION_BINDING_MISMATCH' for r in replies),
             "semantic_correctness": "NOT_INDEPENDENTLY_ESTABLISHED"}
         return primary
 

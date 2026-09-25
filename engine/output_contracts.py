@@ -36,6 +36,8 @@ INTERPRETATION = object_schema({
 def validate_shape(value, schema):
     if isinstance(schema, bool):
         return schema
+    if 'anyOf' in schema and not any(validate_shape(value, branch) for branch in schema['anyOf']):
+        return False
     kind = schema.get("type")
     if isinstance(kind, list):
         return any(validate_shape(value, dict(schema, type=item)) for item in kind)
@@ -47,8 +49,10 @@ def validate_shape(value, schema):
         return False
     if kind == "boolean" and type(value) is not bool:
         return False
-    if kind == "number":
-        if type(value) not in (int, float) or not math.isfinite(value):
+    if kind == "integer" and type(value) is not int:
+        return False
+    if kind in {"number", "integer"}:
+        if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)):
             return False
         if value < schema.get("minimum", -math.inf) or value > schema.get("maximum", math.inf):
             return False
@@ -70,12 +74,13 @@ def prefix_constraint(tokenizer, schema, compact=False):
     return build(tokenizer, schema, compact=compact)
 
 
-def incomplete_clause(text):
+def incomplete_clause(text, *, conjunctions=False):
     """Conservative signal of an unfinished clause, not a fluency/truth classifier."""
     text = str(text or "").strip()
     if not text or len(text.split()) < 2:
         return False
     return bool(re.search(r"\b(?:a|an|the|because|although|whereas|which|whose|with|without|such as|due to|rather than)\s*$", text, re.I)
+                or (conjunctions and re.search(r"\b(?:and|or)\s*$", text, re.I))
                 or text.endswith((",", ";", ":", "(", "[")))
 
 
@@ -92,6 +97,29 @@ def saturated_text_fields(text, schema):
     return [key for key, definition in schema.get("properties", {}).items()
             if isinstance(value.get(key), str) and definition.get("maxLength")
             and incomplete_clause(value[key])]
+
+
+def text_length_boundaries(text, schema):
+    """Telemetry only: reaching a character cap does not prove truncation."""
+    try:
+        value = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    result = []
+    def visit(value, schema, path):
+        if not isinstance(schema, dict):
+            return
+        if isinstance(value, str) and len(value) == schema.get('maxLength'):
+            result.append(path)
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                visit(child, schema.get('properties', {}).get(key, {}), f'{path}.{key}' if path else key)
+        elif isinstance(value, list):
+            prefix = schema.get('prefixItems', [])
+            for i, child in enumerate(value):
+                visit(child, prefix[i] if i < len(prefix) else schema.get('items', {}), f'{path}[{i}]')
+    visit(value, schema, '')
+    return result
 
 
 def complete_json_stopper(tokenizer, prompt_length, schema):

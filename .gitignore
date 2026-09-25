@@ -13,6 +13,8 @@ htmlcov/
 .idea/
 
 outputs/
+runs/
+dist/
 checkpoints/
 *.log
 

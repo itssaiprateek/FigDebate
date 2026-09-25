@@ -1,5 +1,6 @@
 from tests.verification_fixture import with_independent_fixture
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from engine.claim_contract import audit_claim_contract, audit_relation_pair
@@ -935,7 +936,7 @@ class TribunalBatchIntegrationTests(unittest.TestCase):
             "judge": {"mediation": {"status": "MEDIATE"}},
         }}
         with (
-            patch("engine.batch_runner.QwenJudgeModel", return_value=object()),
+            patch("engine.batch_runner.QwenJudgeModel", return_value=SimpleNamespace()),
             patch("engine.batch_runner.TribunalMediatorAgent", FakeMediator),
             patch("engine.batch_runner.GPUManager.clear"),
         ):

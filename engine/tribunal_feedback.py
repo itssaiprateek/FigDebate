@@ -90,5 +90,17 @@ class TribunalPrecedents:
         kind, features = structural_features(language)
         matches = [e for e in self._entries if kind in e["types"] and set(e["features"]) <= features]
         matches.sort(key=lambda e: (-len(e["features"]), e["id"]))
-        return [{k: deepcopy(e[k]) for k in ("id", "origin", "principle", "applies_when", "exclude_when", "example", "counterexample")}
+        return [{k: deepcopy(e[k]) for k in ("id", "origin", "principle", "applies_when", "exclude_when", "example", "counterexample", "features")}
                 for e in matches[:min(2, max(0, max_items))]]
+
+
+def select_for_review(candidates, review):
+    """Choose guidance for the explicit unresolved operation, not its desired answer."""
+    target = review.get("requested_follow_up", "")
+    preferred = {"CAPTION_PREMISE": {"figurative"},
+                 "COUNTER_INTERPRETATION": {"figurative", "polarity"},
+                 "ENTITY_BINDING": {"comparison", "speaker_scope"},
+                 "SCOPE_BINDING": {"comparison", "speaker_scope"}}.get(target, set())
+    ordered = sorted(enumerate(candidates), key=lambda pair:
+        (-len(preferred & set(pair[1].get("features", []))), pair[0]))
+    return [deepcopy(p) for _, p in ordered[:1]]

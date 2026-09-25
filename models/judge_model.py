@@ -106,6 +106,44 @@ class QwenJudgeModel:
         return len(self.processor.tokenizer.encode(text, add_special_tokens=False))
 
     @staticmethod
+    def _messages(image, prompt):
+        return [
+            {"role": "system", "content": (
+                "You are an independent multimodal evidence reviewer. "
+                "Follow the role, evidence rules, and JSON contract in "
+                "the user instruction exactly.")},
+            {"role": "user", "content": [
+                *([{"type": "image", "image": image}] if image is not None else []),
+                {"type": "text", "text": prompt}]},
+        ]
+
+    def review_text_budget(self, image, max_new_tokens):
+        """Allocate unused multimodal context to text without raising the total cap.
+
+        Measure the same resized image and chat wrapper used for generation on
+        CPU. Leave a tokenizer-boundary margin; generation still checks the exact
+        combined input/output length. No model call or image downscaling beyond
+        the existing profile is introduced.
+        """
+        fitted, resized = self._fit_image_to_pixel_budget(image, self.hardware_profile.judge_max_pixels)
+        try:
+            inputs = self.processor.apply_chat_template(
+                self._messages(fitted, ""), tokenize=True, add_generation_prompt=True,
+                return_dict=True, return_tensors="pt", enable_thinking=False)
+            overhead = int(inputs['input_ids'].shape[-1])
+            available = int(self.hardware_profile.judge_total_tokens) - int(max_new_tokens) - overhead - 64
+            if available <= 0:
+                raise ValueError('Image, chat wrapper and output reserve exhaust the review context budget')
+            self._review_text_budget_audit = {
+                'image_and_wrapper_tokens': overhead, 'output_reserve': int(max_new_tokens),
+                'boundary_margin': 64, 'text_budget': available,
+                'total_token_budget': self.hardware_profile.judge_total_tokens}
+            return available
+        finally:
+            if resized:
+                fitted.close()
+
+    @staticmethod
     def _release_generation_memory(torch):
         gc.collect()
         if torch.cuda.is_available():
@@ -201,6 +239,9 @@ class QwenJudgeModel:
 
         class Deadline(StoppingCriteria):
             def __init__(self, seconds):
+                from engine.execution_clock import ExecutionClock
+                self.clock = ExecutionClock()
+                self.clock_status = {}
                 self.started = time.perf_counter()
                 self.seconds = seconds
                 self.expired = False
@@ -212,7 +253,8 @@ class QwenJudgeModel:
                 if self.first_token_seconds is None:
                     self.first_token_seconds = elapsed
                 self.steps += 1
-                self.expired = elapsed > self.seconds
+                self.clock_status = self.clock.sample()
+                self.expired = elapsed > self.seconds or self.clock_status['host_interrupted']
                 return self.expired
 
         inputs = None
@@ -220,23 +262,7 @@ class QwenJudgeModel:
         completion_ids = None
         prefill_hook = None
         prefill_cleanup = {}
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an independent multimodal evidence reviewer. "
-                    "Follow the role, evidence rules, and JSON contract in "
-                    "the user instruction exactly."
-                ),
-            },
-            {
-                "role": "user",
-                "content": [
-                    *([{"type": "image", "image": image}] if image is not None else []),
-                    {"type": "text", "text": prompt},
-                ],
-            },
-        ]
+        messages = self._messages(image, prompt)
         try:
             inputs = self.processor.apply_chat_template(
                 messages,
@@ -315,8 +341,15 @@ class QwenJudgeModel:
                         skip_special_tokens=True, clean_up_tokenization_spaces=False)[0],
                     use_cache=bool(use_cache), partial_output_discarded=True)
                 self._last_generation_diagnostics["runtime_after"] = runtime_snapshot()
+                self._last_generation_diagnostics['execution_clock'] = deadline.clock_status
                 self._last_generation_diagnostics["callback_seconds"] = callback_seconds
+                from engine.judge_telemetry import timeout_diagnosis
+                self._last_generation_diagnostics["timeout_diagnosis"] = timeout_diagnosis(self._last_generation_diagnostics)
                 del partial_ids
+                if deadline.clock_status.get('host_interrupted'):
+                    from engine.execution_clock import HostInterrupted
+                    self._last_generation_diagnostics['termination_reason'] = 'HOST_INTERRUPTED'
+                    raise HostInterrupted('host suspended during judge generation; partial response discarded')
                 raise TimeoutError("judge generation timed out before a complete qualified response")
             # Generation kernels are asynchronous.  Synchronizing here makes
             # an OOM belong to this attempt instead of a later cleanup/seed.

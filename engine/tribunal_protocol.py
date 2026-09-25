@@ -19,15 +19,18 @@ LITERAL_TYPES = {"visual_fact", "visual_relation", "visible_text", "ocr_text", "
 
 
 def _unfinished_generated_fields(value, path=""):
-    prose = {"observation", "observed", "attachment", "image_state", "decisive_reason", "reason", "argument"}
+    prose = {"observation", "observed", "attachment", "image_location", "image_state", "decisive_reason", "reason", "argument",
+             "asserted_meaning", "competing_reading", "distinguishing_fact", "scope_reason"}
     if isinstance(value, dict):
         for key, child in value.items():
             location = f"{path}.{key}" if path else key
-            if key in prose and isinstance(child, str) and incomplete_clause(child):
+            if key in prose and isinstance(child, str) and incomplete_clause(child, conjunctions=True):
                 yield location, child
             yield from _unfinished_generated_fields(child, location)
     elif isinstance(value, list):
         for index, child in enumerate(value):
+            if path.split('.')[-1] in {'decision_errors','role_scope_errors'} and isinstance(child,str) and incomplete_clause(child, conjunctions=True):
+                yield f'{path}[{index}]',child
             yield from _unfinished_generated_fields(child, f"{path}[{index}]")
 
 
@@ -75,7 +78,8 @@ def proposal_schema(graph, catalog_ids, context_ids, precedent_ids=()):
         "evidence_ids": evidence,
         "unestablished_condition": SHORT,
     })
-    fields = {
+    fields = {}
+    fields.update({
         "node_relations": {"type": "array", "minItems": len(ids), "maxItems": max(1, len(ids)), "items": nodes},
         "alternative": SHORT,
         "decisive_reason": PROSE,
@@ -85,7 +89,7 @@ def proposal_schema(graph, catalog_ids, context_ids, precedent_ids=()):
         }),
         "context_requests": {"type": "array", "maxItems": min(2, len(context_ids)),
                              "items": {"type": "string", **({"enum": sorted(context_ids)} if context_ids else {})}},
-    }
+    })
     if precedent_ids:
         fields["precedent_checks"] = {"type": "array", "minItems": len(precedent_ids), "maxItems": len(precedent_ids),
             "items": object_schema({"precedent_id": {"type": "string", "enum": list(precedent_ids)},
@@ -164,7 +168,7 @@ def expand_proposal(raw, graph, packet, catalog_ids, context_ids):
         "_format_valid": not defects, "_format_error": ";".join(defects),
         "_context_valid": not defects and not (graph or {}).get("errors"),
         "_context_status": "VALID" if not defects else "INVALID_NODE_RESOLUTION",
-        "_protocol": PROTOCOL, "_raw_output": raw,
+        "_protocol": packet.get("protocol", PROTOCOL), "_raw_output": raw,
         "_precedent_checks": precedent_checks,
     }
     if (graph or {}).get("errors"):
@@ -174,6 +178,7 @@ def expand_proposal(raw, graph, packet, catalog_ids, context_ids):
 
 def proposal_prompt(packet, round_number):
     """Observations first, with fallible interpretations available by retrieval."""
+    from engine.tribunal_interpretation import INTERPRETATION_RULES
     feedback = ("Reasoning precedents are fallible methodological guidance, NEVER evidence about this image. "
                 "For each precedent return precedent_checks: precedent_id, applies, current_evidence_ids, reason. "
                 "Explain the structural match or exclusion using this case; do not import example facts. "
@@ -210,4 +215,4 @@ Return only the JSON fields required by the schema: node_relations (claim_node_i
 role_scope, condition_checks (caption_quote, image_state, relation), relation, evidence_ids,
 unestablished_condition), alternative, decisive_reason,
 follow_up (target, question), context_requests.
-""" + feedback + f"Round {round_number}. CASE:\n" + json.dumps(packet, ensure_ascii=True, separators=(",", ":"))
+""" + INTERPRETATION_RULES + feedback + f"Round {round_number}. CASE:\n" + json.dumps(packet, ensure_ascii=True, separators=(",", ":"))

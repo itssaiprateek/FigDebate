@@ -158,7 +158,8 @@ class FactoredTribunalTests(unittest.TestCase):
         results={0:{'visual_output':{},'language_output':{'claim_contract':contract()},
                     'comparison':{},'evidence_ledger':ledger(), 'decision':{'label':'ENTAILS','confidence':.35},
                     'debate_details':{'agent2_requirements_valid':True}, 'timing':{}, 'judge':{}}}
-        with patch('engine.batch_runner.QwenJudgeModel', return_value=object()), \
+        from types import SimpleNamespace
+        with patch('engine.batch_runner.QwenJudgeModel', return_value=SimpleNamespace()), \
              patch('engine.batch_runner.TribunalMediatorAgent', Mediator), \
              patch('engine.batch_runner.GPUManager.clear'):
             runner._run_tribunal_review_round([sample], results, 1)

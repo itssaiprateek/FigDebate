@@ -198,13 +198,20 @@ class Qwen3VLVisionModel:
                 torch.cuda.synchronize()
             started = time.perf_counter()
             options = {}
+            repetition = None
             schema = getattr(self, "_active_output_schema", None)
             if schema:
                 from transformers import StoppingCriteriaList
                 from engine.output_contracts import prefix_constraint, complete_json_stopper
-                options = {"prefix_allowed_tokens_fn": prefix_constraint(self.processor.tokenizer, schema),
+                options = {"prefix_allowed_tokens_fn": prefix_constraint(self.processor.tokenizer, schema,
+                               compact=getattr(self, "_compact_recovery", False)),
                            "stopping_criteria": StoppingCriteriaList([complete_json_stopper(
                                self.processor.tokenizer, int(inputs["input_ids"].shape[1]), schema)])}
+            elif "transcribe" in str(prompt).casefold() or "visible text" in str(prompt).casefold():
+                from transformers import StoppingCriteriaList
+                from engine.generation_recovery import repetition_stopper
+                repetition = repetition_stopper(int(inputs["input_ids"].shape[1]))
+                options["stopping_criteria"] = StoppingCriteriaList([repetition])
             with torch.inference_mode():
                 generated = self.model.generate(
                     **inputs,
@@ -235,6 +242,7 @@ class Qwen3VLVisionModel:
                 "max_new_tokens": int(max_new_tokens),
                 "hit_token_limit": generated_count >= int(max_new_tokens),
                 "ended_by_eos": last_token in eos_ids,
+                "repetition_detected": bool(repetition and repetition.triggered),
                 "elapsed_seconds": round(elapsed, 4),
                 "use_cache": bool(use_cache),
                 "input_tokens": prompt_length,

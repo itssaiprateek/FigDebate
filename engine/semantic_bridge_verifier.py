@@ -84,17 +84,20 @@ def verify_semantic_bridge(proposal, ledger, claim_contract, agent2_requirements
     declared_family = str(
         proposal.get("declared_bridge_type") or ""
     ).upper()
+    version = (proposal.get("independent_verification") or {}).get("schema_version")
     checked("supported_bridge_family", family in BRIDGE_FAMILIES, family)
-    # Incongruity explains why an item is humorous; it does not establish an
-    # NLI direction. A directional family (polarity, comparison, temporal,
-    # causal, and so on) must carry the actual support/conflict proof.
+    # A coarse mechanism name never establishes an NLI direction. V5 obtains
+    # direction from its complete case-bound proof, independent of that name;
+    # older protocols retain their original family restriction.
     checked(
         "directional_bridge_family",
-        family != "HUMOR_INCONGRUITY" and not (
+        (independent.get('relation_agreement') and independent['arguments_verified'])
+        if version == '5.0' else family != "HUMOR_INCONGRUITY" and not (
             declared_family == "HUMOR_INCONGRUITY"
             and family == "GENERAL_SEMANTIC_RELATION"
         ),
-        f"derived={family};declared={declared_family}",
+        f"derived={family};declared={declared_family};direction_basis="
+        + ('case_bound_obligations' if version == '5.0' else 'legacy_family'),
     )
     scope_ok = independent["entity_scope_verified"]
     checked("same_scope", scope_ok)
@@ -116,9 +119,8 @@ def verify_semantic_bridge(proposal, ledger, claim_contract, agent2_requirements
         )
     )
     argument_audit = (proposal.get("independent_verification") or {}).get("obligations", {}).get("arguments", {})
-    version = (proposal.get("independent_verification") or {}).get("schema_version")
-    factored = version in {"3.0", "4.0"}
-    if version == "4.0":
+    factored = version in {"3.0", "4.0", "5.0"}
+    if version in {"4.0", "5.0"}:
         statement_relation_consistent = independent["bound_to_current_case"] and independent["arguments_verified"]
     elif factored:
         statement_relation_consistent = bool(independent["bound_to_current_case"] and argument_audit.get("_format_valid")
@@ -210,10 +212,13 @@ def verify_semantic_bridge(proposal, ledger, claim_contract, agent2_requirements
     reversed_choice, reversed_scores = _ordered_relation_score(
         proposal, ("CONFLICT", "SUPPORT")
     )
-    if version == "4.0":
+    if version in {"4.0", "5.0"}:
         checked("fresh_counterinterpretation_consistency", independent["arguments_verified"], independent.get("verification_control"))
     else:
         checked("position_reversed_consistency", first == reversed_choice == relation)
+    selected_ids = (proposal.get('independent_verification') or {}).get('selected_evidence_ids', []) if version == '5.0' else []
+    # Selected observations become explicit dependencies of the promoted bridge.
+    visual_ids = list(dict.fromkeys(visual_ids + selected_ids))
     visual_roots = {
         root for item_id in visual_ids for root in evidence_provenance_roots(ledger, item_id)
     }
@@ -229,6 +234,7 @@ def verify_semantic_bridge(proposal, ledger, claim_contract, agent2_requirements
         "same_entity_check": entity_ok,
         "same_scope_check": scope_ok,
         "verification_status": status,
+        "verified_visual_evidence_ids": selected_ids,
         "provenance_roots": sorted(visual_roots | caption_roots),
     })
     return proposal, {

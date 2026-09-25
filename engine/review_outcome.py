@@ -1,4 +1,102 @@
 """Separate execution, syntax and semantic outcomes without consulting gold."""
+from enum import Enum
+
+
+class ExecutionStatus(str, Enum):
+    NOT_RUN = 'NOT_RUN'
+    COMPLETED = 'COMPLETED'
+    FAILED = 'FAILED'
+
+
+class ValidationStatus(str, Enum):
+    NOT_PRODUCED = 'NOT_PRODUCED'
+    VALID = 'VALID'
+    INVALID = 'INVALID'
+    TRUNCATED = 'TRUNCATED'
+
+
+class SemanticStatus(str, Enum):
+    NOT_ASSESSED = 'NOT_ASSESSED'
+    UNRESOLVED = 'UNRESOLVED'
+    CONTRADICTORY = 'CONTRADICTORY'
+    DISAGREEMENT = 'DISAGREEMENT'
+    CHECK_NOT_PASSED = 'CHECK_NOT_PASSED'
+    ASSESSED = 'ASSESSED'
+
+
+def outcome_dimensions(call, status):
+    """Orthogonal observations; ASSESSED never asserts objective correctness."""
+    execution = (ExecutionStatus.NOT_RUN if not call else ExecutionStatus.FAILED
+                 if call.get('_execution_status') == 'FAILED' else ExecutionStatus.COMPLETED)
+    validation = (ValidationStatus.NOT_PRODUCED if execution != ExecutionStatus.COMPLETED else
+                  ValidationStatus.TRUNCATED if call.get('_output_status') == 'TRUNCATED' else
+                  ValidationStatus.VALID if call.get('_format_valid') is True
+                  or call.get('_contract_error_kind') in {'SEMANTIC_INCONSISTENCY', 'AUDIT_INCOMPLETE'} else ValidationStatus.INVALID)
+    if execution == ExecutionStatus.COMPLETED and call.get('response_valid') is False:
+        validation = ValidationStatus.INVALID
+    semantic = SemanticStatus.NOT_ASSESSED
+    if execution == ExecutionStatus.COMPLETED and validation == ValidationStatus.VALID:
+        semantic = {
+            'CONTRADICTORY_AUDIT': SemanticStatus.CONTRADICTORY,
+            'INCONSISTENT_JUDGMENT': SemanticStatus.CONTRADICTORY,
+            'RELATION_DISAGREEMENT': SemanticStatus.DISAGREEMENT,
+            'UNRESOLVED_EVIDENCE': SemanticStatus.UNRESOLVED,
+            'UNRESOLVED_ARGUMENT': SemanticStatus.UNRESOLVED,
+            'SEMANTIC_CHECK_NOT_PASSED': SemanticStatus.CHECK_NOT_PASSED,
+            'COMPLETED': SemanticStatus.ASSESSED,
+        }.get(status, SemanticStatus.NOT_ASSESSED)
+    return {'execution': execution.value, 'validation': validation.value, 'semantic': semantic.value}
+
+
+def resolution_category(review, gate):
+    """Describe the observed terminal path, not ground-truth correctness."""
+    if gate.get('accepted'):
+        return 'SUPPORTED_CORRECTION'
+    if gate.get('confirmation_valid'):
+        return 'SUPPORTED_AGREEMENT'
+    stages = stage_outcomes(review)['stage_outcomes']
+    if any(s['status'] in {'RUNTIME_FAILURE', 'INVALID_OUTPUT', 'CONTEXT_BLOCKED'} for s in stages):
+        return 'EXECUTION_OR_CONTRACT_FAILURE'
+    if any(s['status'] == 'INCOMPLETE_AUDIT' for s in stages):
+        return 'INCOMPLETE_AUDIT'
+    proof = review.get('_independent_verification') or {}
+    if proof.get('input_binding_error'):
+        return 'EXECUTION_OR_CONTRACT_FAILURE'
+    obligations = proof.get('obligations') or {}
+    visual = obligations.get('visual') or {}
+    relation = (proof.get('calls') or [{}])[0]
+    if (visual.get('coverage_complete') is False or relation.get('unestablished_conditions')
+            or any(c.get('unestablished_condition') for c in review.get('claim_checks', []))):
+        return 'MISSING_EVIDENCE'
+    if (review.get('relation') == 'UNRESOLVED' or review.get('provisional_verdict') == 'ABSTAIN'
+            or any(s['status'] in {'UNRESOLVED_ARGUMENT', 'RELATION_DISAGREEMENT',
+                                  'CONTRADICTORY_AUDIT', 'UNRESOLVED_EVIDENCE', 'INCONSISTENT_JUDGMENT'} for s in stages)):
+        return 'UNRESOLVED_INTERPRETATION'
+    return 'UNVERIFIED_PROPOSAL'
+
+
+def decision_path(review):
+    """Persist interpretation and source references separately from observations."""
+    from copy import deepcopy
+    proof = review.get('_independent_verification') or {}
+    obligations = proof.get('obligations') or {}
+    relation = (proof.get('calls') or [{}])[0]
+    return {
+        'source_identity_checked': (review.get('_communication_audit') or {}).get('source_caption_unchanged'),
+        'delivery': deepcopy((review.get('_prompt_budget') or {}).get('context_delivery')),
+        'selected_observation_ids': list(proof.get('selected_evidence_ids') or []),
+        'caption_bindings': deepcopy((obligations.get('mapping') or {}).get('bindings', [])),
+        'proposed_inference': review.get('semantic_bridge', review.get('reason', '')),
+        'independent_condition_checks': deepcopy(relation.get('condition_checks', [])),
+        'challenge': {key: deepcopy((obligations.get('arguments') or {}).get(key)) for key in
+                      ('alternative', 'alternative_status', 'decision_errors', 'role_scope_errors', 'reason')},
+        'stage_inputs': [{'stage': c.get('obligation'), 'input_sha256': c.get('input_sha256'),
+                          'repair': deepcopy(c.get('_field_repair_audit'))}
+                         for c in list(obligations.values()) + list(proof.get('calls') or [])
+                         if c.get('input_sha256')],
+        'execution': stage_outcomes(review),
+        'semantic_truth_established': False,
+    }
 
 
 def hearing_accounting(judge):
@@ -23,6 +121,8 @@ def hearing_accounting(judge):
 
 def execution_error_type(error):
     text = str(error).casefold()
+    if 'host suspended' in text:
+        return 'HOST_INTERRUPTED'
     if "case budget" in text:
         return "CASE_BUDGET"
     if "out of memory" in text or "vram profile" in text:
@@ -78,6 +178,62 @@ def failed_review(error, stage, elapsed=0.0):
             "_valid_evidence_ids": [], "_invalid_evidence_ids": []}
 
 
+def stage_outcomes(review):
+    """Report only observed work; downstream omissions are not extra failures."""
+    proof = review.get('_independent_verification') or {}
+    obligations = proof.get('obligations') or {}
+    relation = (proof.get('calls') or [{}])[0]
+    stages = [('proposal', review), ('visual', obligations.get('visual', {})),
+              ('mapping', obligations.get('mapping', {})), ('relation', relation),
+              ('arguments', obligations.get('arguments', {}))]
+    rows = []
+    stop_alias = {'visual_grounding': 'visual', 'entity_scope_mapping': 'mapping',
+                  'relation_direction': 'relation'}
+    stopped = stop_alias.get(proof.get('stopped_after'), proof.get('stopped_after'))
+    from engine.tribunal_process import audit_inconsistency
+    for name, call in stages:
+        error = call.get('_execution_error_type')
+        if not call:
+            status = 'NOT_RUN'
+        elif call.get('_output_status') == 'TRUNCATED':
+            status, error = 'INVALID_OUTPUT', 'OUTPUT_TRUNCATED'
+        elif call.get('_execution_status') == 'FAILED':
+            status = 'RUNTIME_FAILURE'
+        elif call.get('_contract_error_kind') == 'SEMANTIC_INCONSISTENCY':
+            status = 'INCONSISTENT_JUDGMENT'
+        elif call.get('_contract_error_kind') == 'AUDIT_INCOMPLETE':
+            status = 'INCOMPLETE_AUDIT'
+        elif call.get('_format_valid') is not True:
+            status = 'INVALID_OUTPUT'
+        elif name == 'mapping' and call.get('response_valid') is False:
+            status = 'INVALID_OUTPUT'
+        elif name == 'proposal' and call.get('_context_valid') is False:
+            status = 'CONTEXT_BLOCKED'
+        elif call.get('relation') == 'UNRESOLVED' or call.get('provisional_verdict') == 'ABSTAIN':
+            status = 'UNRESOLVED_EVIDENCE'
+        elif name == 'mapping' and call.get('unmatched_roles'):
+            status = 'UNRESOLVED_EVIDENCE'
+        elif name == 'relation' and review.get('relation') in {'SUPPORT', 'CONFLICT'} and call.get('relation') != review['relation']:
+            status = 'RELATION_DISAGREEMENT'
+        elif name == 'arguments' and audit_inconsistency(call, relation.get('relation')):
+            status = 'CONTRADICTORY_AUDIT'
+        elif name == 'arguments' and (call.get('decision_errors') or call.get('role_scope_errors')
+                                     or call.get('alternative_status') == 'UNRESOLVED'
+                                     or any(c.get('status') != 'PASS' for c in call.get('process_checks', {}).values())):
+            status = 'UNRESOLVED_ARGUMENT'
+        elif name == stopped:
+            status = 'SEMANTIC_CHECK_NOT_PASSED'
+        else:
+            status = 'COMPLETED'  # Completion is not proof of semantic correctness.
+        rows.append({'stage': name, 'status': status, 'error_type': error,
+                     'detail': call.get('_semantic_error') or call.get('_format_error', ''),
+                     **outcome_dimensions(call, status)})
+    first = next((r['stage'] for r in rows if r['status'] not in {'COMPLETED', 'NOT_RUN'}), None)
+    if not first and proof.get('input_binding_error'):
+        first = 'case_binding'
+    return {'stage_outcomes': rows, 'first_blocking_stage': first}
+
+
 def classify_review(review):
     review = review or {}
     error = str(review.get("_format_error") or "")
@@ -86,6 +242,7 @@ def classify_review(review):
         execution = ("FAILED" if "generation_failed:" in error else
                      "SUCCEEDED" if review else "NOT_RUN")
     valid = bool(review.get("_format_valid", False))
+    contradictory = review.get('_contract_error_kind') == 'SEMANTIC_INCONSISTENCY'
     eligible = execution == "SUCCEEDED" and valid and review.get("_context_valid", True)
     verdict = review.get("best_semantic_judgment", review.get(
         "provisional_verdict", review.get("verdict")))
@@ -98,7 +255,7 @@ def classify_review(review):
         caption = obligations.get("caption") or {}
         if caption.get("method") != "exact_source_identity":
             required.append(caption)
-        if verification.get("schema_version") == "4.0":
+        if verification.get("schema_version") in {"4.0", "5.0"}:
             calls = verification.get("calls", [])
             required = [obligations.get(name, {}) for name in ("visual", "mapping", "arguments")]
             expected_calls = 1
@@ -107,23 +264,49 @@ def classify_review(review):
         verification_status = ("BLOCKED_IMAGE_BINDING" if verification.get("input_binding_error") else
             "EXECUTED" if len(calls) == expected_calls and all(c.get("_execution_status") == "SUCCEEDED"
                 and c.get("_format_valid") for c in calls + required) else "INCOMPLETE_VERIFICATION")
+        actual = [c for c in calls + required if '_execution_status' in c]
+        if any(c.get('_execution_status') == 'FAILED' for c in actual):
+            verification_status = 'FAILED_VERIFICATION_EXECUTION'
+        elif any((c.get('_format_valid') is False or c.get('response_valid') is False)
+                 and c.get('_contract_error_kind') not in {'SEMANTIC_INCONSISTENCY', 'AUDIT_INCOMPLETE'} for c in actual):
+            verification_status = 'INVALID_VERIFICATION_OUTPUT'
+        elif any(c.get('_contract_error_kind') == 'AUDIT_INCOMPLETE' for c in actual):
+            verification_status = 'INCOMPLETE_VERIFICATION_AUDIT'
+        elif any(c.get('_contract_error_kind') == 'SEMANTIC_INCONSISTENCY' for c in actual):
+            verification_status = 'INCONSISTENT_VERIFICATION_JUDGMENT'
+        elif verification.get('stopped_after') and verification_status == 'INCOMPLETE_VERIFICATION':
+            verification_status = 'SEMANTICALLY_REJECTED'
     else:
         verification_status = ("NOT_RUN" if not review else "BLOCKED_EXECUTION" if execution == "FAILED" else
             "BLOCKED_CONTEXT" if review.get("_context_valid") is False else
             "BLOCKED_OUTPUT" if not valid else "UNRESOLVED_PROPOSAL" if review.get("relation") == "UNRESOLVED" else
             "NOT_REQUESTED")
+    verification_failed = verification_status in {'FAILED_VERIFICATION_EXECUTION', 'INVALID_VERIFICATION_OUTPUT', 'INCOMPLETE_VERIFICATION', 'BLOCKED_IMAGE_BINDING'}
+    contradictory = contradictory or verification_status == 'INCONSISTENT_VERIFICATION_JUDGMENT'
+    incomplete_audit = verification_status == 'INCOMPLETE_VERIFICATION_AUDIT'
+    terminal = ('INCOMPLETE_AUDIT' if incomplete_audit else
+                'EXECUTION_INTERRUPTED_OR_FAILED' if execution == 'FAILED' or verification_failed else
+                'CONTRADICTORY_JUDGMENT' if contradictory else
+                'EXECUTION_INTERRUPTED_OR_FAILED' if not eligible else
+                'SEMANTIC_UNCERTAINTY' if verdict == 'ABSTAIN' or verification_status == 'INCONSISTENT_VERIFICATION_JUDGMENT'
+                else 'PROPOSAL_REQUIRES_GATE')
     return {
+        **stage_outcomes(review),
+        'terminal_outcome': terminal,
         "execution_status": execution,
         "execution_error_type": review.get("_execution_error_type") or (
             execution_error_type(error) if execution == "FAILED" else None),
-        "schema_status": "VALID" if valid else "TRUNCATED" if review.get("_output_status") == "TRUNCATED" else "INVALID" if execution == "SUCCEEDED" else "NOT_PRODUCED",
+        "schema_status": "VALID" if valid or (execution == 'SUCCEEDED' and review.get('_contract_error_kind') == 'SEMANTIC_INCONSISTENCY') else "TRUNCATED" if review.get("_output_status") == "TRUNCATED" else "INVALID" if execution == "SUCCEEDED" else "NOT_PRODUCED",
         "context_status": review.get("_context_status", "NOT_CHECKED"),
         "verification_status": verification_status,
         "semantic_eligible": eligible,
         "semantic_judgment": verdict,
         "semantic_judgment_valid": verdict in {"ENTAILS", "CONTRADICTS"},
         "semantic_abstained": verdict == "ABSTAIN",
-        "terminal_output_policy": "ELIGIBLE_FOR_EVIDENCE_GATE" if verdict in {"ENTAILS", "CONTRADICTS"}
+        "terminal_output_policy": "PRESERVE_INITIAL_WITH_INCOMPLETE_AUDIT" if incomplete_audit
+            else "PRESERVE_INITIAL_WITH_EXPLICIT_REVIEW_FAILURE" if verification_failed
+            else "PRESERVE_INITIAL_WITH_INCONSISTENT_REVIEW" if contradictory
+            else "ELIGIBLE_FOR_EVIDENCE_GATE" if verdict in {"ENTAILS", "CONTRADICTS"}
             else "PRESERVE_INITIAL_WITH_EXPLICIT_REVIEW_FAILURE" if not eligible
             else "PRESERVE_INITIAL_WITH_SEMANTIC_UNCERTAINTY",
     }

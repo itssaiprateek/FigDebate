@@ -35,6 +35,7 @@ FIELDNAMES = [
     "judge_execution_status", "judge_execution_error_type", "judge_schema_status",
     "judge_context_status", "judge_graph_visible", "independent_verification_attempted",
     "judge_verification_status",
+    "judge_first_blocking_stage", "judge_stage_outcomes",
     "claim_semantic_audit_status", "claim_semantic_checks_executed", "claim_semantic_proposition_pass",
     "claim_semantic_qualified", "claim_semantic_model_comparisons", "claim_deterministic_projections", "claim_validity_scope",
     "claim_graph_representation", "claim_decomposition_status",
@@ -137,7 +138,7 @@ FIELDNAMES = [
     "judge_invalid_evidence_ids", "judge_visual_observations", "judge_reason",
     "judge_agreed_with_pre_judge_decision", "judge_revision_accepted",
     "judge_revision_reason", "judge_changed_decision",
-    "judge_confirmation_valid", "judge_model",
+    "judge_confirmation_valid", "judge_model", "tribunal_terminal_outcome", "integrated_feedback_attempted",
     "judge_model_revision", "judge_feedback_candidate_recorded",
     "judge_feedback_role", "judge_feedback_memory_update_applied",
     "mediator_status", "mediator_provisional_verdict", "mediator_confidence",
@@ -226,7 +227,7 @@ def parse_args():
     )
     parser.add_argument(
         "--hardware-profile",
-        choices=("auto", "paper-8gb", "8gb", "12gb", "16gb"),
+        choices=("auto", "paper-8gb", "paper-8gb-review5", "8gb", "12gb", "16gb"),
         default="auto",
         help="Explicit deterministic GPU budget, or auto-select from measured VRAM.",
     )
@@ -250,6 +251,7 @@ def parse_args():
     ids_group.add_argument("--sample-ids-file", help="JSON list of eligible IDs; randomize within it using selection-strategy random")
     parser.add_argument("--phenomena", nargs="+", choices=("humor", "metaphor", "sarcasm"))
     parser.add_argument("--sources", nargs="+", help="Native source names: memecap, muse, irfl, vismet, nycartoons")
+    parser.add_argument('--batch-size', type=int, default=32, help='Maximum cases resident per stagewise batch; default 32.')
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--selection-seed", type=int, default=None, help="Locks sample order independently of inference seed.")
     parser.add_argument(
@@ -278,12 +280,20 @@ def parse_args():
     )
     parser.add_argument(
         "--feedback-mode",
-        choices=("disabled", "collect", "calibrate", "verified", "precedent"),
+        choices=("disabled", "collect", "calibrate", "verified", "precedent", "integrated"),
         default="disabled",
         help=(
             "collect logs error candidates; calibrate builds gold-label rules from a development split; "
-            "verified applies an immutable feedback file; precedent supplies frozen reasoning guidance only to the tribunal."
+            "verified applies an immutable feedback file; integrated enables one diagnostic tribunal repair; precedent is legacy only."
         ),
+    )
+    parser.add_argument(
+        "--tribunal-repair-mode", choices=("disabled", "bounded"), default="disabled",
+        help="Opt-in V5 tribunal-only repair, independent of feedback; at most one semantic follow-up.",
+    )
+    parser.add_argument(
+        "--tribunal-audit-mode", choices=("baseline", "process-audit-1"), default="baseline",
+        help="Opt-in unqualified source-bound process audit; requires the explicit review5 profile.",
     )
     parser.add_argument(
         "--verified-feedback-file",
@@ -428,18 +438,8 @@ def resolve_run_dir(args):
 
 
 def load_records(path):
-    records = {}
-    if not os.path.exists(path):
-        return records
-    with open(path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if record.get("id"):
-                records[record["id"]] = record
-    return records
+    from engine.result_store import read_records
+    return read_records(path)
 
 
 def text_list(value):
@@ -529,6 +529,8 @@ def build_record(index, raw, result, elapsed):
         "judge_schema_status": review_outcome["schema_status"],
         "judge_context_status": review_outcome["context_status"],
         "judge_verification_status": review_outcome["verification_status"],
+        "judge_first_blocking_stage": review_outcome.get("first_blocking_stage"),
+        "judge_stage_outcomes": json.dumps(review_outcome.get("stage_outcomes", []), separators=(",", ":")),
         "judge_graph_visible": bool(tribunal_review.get("_judge_packet", {}).get("claim_agent", {}).get("claim_graph")) if tribunal_review else None,
         "independent_verification_attempted": "_independent_verification" in tribunal_review if tribunal_review else None,
         "claim_semantic_audit_status": (language.get("_caption_semantic_audit") or {}).get("audit_status", "NOT_RUN"),
@@ -910,6 +912,8 @@ def build_record(index, raw, result, elapsed):
             and judgment.get("verdict") == judge_review.get("previous_label")
         ),
         "judge_revision_accepted": judge_review.get("accepted", False),
+        "tribunal_terminal_outcome": tribunal_resolution.get('terminal_outcome', 'UNAVAILABLE'),
+        "integrated_feedback_attempted": any(r.get('_integrated_feedback', {}).get('attempted') for r in tribunal_reviews),
         "judge_revision_reason": judge_review.get("reason", ""),
         "judge_changed_decision": judge_review.get("changed_decision", False),
         "judge_confirmation_valid": judge_review.get(
@@ -1232,72 +1236,72 @@ def append_record(path, record):
 
 
 def write_json_atomic(path, payload):
-    temp_path = f"{path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=True)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temp_path, path)
+    from engine.result_store import atomic_json
+    atomic_json(path, payload)
+
+
+from engine.record_index import ordered_records
 
 
 def write_predictions(path, records):
+    from engine.result_store import replace_with_retry
     temp_path = f"{path}.tmp"
     with open(temp_path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
         writer.writeheader()
-        for record in sorted(records, key=lambda item: item["sample"]):
+        for record in ordered_records(records):
             writer.writerow({field: record.get(field) for field in FIELDNAMES})
-    os.replace(temp_path, path)
+    replace_with_retry(temp_path, path)
 
 
 def write_debate_logs(run_dir, records):
     jsonl_path = os.path.join(run_dir, "debate_log.jsonl")
     csv_path = os.path.join(run_dir, "debate_log.csv")
-    rows = []
-    for record in sorted(records, key=lambda item: item["sample"]):
-        if not record.get("debate_triggered"):
-            continue
-        initial_correct = record.get("initial_prediction") == record.get("ground_truth")
-        final_correct = record.get("prediction") == record.get("ground_truth")
-        outcome = "unchanged"
-        if not initial_correct and final_correct:
-            outcome = "corrected"
-        elif initial_correct and not final_correct:
-            outcome = "harmed"
-        trace = record.get("trace", {}) or {}
-        debate = trace.get("debate_details", {}) or {}
-        rows.append({
-            "sample": record.get("sample"),
-            "id": record.get("id"),
-            "phenomenon": record.get("phenomenon"),
-            "ground_truth": record.get("ground_truth"),
-            "trigger_reason": record.get("debate_trigger_reason"),
-            "debate_level": record.get("debate_level"),
-            "debate_need_score": record.get("debate_need_score"),
-            "debate_need_signals": record.get("debate_need_signals"),
-            "initial_label": record.get("initial_prediction"),
-            "proposed_label": record.get("debate_proposed_label"),
-            "final_label": record.get("prediction"),
-            "revision_accepted": record.get("debate_revision_accepted"),
-            "review_status": record.get("debate_review_status"),
-            "acceptance_reason": record.get("debate_revision_reason"),
-            "outcome": outcome,
-            "initial_confidence": record.get("round1_confidence"),
-            "final_confidence": record.get("final_confidence"),
-            "debate_seconds": record.get("debate_seconds"),
-            "agent1_critique": debate.get("agent1_critique", {}),
-            "agent2_critique": debate.get("agent2_critique", {}),
-            "advocates": debate.get("advocates", {}),
-            "original_evidence_audit": debate.get("original_evidence_audit", {}),
-            "proposed_evidence_audit": debate.get("proposed_evidence_audit", {}),
-            "evidence_ledger_before": debate.get("evidence_ledger_before", []),
-            "evidence_ledger_after": debate.get("evidence_ledger_after", []),
-            "proposed_decision": debate.get("proposed_decision", {}),
-        })
+    def rows():
+        for record in ordered_records(records):
+            if not record.get("debate_triggered"):
+                continue
+            initial_correct = record.get("initial_prediction") == record.get("ground_truth")
+            final_correct = record.get("prediction") == record.get("ground_truth")
+            outcome = "unchanged"
+            if not initial_correct and final_correct:
+                outcome = "corrected"
+            elif initial_correct and not final_correct:
+                outcome = "harmed"
+            trace = record.get("trace", {}) or {}
+            debate = trace.get("debate_details", {}) or {}
+            yield {
+                "sample": record.get("sample"),
+                "id": record.get("id"),
+                "phenomenon": record.get("phenomenon"),
+                "ground_truth": record.get("ground_truth"),
+                "trigger_reason": record.get("debate_trigger_reason"),
+                "debate_level": record.get("debate_level"),
+                "debate_need_score": record.get("debate_need_score"),
+                "debate_need_signals": record.get("debate_need_signals"),
+                "initial_label": record.get("initial_prediction"),
+                "proposed_label": record.get("debate_proposed_label"),
+                "final_label": record.get("prediction"),
+                "revision_accepted": record.get("debate_revision_accepted"),
+                "review_status": record.get("debate_review_status"),
+                "acceptance_reason": record.get("debate_revision_reason"),
+                "outcome": outcome,
+                "initial_confidence": record.get("round1_confidence"),
+                "final_confidence": record.get("final_confidence"),
+                "debate_seconds": record.get("debate_seconds"),
+                "agent1_critique": debate.get("agent1_critique", {}),
+                "agent2_critique": debate.get("agent2_critique", {}),
+                "advocates": debate.get("advocates", {}),
+                "original_evidence_audit": debate.get("original_evidence_audit", {}),
+                "proposed_evidence_audit": debate.get("proposed_evidence_audit", {}),
+                "evidence_ledger_before": debate.get("evidence_ledger_before", []),
+                "evidence_ledger_after": debate.get("evidence_ledger_after", []),
+                "proposed_decision": debate.get("proposed_decision", {}),
+            }
 
     temp_jsonl = f"{jsonl_path}.tmp"
     with open(temp_jsonl, "w", encoding="utf-8") as handle:
-        for row in rows:
+        for row in rows():
             json.dump(row, handle, ensure_ascii=True)
             handle.write("\n")
     os.replace(temp_jsonl, jsonl_path)
@@ -1316,7 +1320,7 @@ def write_debate_logs(run_dir, records):
     with open(temp_csv, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=csv_fields)
         writer.writeheader()
-        for row in rows:
+        for row in rows():
             writer.writerow({
                 key: json.dumps(row[key], ensure_ascii=True)
                 if isinstance(row[key], (dict, list)) else row[key]
@@ -1329,38 +1333,38 @@ def write_debate_logs(run_dir, records):
 def write_feedback_decision_logs(run_dir, records):
     jsonl_path = os.path.join(run_dir, "feedback_decision_log.jsonl")
     csv_path = os.path.join(run_dir, "feedback_decision_log.csv")
-    rows = []
-    for record in sorted(records, key=lambda item: item["sample"]):
-        if not record.get("feedback_enabled"):
-            continue
-        baseline = record.get("feedback_baseline_prediction")
-        post_review = record.get("feedback_post_review_prediction")
-        gold = record.get("ground_truth")
-        outcome = "unchanged"
-        if baseline != gold and post_review == gold:
-            outcome = "corrected"
-        elif baseline == gold and post_review != gold:
-            outcome = "harmed"
-        trace = record.get("trace", {}) or {}
-        rows.append({
-            "sample": record.get("sample"),
-            "id": record.get("id"),
-            "phenomenon": record.get("phenomenon"),
-            "ground_truth": gold,
-            "matched_memory_ids": record.get("feedback_matched_rule_ids"),
-            "matched_memory_scores": record.get("feedback_matched_rule_scores"),
-            "baseline_label": baseline,
-            "candidate_label": record.get("feedback_candidate_prediction"),
-            "post_review_label": post_review,
-            "revision_accepted": record.get("feedback_revision_accepted"),
-            "revision_reason": record.get("feedback_revision_reason"),
-            "outcome": outcome,
-            "pre_feedback_decision": trace.get("pre_feedback_decision", {}),
-            "feedback_candidate_decision": trace.get(
-                "feedback_candidate_decision", {}
-            ),
-            "evidence_ledger": trace.get("evidence_ledger", []),
-        })
+    def rows():
+        for record in ordered_records(records):
+            if not record.get("feedback_enabled"):
+                continue
+            baseline = record.get("feedback_baseline_prediction")
+            post_review = record.get("feedback_post_review_prediction")
+            gold = record.get("ground_truth")
+            outcome = "unchanged"
+            if baseline != gold and post_review == gold:
+                outcome = "corrected"
+            elif baseline == gold and post_review != gold:
+                outcome = "harmed"
+            trace = record.get("trace", {}) or {}
+            yield {
+                "sample": record.get("sample"),
+                "id": record.get("id"),
+                "phenomenon": record.get("phenomenon"),
+                "ground_truth": gold,
+                "matched_memory_ids": record.get("feedback_matched_rule_ids"),
+                "matched_memory_scores": record.get("feedback_matched_rule_scores"),
+                "baseline_label": baseline,
+                "candidate_label": record.get("feedback_candidate_prediction"),
+                "post_review_label": post_review,
+                "revision_accepted": record.get("feedback_revision_accepted"),
+                "revision_reason": record.get("feedback_revision_reason"),
+                "outcome": outcome,
+                "pre_feedback_decision": trace.get("pre_feedback_decision", {}),
+                "feedback_candidate_decision": trace.get(
+                    "feedback_candidate_decision", {}
+                ),
+                "evidence_ledger": trace.get("evidence_ledger", []),
+            }
     fields = (
         "sample", "id", "phenomenon", "ground_truth", "matched_memory_ids",
         "matched_memory_scores", "baseline_label", "candidate_label",
@@ -1369,7 +1373,7 @@ def write_feedback_decision_logs(run_dir, records):
     )
     temp_jsonl = f"{jsonl_path}.tmp"
     with open(temp_jsonl, "w", encoding="utf-8") as handle:
-        for row in rows:
+        for row in rows():
             json.dump(row, handle, ensure_ascii=True)
             handle.write("\n")
     os.replace(temp_jsonl, jsonl_path)
@@ -1377,7 +1381,7 @@ def write_feedback_decision_logs(run_dir, records):
     with open(temp_csv, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
-        for row in rows:
+        for row in rows():
             writer.writerow({
                 key: json.dumps(row[key], ensure_ascii=True)
                 if isinstance(row[key], (dict, list)) else row[key]
@@ -1385,6 +1389,45 @@ def write_feedback_decision_logs(run_dir, records):
             })
     os.replace(temp_csv, csv_path)
     return jsonl_path, csv_path
+
+
+def finalize_saved_run(run_dir, selected_ids, records, run_timing, progress, feedback_exports=None):
+    """Export already committed results. This function never performs inference."""
+    from engine.result_store import replace_with_retry, completion_manifest
+    from evaluation.tribunal_quality import summarize_tribunal
+    records_path = os.path.join(run_dir, 'records.jsonl')
+    predictions_path = os.path.join(run_dir, 'predictions.csv')
+    progress_path = os.path.join(run_dir, 'progress.json')
+    try:
+        for filename, value in (feedback_exports or {}).items():
+            write_json_atomic(os.path.join(run_dir, filename), value)
+        write_json_atomic(os.path.join(run_dir, 'run_timing.json'), run_timing)
+        write_json_atomic(os.path.join(run_dir, 'tribunal_quality.json'),
+                          summarize_tribunal(records, run_timing.get('wall_clock_seconds')))
+        with open(records_path + '.tmp', 'w', encoding='utf-8') as handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=True) + '\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        replace_with_retry(records_path + '.tmp', records_path)
+        write_predictions(predictions_path, records)
+        debate_paths = write_debate_logs(run_dir, records)
+        feedback_paths = write_feedback_decision_logs(run_dir, records)
+        metrics = evaluate_predictions(predictions_path, run_dir)
+        progress.update(status='complete', completed_samples=len(records),
+                        completed_ids=sorted(r['id'] for r in records),
+                        updated_at=datetime.now().isoformat(timespec='seconds'))
+        for key in ('failure_phase', 'failure_type', 'failure_reason'):
+            progress.pop(key, None)
+        write_json_atomic(progress_path, progress)
+        completion_manifest(run_dir, selected_ids, records)
+        return metrics, debate_paths, feedback_paths
+    except Exception as error:
+        progress.update(status='inference_complete_export_pending', completed_samples=len(records),
+                        completed_ids=sorted(r['id'] for r in records), failure_phase='export',
+                        failure_type=type(error).__name__, failure_reason=str(error))
+        write_json_atomic(progress_path, progress)
+        raise
 
 
 def main():
@@ -1400,6 +1443,17 @@ def main():
     set_reproducibility(args.seed)
     from engine.runtime_profile import resolve_runtime_profile
     hardware_profile = resolve_runtime_profile(args.hardware_profile)
+    from engine.tribunal_repair import validate_options
+    validate_options(args.tribunal_repair_mode, args.tribunal_audit_mode, args.judge_mode,
+                     args.debate_mode, hardware_profile.tribunal_protocol, args.feedback_mode)
+    if (args.tribunal_repair_mode != 'disabled' or args.tribunal_audit_mode != 'baseline') and args.execution_mode != 'stagewise':
+        raise ValueError('Experimental tribunal options require stagewise execution')
+    if args.feedback_mode == 'precedent' and hardware_profile.tribunal_protocol == 'evidence-review-5.0':
+        raise ValueError('Use --feedback-mode integrated for V5; standalone precedent feedback has been replaced.')
+    if args.feedback_mode == 'integrated' and (args.judge_mode != 'tribunal' or args.debate_mode == 'disabled'):
+        raise ValueError('Integrated feedback requires --judge-mode tribunal and enabled debate.')
+    if args.feedback_mode == 'integrated' and hardware_profile.tribunal_protocol != 'evidence-review-5.0':
+        raise ValueError('Integrated repair requires --hardware-profile paper-8gb-review5 (candidate).')
     if args.feedback_mode in {"verified", "precedent"} and not args.verified_feedback_file:
         raise ValueError("Verified feedback mode requires --verified-feedback-file.")
     if args.feedback_mode != "disabled" and args.execution_mode != "stagewise":
@@ -1428,7 +1482,8 @@ def main():
             "The run directory already contains records.jsonl. Use --resume "
             "with the identical configuration or choose a new --run-dir."
         )
-    existing = load_records(records_path) if args.resume else {}
+    from engine.record_index import RecordIndex
+    existing = RecordIndex(run_dir, resume=args.resume)
     if args.reuse_stage_dir and args.execution_mode != "stagewise":
         raise ValueError("Shared stage reuse requires stagewise execution")
     dataset = load_split(args.dataset_split)
@@ -1473,6 +1528,7 @@ def main():
         return
 
     run_config = {
+        'batch_size': args.batch_size,
         "data_usage": data_usage,
         "evaluation_reference_sha256": hashlib.sha256(json.dumps(references, sort_keys=True).encode()).hexdigest(),
         "selection_seed": args.selection_seed if args.selection_seed is not None else args.seed,
@@ -1496,8 +1552,12 @@ def main():
             "semantic_bridge": args.semantic_bridge_mode,
             "candidates": args.candidate_mode,
             "control": args.control_mode,
+            "tribunal_repair": args.tribunal_repair_mode,
+            "tribunal_audit": args.tribunal_audit_mode,
         },
         "feedback_enabled": args.feedback_mode != "disabled",
+        "tribunal_repair_mode": args.tribunal_repair_mode,
+        "tribunal_audit_mode": args.tribunal_audit_mode,
         "feedback_mode": args.feedback_mode,
         "verified_feedback_file": args.verified_feedback_file,
         "verified_feedback_sha256": file_checksum(args.verified_feedback_file),
@@ -1544,6 +1604,10 @@ def main():
             "revision_gate": "deterministic_review_board_requires_stronger_current_image_evidence",
         },
         "judge_policy": {
+            "protocol": hardware_profile.tribunal_protocol,
+            "task_semantics_version": ('vflute-source-assertion-2' if hardware_profile.tribunal_protocol == 'evidence-review-5.0' else 'vflute-contextual-reading-1'),
+            "review_cost_policy": ('fixed_per_protocol_not_previous_cases' if hardware_profile.tribunal_protocol == 'evidence-review-5.0' else 'legacy_adaptive_case_history'),
+            "qualification_status": ('unqualified_candidate' if hardware_profile.tribunal_protocol == 'evidence-review-5.0' else 'existing_baseline'),
             "position": (
                 "inside_debate_before_agent_reviews"
                 if args.judge_mode == "mediated"
@@ -1571,8 +1635,8 @@ def main():
             ),
         },
         "feedback_policy": {
-            "retrieval": "structural_precedents_max_two" if args.feedback_mode == "precedent" else "strict_procedural_case_similarity",
-            "role": "tribunal_guidance_verifier_blind" if args.feedback_mode == "precedent" else "diagnostic_question_and_debate_routing_only",
+            "retrieval": "current_case_failed_obligation" if args.feedback_mode == "integrated" else "structural_precedents_max_two" if args.feedback_mode == "precedent" else "strict_procedural_case_similarity",
+            "role": "bounded_tribunal_repair_with_independent_gate" if args.feedback_mode == "integrated" else "tribunal_guidance_verifier_blind" if args.feedback_mode == "precedent" else "diagnostic_question_and_debate_routing_only",
             "online_label_updates": False,
             "gold_direction_stored": False,
         },
@@ -1583,6 +1647,10 @@ def main():
         "deterministic_environment": deterministic_environment(),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
+    from engine.run_provenance import snapshot_source
+    source_manifest = snapshot_source(os.path.dirname(os.path.abspath(__file__)), run_dir)
+    run_config['source_manifest_sha256'] = source_manifest['source_manifest_sha256']
+    run_config['source_archive'] = 'source_snapshot.zip'
     from engine.cache_identity import stage_fingerprints
     run_config["stage_fingerprints"] = stage_fingerprints(os.path.dirname(os.path.abspath(__file__)), run_config)
     if args.resume:
@@ -1608,8 +1676,6 @@ def main():
     def record_result(index, raw, result, elapsed):
         record = build_record(index, raw, result, elapsed)
         existing[raw["id"]] = record
-        append_record(records_path, record)
-        write_predictions(predictions_path, list(existing.values()))
         progress.update({
             "completed_samples": len(existing),
             "completed_ids": sorted(existing),
@@ -1621,13 +1687,17 @@ def main():
 
     run_started = time.time()
     run_timing = {}
+    final_feedback_exports = {}
     if pending:
         if args.execution_mode == "stagewise":
             samples = [
-                {"index": index, "raw": raw, "image": decode_image(raw["image_bytes"]), "caption": raw["caption"]}
+                {"index": index, "raw": raw, "caption": raw["caption"]}
                 for index, raw in pending
             ]
             runner = StagewiseRunner(
+                batch_size=args.batch_size,
+                tribunal_repair_mode=args.tribunal_repair_mode,
+                tribunal_audit_mode=args.tribunal_audit_mode,
                 feedback_mode=args.feedback_mode,
                 feedback_log_path=os.path.join(run_dir, "feedback_log.json"),
                 verified_feedback_path=args.verified_feedback_file,
@@ -1645,22 +1715,14 @@ def main():
                 global_seed=args.seed,
                 checkpoint_fingerprint=run_config["stage_fingerprints"],
             )
-            run_timing = run_tracked_phase(progress_path, progress, "stagewise_execution",
-                lambda: runner.run_samples(samples, record_result)) or {}
+            from engine.judge_telemetry import monitor_run
+            with monitor_run(run_dir):
+                run_timing = run_tracked_phase(progress_path, progress, "stagewise_execution",
+                    lambda: runner.run_samples(samples, record_result)) or {}
             if args.feedback_mode != "disabled":
-                with open(
-                    os.path.join(run_dir, "feedback_events.json"),
-                    "w",
-                    encoding="utf-8",
-                ) as handle:
-                    json.dump(runner.feedback_events, handle, indent=2)
+                final_feedback_exports['feedback_events.json'] = runner.feedback_events
             if args.feedback_mode == "calibrate":
-                with open(
-                    os.path.join(run_dir, "calibrated_feedback.json"),
-                    "w",
-                    encoding="utf-8",
-                ) as handle:
-                    json.dump(runner.export_feedback_examples(), handle, indent=2)
+                final_feedback_exports['calibrated_feedback.json'] = runner.export_feedback_examples()
         else:
             system = FigDebate(
                 feedback_mode=args.feedback_mode, debate_mode=args.debate_mode,
@@ -1676,26 +1738,21 @@ def main():
                     lambda: system.predict(decode_image(raw["image_bytes"]), raw["caption"]))
                 record_result(index, raw, result, time.time() - start)
 
-    run_timing["wall_clock_seconds"] = round(time.time() - run_started, 4)
-    with open(os.path.join(run_dir, "run_timing.json"), "w", encoding="utf-8") as handle:
-        json.dump(run_timing, handle, indent=2)
-
-    records = [existing[raw["id"]] for raw in selected if raw["id"] in existing]
-    from evaluation.tribunal_quality import summarize_tribunal
-    write_json_atomic(os.path.join(run_dir, "tribunal_quality.json"),
-                      summarize_tribunal(records, run_timing["wall_clock_seconds"]))
-    write_predictions(predictions_path, records)
-    debate_jsonl, debate_csv = write_debate_logs(run_dir, records)
-    feedback_jsonl, feedback_csv = write_feedback_decision_logs(run_dir, records)
-    metrics = run_tracked_phase(progress_path, progress, "evaluation",
-        lambda: evaluate_predictions(predictions_path, run_dir))
-    progress.update({
-        "status": "complete",
-        "completed_samples": len(records),
-        "completed_ids": sorted(existing),
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-    })
-    write_json_atomic(progress_path, progress)
+    timing_path = os.path.join(run_dir, 'run_timing.json')
+    if not pending and os.path.isfile(timing_path):
+        with open(timing_path, encoding='utf-8') as handle:
+            run_timing = json.load(handle)
+        run_timing['export_retry_setup_seconds'] = round(time.time() - run_started, 4)
+    else:
+        run_timing["wall_clock_seconds"] = round(time.time() - run_started, 4)
+        run_timing['wall_clock_scope'] = 'current_invocation_inference'
+    records = existing.ordered([raw['id'] for raw in selected if raw['id'] in existing])
+    try:
+        metrics, (debate_jsonl, debate_csv), (feedback_jsonl, feedback_csv) = finalize_saved_run(
+            run_dir, [raw['id'] for raw in selected], records, run_timing, progress, final_feedback_exports)
+    except Exception as error:
+        print('Inference results are committed. Export is pending: ' + str(error))
+        raise SystemExit(2)
     valid = sum(record["final_decision_valid"] for record in records)
     correct = sum(record["correct"] for record in records)
     print("\nFIGDEBATE RUN COMPLETE")

@@ -59,6 +59,20 @@ PLACEHOLDER_PATTERN = re.compile(
 )
 
 
+def exposes_answer_decision(text):
+    """Task-label assertions, not ordinary words describing visual contrasts."""
+    if not PROHIBITED_DECISION_PATTERN.search(text):
+        return False
+    if re.search(r"\b(?:ground[ -]?truth|dataset label|final (?:label|decision)|verdict|prediction)\b", text, re.I):
+        return True
+    if re.fullmatch(r"\s*(?:entails?|entailment|contradicts?|contradiction)[.!]?\s*", text, re.I):
+        return True
+    return bool(re.search(r"\b(?:caption|claim|statement|hypothesis|answer|label)\b.{0,70}"
+                          r"\b(?:entail\w*|contradict\w*)\b|"
+                          r"\b(?:entail\w*|contradict\w*)\b.{0,70}"
+                          r"\b(?:caption|claim|statement|hypothesis)\b", text, re.I))
+
+
 def normalized(value):
     return " ".join(
         re.sub(r"[^a-z0-9 ]", " ", str(value or "").casefold()).split()
@@ -178,13 +192,13 @@ class AtomicVisualQuestionController:
     TYPE_WORD_LIMITS = {
         "scene": 60,
         "objects": 40,
-        "ocr": 180,
+        "ocr": 360,
         "facts": 100,
         "relation": 120,
         "scene_type": 10,
         "symbolic_cue": 90,
         "count": 3,
-        "yes_no": 5,
+        "yes_no": 6,
         "open": 65,
     }
 
@@ -297,6 +311,11 @@ class AtomicVisualQuestionController:
         scalar_complete = ((question_type == "count" and re.fullmatch(r"\d+", answer))
                            or (question_type == "yes_no" and answer.upper() in {"YES", "NO", "UNCLEAR"}))
         termination = diagnostics or {}
+        if termination.get("recovery_error"):
+            return answer, "INVALID_RESPONSE", False, termination["recovery_error"]
+        from engine.generation_recovery import repeated_text
+        if termination.get("repetition_detected") or (question_type == "ocr" and repeated_text(answer)):
+            return answer, "INVALID_RESPONSE", False, "repetitive_generation"
         if (termination.get("hit_token_limit") and termination.get("ended_by_eos") is not True
                 and not scalar_complete):
             return answer, "INVALID_RESPONSE", False, "truncated_response"
@@ -307,7 +326,7 @@ class AtomicVisualQuestionController:
         question_norm = normalized(question)
         if question_norm and len(question_norm.split()) >= 5 and question_norm in answer_norm:
             return answer, "INVALID_RESPONSE", False, "question_echo"
-        if question_type != "ocr" and PROHIBITED_DECISION_PATTERN.search(answer):
+        if question_type != "ocr" and exposes_answer_decision(answer):
             return answer, "INVALID_RESPONSE", False, "dataset_decision_leak"
         if answer_norm in UNCLEAR_ANSWERS or answer_norm.startswith("unclear"):
             return "UNCLEAR", "UNCLEAR", True, ""

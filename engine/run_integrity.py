@@ -5,6 +5,7 @@ import os
 
 
 IMMUTABLE_RUN_KEYS = (
+    "batch_size", "source_manifest_sha256",
     "data_usage", "evaluation_reference_sha256",
     "candidate_mode", "control_mode", "selection_seed", "stage_fingerprints",
     "dataset", "requested_samples", "execution_mode", "debate_mode",

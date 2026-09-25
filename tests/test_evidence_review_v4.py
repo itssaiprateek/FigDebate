@@ -91,9 +91,11 @@ class EvidenceReviewTests(unittest.TestCase):
         review = {"status": "FOLLOW_UP", "_protocol": "evidence-review-4.0", "_format_valid": True,
                   "requested_follow_up": "COUNTER_INTERPRETATION",
                   "targeted_question": "Does the text imply the object is useful or useless?"}
-        self.assertEqual(followup_plan(review), {})
-        self.assertEqual(review["_follow_up_question_status"], "BLOCKED_WITNESS_SCOPE")
-        self.assertEqual(review["_follow_up_question_audit"][0]["status"], "NOT_DISPATCHED_TO_VISUAL_WITNESS")
+        plan = followup_plan(review)
+        self.assertEqual(plan["agent1_questions"], [])
+        self.assertEqual(plan["agent2_questions"], [])
+        self.assertEqual(plan["verification_requests"], [review["targeted_question"]])
+        self.assertEqual(review["_follow_up_routing"][0]["routed_to"], "tribunal")
         self.assertEqual(review["status"], "FOLLOW_UP")
         review["targeted_question"] = "Read the exact visible text above the object."
         self.assertEqual(followup_plan(review)["agent1_questions"], [review["targeted_question"]])

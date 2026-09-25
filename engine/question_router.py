@@ -301,7 +301,9 @@ def compile_visual_question(comparison, mediation=None):
         valid, _ = AtomicVisualQuestionController.validate_question(
             question, question_type
         )
-        if valid:
+        from engine.review_routing import route_question
+        role, _ = route_question(question, 'VISUAL_PREMISE')
+        if valid and role == 'visual':
             return question
 
     fallback = build_question_plan(comparison or {}).agent1_question

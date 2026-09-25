@@ -63,8 +63,11 @@ class StagewiseRunner:
         candidate_mode="independent",
         readonly_stage_sources=(),
         control_mode="none",
+        batch_size=32,
+        tribunal_repair_mode="disabled",
+        tribunal_audit_mode="baseline",
     ):
-        if feedback_mode not in {"disabled", "collect", "calibrate", "verified", "precedent"}:
+        if feedback_mode not in {"disabled", "collect", "calibrate", "verified", "precedent", "integrated"}:
             raise ValueError(f"Unknown feedback mode: {feedback_mode}")
         if debate_mode not in {"enabled", "disabled"}:
             raise ValueError(f"Unknown debate mode: {debate_mode}")
@@ -85,11 +88,25 @@ class StagewiseRunner:
         self.control_mode = control_mode
         self.debate = DebateEngine()
         self.feedback_mode = feedback_mode
+        if not isinstance(batch_size, int) or batch_size < 1:
+            raise ValueError('batch_size must be a positive integer')
+        self.batch_size = batch_size
         self.debate_mode = debate_mode
         self.evidence_mode = evidence_mode
         self.judge_mode = judge_mode
         self.judge_scope = judge_scope
         self.hardware_profile = resolve_runtime_profile(hardware_profile)
+        from engine.tribunal_repair import validate_options
+        validate_options(tribunal_repair_mode, tribunal_audit_mode, judge_mode,
+                         debate_mode, self.hardware_profile.tribunal_protocol, feedback_mode)
+        self.tribunal_repair_mode = tribunal_repair_mode
+        self.tribunal_audit_mode = tribunal_audit_mode
+        if feedback_mode == 'integrated' and (judge_mode != 'tribunal' or debate_mode == 'disabled'):
+            raise ValueError('Integrated repair requires tribunal mode and enabled hearings')
+        if feedback_mode == 'integrated' and self.hardware_profile.tribunal_protocol != 'evidence-review-5.0':
+            raise ValueError('Integrated repair requires the explicit paper-8gb-review5 candidate profile')
+        if feedback_mode == 'precedent' and self.hardware_profile.tribunal_protocol == 'evidence-review-5.0':
+            raise ValueError('V5 replaces standalone precedent retries. Use --feedback-mode integrated, or disabled for the ablation.')
         if semantic_bridge_mode not in {"disabled", "shadow", "corroborated"}:
             raise ValueError(f"Unknown semantic bridge mode: {semantic_bridge_mode}")
         self.semantic_bridge_mode = semantic_bridge_mode
@@ -325,6 +342,12 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                         matched_rule_ids=matched, memory_active=bool(matched),
                         library_sha256=self.tribunal_precedents.sha256,
                         verifier_receives_precedents=False, attribution="requires_paired_ablation")
+                if getattr(self, 'feedback_mode', 'disabled') == 'integrated':
+                    reviews = result.get('judge', {}).get('tribunal_reviews', [])
+                    attempted = any(r.get('_integrated_feedback', {}).get('attempted') for r in reviews)
+                    result['feedback'].update(mode='integrated', feedback_target_agent='tribunal',
+                        role='one_diagnostic_repair_hearing', memory_active=False,
+                        repair_attempted=attempted, attribution='requires_paired_ablation', online_update=False)
                 if self.feedback_mode == "verified":
                     self.feedback_events.append({
                         "sample_id": sample["raw"]["id"],
@@ -401,6 +424,9 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             load_error = None
             try:
                 judge_runtime = QwenJudgeModel(hardware_profile=profile_name)
+                judge_runtime.tribunal_audit_mode = getattr(self, 'tribunal_audit_mode', 'baseline')
+                if getattr(self, "_tribunal_cost_history", None):
+                    judge_runtime._review_cost_samples = deepcopy(self._tribunal_cost_history)
                 reviewer = TribunalMediatorAgent(judge_runtime)
             except (RuntimeError, ValueError, OSError) as error:
                 load_error = error
@@ -409,12 +435,17 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 result = results[sample["index"]]
                 sample_id = sample.get("raw", {}).get("id", sample["index"])
                 print(f"[sample={sample_id}][model=judge][round={round_number}] start")
+                from engine.judge_telemetry import mark_phase
+                mark_phase(f"tribunal_round_{round_number}:{sample_id}")
                 self._seed_sample(sample, "tribunal_review", round_number)
                 debate = result.get("debate_details", {}) or {}
                 from engine.review_outcome import failed_review
                 precedent_kwargs = {}
+                prior_guidance = any(r.get("_precedent_feedback", {}).get("attempted")
+                                     for r in result.get("judge", {}).get("tribunal_reviews", []))
                 if getattr(self, "tribunal_precedents", None):
-                    precedent_kwargs["precedents"] = self.tribunal_precedents.retrieve(result.get("language_output", {}))
+                    precedent_kwargs["precedents"] = ([] if prior_guidance else
+                        self.tribunal_precedents.retrieve(result.get("language_output", {}), max_items=2))
                 review = failed_review(load_error, "model_load", load_seconds / len(samples)) if load_error else reviewer.review(
                     sample["image"],
                     sample["caption"],
@@ -426,9 +457,23 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     round_number=round_number,
                     current_decision=result.get("decision", {}),
                     pre_hearing=result.get("pre_hearing", {}),
+                    _verification_repair=(result.get('judge', {}).get('verification_followup_plan') or {}).get('repair_context') if round_number == 2 else None,
+                    prior_review=(result.get('judge', {}).get('tribunal_reviews') or [None])[-1] if round_number == 2 else None,
                     **precedent_kwargs,
                 )
+                if getattr(self, 'feedback_mode', 'disabled') == 'integrated':
+                    review['_integrated_feedback'] = {'attempted': round_number == 2,
+                        'policy': 'one_diagnostic_repair_hearing',
+                        'repair_reasons': (result.get('judge', {}).get('verification_followup_plan') or {}).get('repair_reasons', []),
+                        'execution_status': review.get('_execution_status'), 'format_valid': review.get('_format_valid')}
+                review['_tribunal_repair'] = {
+                    'mode': getattr(self, 'tribunal_repair_mode', 'disabled'),
+                    'attempted': bool(round_number == 2 and (result.get('judge', {}).get('verification_followup_plan') or {}).get('repair_context')),
+                    'feedback_mode': getattr(self, 'feedback_mode', 'disabled')}
                 if precedent_kwargs:
+                    if prior_guidance:
+                        review["_precedent_feedback"] = {"attempted": False, "selected_guided_review": False,
+                            "reason": "already_attempted_this_case", "policy": "one_guided_attempt_per_case"}
                     review["_precedent_library_sha256"] = self.tribunal_precedents.sha256
                     review["_retrieved_precedent_ids"] = [p["id"] for p in precedent_kwargs["precedents"]]
                     self.feedback_events.append({"sample_id": sample_id, "round": round_number,
@@ -469,6 +514,12 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     )
                 )
                 result["decision"] = resolved
+                if getattr(self, 'feedback_mode', 'disabled') == 'integrated' and round_number == 1:
+                    result['pre_feedback_decision'] = deepcopy(resolved)
+                if getattr(self, 'feedback_mode', 'disabled') == 'integrated' and round_number == 2:
+                    self.feedback_events.append({'sample_id': sample_id, 'mode': 'integrated',
+                        'repair_attempted': True, 'accepted': bool(resolution.get('accepted')),
+                        'causal_attribution': 'requires_paired_ablation'})
                 result["evidence_ledger"] = verified_ledger
                 judge["tribunal_resolution"] = resolution
                 judge["execution_status"] = resolution.get("execution_status", "NOT_RUN")
@@ -499,7 +550,7 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 judge["feedback_candidate"] = feedback_candidate
                 session = dict(judge.get("tribunal_session", {}) or {})
                 prior_state = session.get("state")
-                if resolution.get("execution_status") == "FAILED":
+                if resolution.get("execution_status") == "FAILED" or resolution.get('terminal_outcome') == 'EXECUTION_INTERRUPTED_OR_FAILED':
                     session["state"] = "EXECUTION_FAILED"
                 elif resolution.get("context_status", "NOT_CHECKED") not in {"VALID", "NOT_CHECKED"}:
                     session["state"] = resolution["context_status"]
@@ -516,7 +567,18 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     session["state"] = "ABSTAINED"
                 else:
                     session["state"] = "PRESERVED"
-                if (session["state"] == "PRESERVED" and round_number < session.get("max_rounds", 2)
+                if review.get('_protocol') == 'evidence-review-5.0' and round_number < session.get('max_rounds', 2):
+                    from engine.tribunal_repair import scheduled_repair
+                    plan = scheduled_repair(review, debate, resolution,
+                        mode=getattr(self, 'tribunal_repair_mode', 'disabled'),
+                        feedback_mode=getattr(self, 'feedback_mode', 'disabled'),
+                        round_number=round_number, max_rounds=session.get('max_rounds', 2))
+                    if plan.get('_usable'):
+                        judge['verification_followup_plan'] = plan
+                        session['state'] = 'FOLLOW_UP_REQUIRED'
+                    elif session['state'] == 'FOLLOW_UP_REQUIRED':
+                        session['state'] = 'ABSTAINED' if review.get('relation') == 'UNRESOLVED' else 'PRESERVED'
+                elif (session["state"] == "PRESERVED" and round_number < session.get("max_rounds", 2)
                         and not resolution.get("confirmation_valid") and self.debate_mode != "disabled"):
                     from engine.tribunal import repair_followup_plan
                     repair_plan = repair_followup_plan(review, result.get("comparison", {}), debate)
@@ -546,12 +608,85 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     f"tribunal_round_{round_number}", sample, result
                 )
         finally:
+            if judge_runtime is not None:
+                self._tribunal_cost_history = deepcopy(getattr(judge_runtime, "_review_cost_samples", {}))
             if reviewer is not None:
                 del reviewer
             if judge_runtime is not None:
                 del judge_runtime
             GPUManager.clear()
         return load_seconds
+
+    def _run_tribunal_followups(self, tribunal_candidates, results):
+        """Execute the single scheduled repair using the production witness/review path."""
+        load_totals = {"judge_model_load_seconds": 0., "debate_vision_model_load_seconds": 0., "debate_language_model_load_seconds": 0.}
+        # Follow-up is an actual new witness hearing, only on explicit
+        # unresolved questions. No forced opposing answer is fabricated.
+        followup_samples = []
+        previous_evidence = {}
+        from engine.deliberation import deliberation_signature
+        for sample in tribunal_candidates:
+            if self.debate_mode == "disabled":
+                continue
+            result = results[sample["index"]]
+            judge = result.get("judge", {})
+            if judge.get("tribunal_session", {}).get("state") != "FOLLOW_UP_REQUIRED":
+                continue
+            review = (judge.get("tribunal_reviews") or [{}])[-1]
+            plan = judge.get("verification_followup_plan") or followup_plan(review, result.get("comparison", {}))
+            if not plan.get("_usable"):
+                judge["tribunal_session"].update(
+                    state="PRESERVED", stop_reason=review.get("_follow_up_budget_status") or review.get("_follow_up_question_status") or "no_actionable_followup")
+                continue
+            previous_evidence[sample["index"]] = deliberation_signature(result)
+            plan["hearing_round"] = 2
+            result["mediation_plan"] = plan
+            result["force_visual_review"] = bool(plan.get("agent1_questions"))
+            result["tribunal_hearing"] = True
+            followup_samples.append(sample)
+        if followup_samples:
+            from engine.judge_telemetry import mark_phase
+            mark_phase("followup_witnesses")
+            witness_samples = [sample for sample in followup_samples
+                if any(results[sample["index"]]["mediation_plan"].get(k)
+                       for k in ("agent1_questions", "agent2_questions"))]
+            if witness_samples:
+                followup_results = self.debate.run_debate_batch(
+                    self._build_debate_cases(witness_samples, results))
+                self._merge_debate_results(witness_samples, results, followup_results)
+            else:
+                self.debate.last_batch_timing = {}
+            for sample in followup_samples:
+                result = results[sample["index"]]
+                questions = result["mediation_plan"].get("verification_requests", [])
+                if questions:
+                    from engine.review_routing import new_semantic_questions
+                    previous_questions = result.get('debate_details', {}).get('tribunal_semantic_questions', {}).get('questions', [])
+                    questions = new_semantic_questions(questions, previous_questions)
+                    result.setdefault("debate_details", {})["tribunal_semantic_questions"] = {
+                        "questions": questions or previous_questions, "role": "tribunal_only",
+                        "new_resolving_check": bool(questions),
+                        "is_new_visual_evidence": False}
+
+            for key in ("vision_model_load_seconds", "language_model_load_seconds"):
+                load_totals["debate_" + key] += self.debate.last_batch_timing.get(key, 0.0)
+            ready = []
+            for sample in followup_samples:
+                result = results[sample["index"]]
+                changed = deliberation_signature(result) != previous_evidence[sample["index"]]
+                semantic_requested = bool(result.get("debate_details", {}).get("tribunal_semantic_questions", {}).get('new_resolving_check'))
+                result["judge"]["tribunal_session"].setdefault("hearing_transitions", []).append({
+                    "round": 2, "before": previous_evidence[sample["index"]],
+                    "after": deliberation_signature(result), "reconsidered": changed or semantic_requested,
+                    "repair_reasons": list((result["judge"].get("verification_followup_plan") or {}).get("repair_reasons", [])),
+                    "agent2_response": result.get("debate_details", {}).get("agent2_critique", {})})
+                if changed or semantic_requested:
+                    ready.append(sample)
+                else:
+                    result["judge"]["tribunal_session"].update(
+                        state="PRESERVED", stop_reason="no_new_admissible_evidence")
+            load_totals["judge_model_load_seconds"] += self._run_tribunal_review_round(ready, results, 2)
+        return load_totals
 
     def run_samples(self, samples, on_result):
         if getattr(self, "tribunal_precedents", None):
@@ -569,9 +704,12 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             "evidence_verifier_model_load_seconds": 0.0,
             "judge_model_load_seconds": 0.0,
         }
+        run_counts = dict(judge_requested_samples=0, judge_accepted_revisions=0,
+                          mediated_tiebreak_revisions=0, feedback_matched_samples=0)
         # Calibrated memory is collected only after inference. Verified memory
         # is immutable and matched per case, so results do not depend on sample order.
-        batches = [samples]
+        from engine.bounded_batches import decoded_batches
+        batches = decoded_batches(samples, getattr(self, 'batch_size', 32))
         for batch_index, batch in enumerate(batches, start=1):
             context = self._feedback_context(batch_index)
             visual_outputs = {}
@@ -1116,51 +1254,8 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 )
                 load_totals["judge_model_load_seconds"] += tribunal_load
 
-                # Follow-up is an actual new witness hearing, only on explicit
-                # unresolved questions. No forced opposing answer is fabricated.
-                followup_samples = []
-                previous_evidence = {}
-                from engine.deliberation import deliberation_signature
-                for sample in tribunal_candidates:
-                    if self.debate_mode == "disabled":
-                        continue
-                    result = results[sample["index"]]
-                    judge = result.get("judge", {})
-                    if judge.get("tribunal_session", {}).get("state") != "FOLLOW_UP_REQUIRED":
-                        continue
-                    review = (judge.get("tribunal_reviews") or [{}])[-1]
-                    plan = judge.get("verification_followup_plan") or followup_plan(review, result.get("comparison", {}))
-                    if not plan.get("_usable"):
-                        judge["tribunal_session"].update(
-                            state="PRESERVED", stop_reason="no_actionable_followup")
-                        continue
-                    previous_evidence[sample["index"]] = deliberation_signature(result)
-                    plan["hearing_round"] = 2
-                    result["mediation_plan"] = plan
-                    result["force_visual_review"] = bool(plan.get("agent1_questions"))
-                    result["tribunal_hearing"] = True
-                    followup_samples.append(sample)
-                if followup_samples:
-                    followup_results = self.debate.run_debate_batch(
-                        self._build_debate_cases(followup_samples, results))
-                    self._merge_debate_results(followup_samples, results, followup_results)
-                    for key in ("vision_model_load_seconds", "language_model_load_seconds"):
-                        load_totals["debate_" + key] += self.debate.last_batch_timing.get(key, 0.0)
-                    ready = []
-                    for sample in followup_samples:
-                        result = results[sample["index"]]
-                        changed = deliberation_signature(result) != previous_evidence[sample["index"]]
-                        result["judge"]["tribunal_session"].setdefault("hearing_transitions", []).append({
-                            "round": 2, "before": previous_evidence[sample["index"]],
-                            "after": deliberation_signature(result), "reconsidered": changed,
-                            "repair_reasons": list((result["judge"].get("verification_followup_plan") or {}).get("repair_reasons", [])),
-                            "agent2_response": result.get("debate_details", {}).get("agent2_critique", {})})
-                        if changed:
-                            ready.append(sample)
-                        else:
-                            result["judge"]["tribunal_session"].update(
-                                state="PRESERVED", stop_reason="no_new_admissible_evidence")
-                    load_totals["judge_model_load_seconds"] += self._run_tribunal_review_round(ready, results, 2)
+                for key, value in self._run_tribunal_followups(tribunal_candidates, results).items():
+                    load_totals[key] += value
 
             if self.judge_mode in {"shadow", "appellate"}:
                 judge_candidates = []
@@ -1251,10 +1346,17 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 from engine.final_artifact import final_artifact
                 result["final_artifact"] = final_artifact(sample["caption"], result)
                 result["runtime_accounting"] = sample_accounting(sample.get("raw", {}).get("id", sample["index"]))
+                self.stage_checkpoints.save('final_result', sample, result)
                 on_result(
                     sample["index"], sample["raw"], result,
                     result["timing"]["sample_inference_seconds"],
                 )
+                judge = result.get('judge', {})
+                review_key = 'tribunal_resolution' if self.judge_mode == 'tribunal' else 'mediation_review' if self.judge_mode == 'mediated' else 'appellate_review'
+                run_counts['judge_requested_samples'] += bool(judge.get('requested'))
+                run_counts['judge_accepted_revisions'] += bool(judge.get(review_key, {}).get('accepted'))
+                run_counts['mediated_tiebreak_revisions'] += str(judge.get('mediation_review', {}).get('reason', '')).startswith('accepted_mediated_verified_tiebreak:')
+                run_counts['feedback_matched_samples'] += bool(result.get('feedback', {}).get('matched_rule_ids'))
 
         self.run_timing = {
             **{key: round(value, 4) for key, value in load_totals.items()},
@@ -1263,34 +1365,6 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             "evidence_mode": self.evidence_mode,
             "judge_mode": self.judge_mode,
             "judge_scope": self.judge_scope,
-            "judge_requested_samples": sum(
-                bool(result.get("judge", {}).get("requested"))
-                for result in results.values()
-            ),
-            "judge_accepted_revisions": sum(
-                bool(
-                    (
-                        result.get("judge", {}).get(
-                            "tribunal_resolution", {}
-                        )
-                        if self.judge_mode == "tribunal"
-                        else result.get("judge", {}).get(
-                            "mediation_review", {}
-                        )
-                        if self.judge_mode == "mediated"
-                        else result.get("judge", {}).get("appellate_review", {})
-                    ).get("accepted")
-                )
-                for result in results.values()
-            ),
-            "mediated_tiebreak_revisions": sum(
-                str(
-                    result.get("judge", {})
-                    .get("mediation_review", {})
-                    .get("reason", "")
-                ).startswith("accepted_mediated_verified_tiebreak:")
-                for result in results.values()
-            ),
             "feedback_updates": sum(
                 event.get("update_applied", False)
                 for event in self.feedback_events
@@ -1300,13 +1374,10 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                 event.get("candidate_recorded", False)
                 for event in self.feedback_events
             ),
-            "feedback_matched_samples": sum(
-                bool(result.get("feedback", {}).get("matched_rule_ids"))
-                for result in results.values()
-            ),
             "wall_clock_seconds": round(time.time() - run_started, 4),
         }
         self.run_timing["stage_reuse_events"] = deepcopy(self.stage_checkpoints.reuse_events)
+        self.run_timing.update(run_counts, batch_size=getattr(self, 'batch_size', 32))
         return self.run_timing
 
     def export_feedback_examples(self):

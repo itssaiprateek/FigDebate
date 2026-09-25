@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,8 @@ class RuntimeProfile:
     judge_release_prefill_workspace: bool = False
     judge_verification_reserve_seconds: float = 120.0
     judge_compact_json: bool = True
+    judge_source_spans: bool = True
+    judge_adaptive_budget: bool = True
 
     def as_dict(self):
         payload = asdict(self)
@@ -54,6 +56,11 @@ PROFILES = {
         (3_500_000, 2_359_296, 1_048_576),
     ),
 }
+
+# New semantic behavior requires explicit qualification. Hardware, initial
+# inference budgets and resolution match paper-8gb; only the review changes.
+PROFILES['paper-8gb-review5'] = replace(PROFILES['paper-8gb'],
+    name='paper-8gb-review5', tribunal_protocol='evidence-review-5.0')
 
 
 def detected_vram_gb():

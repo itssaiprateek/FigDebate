@@ -42,7 +42,15 @@ def main():
     parser.add_argument("--sample-ids", nargs="+", required=True)
     parser.add_argument("--code-root", default=str(Path(__file__).resolve().parents[1]))
     parser.add_argument("--precedents")
+    parser.add_argument("--diagnostic-guidance-file", help="Oracle-informed interpretation for a single diagnostic case; never accuracy evidence")
     args = parser.parse_args()
+    guidance = Path(args.diagnostic_guidance_file).read_text(encoding="utf-8") if args.diagnostic_guidance_file else None
+    guidance_by_id = json.loads(guidance) if guidance and guidance.lstrip().startswith('{') else None
+    if guidance_by_id is not None:
+        if not isinstance(guidance_by_id, dict) or set(guidance_by_id) != set(args.sample_ids) or any(not isinstance(v, str) or len(v)>4000 for v in guidance_by_id.values()):
+            raise ValueError('Guidance must map each selected diagnostic ID to bounded text')
+    elif guidance and (len(args.sample_ids) != 1 or len(guidance) > 4000):
+        raise ValueError("Diagnostic guidance requires one case and at most 4000 characters")
     if len(args.sample_ids) > 6 or len(set(args.sample_ids)) != len(args.sample_ids):
         raise ValueError("Use one to six unique cases for a targeted check")
     sys.path.insert(0, str(Path(args.code_root).resolve()))
@@ -53,23 +61,24 @@ def main():
     from engine.runtime_accounting import begin_accounting, sample_accounting
     from engine.tribunal import apply_tribunal_resolution
     from run_figdebate import pipeline_source_checksum
-
     target = Path(args.output)
     target.mkdir(parents=True, exist_ok=False)
     source = Path(args.source_run)
     config = json.loads((source / "run_config.json").read_text())
     saved = {}
+    identities = {}
     for f in (source / "stage_checkpoints").glob("tribunal_round_1_*.json"):
         c = json.loads(f.read_text(encoding="utf-8"))
         if c["sample_id"] in args.sample_ids:
             saved[c["sample_id"]] = frozen_input(c)
+            identities[c['sample_id']] = c['input_identity']
     if set(saved) != set(args.sample_ids):
         raise ValueError("Missing saved first-review inputs")
     data = {r["id"]: r for r in load_split(config["dataset"]) if r["id"] in saved}
     recorded = {r["id"]: r for r in map(json.loads, (source / "records.jsonl").read_text(encoding="utf-8").splitlines())}
     for key, raw in data.items():
-        if (recorded[key]["image_sha256"] != raw["image_sha256"] or
-                recorded[key]["caption_sha256"] != hashlib.sha256(raw["caption"].encode()).hexdigest()):
+        from engine.stage_checkpoint import StageCheckpointStore
+        if identities[key] != StageCheckpointStore.input_identity({'raw':raw,'caption':raw['caption']}):
             raise ValueError("Saved hearing and current image/caption identity differ")
     library = None
     if args.precedents:
@@ -82,14 +91,23 @@ def main():
         "pipeline_source_sha256": pipeline_source_checksum(),
         "frozen_input_sha256": {k: digest(v) for k, v in saved.items()},
         "precedent_sha256": library.sha256 if library else None,
+        "diagnostic_guidance": guidance,
+        "oracle_informed_intervention": bool(guidance),
+        "guidance_is_visual_evidence": False,
         "seed": config.get("seed", 42), "max_rounds": 1,
         "excluded_stages": ["initial_arbiter", "new_witness_hearing", "second_tribunal_round"]}, indent=2), encoding="utf-8")
     begin_accounting()
     started = time.perf_counter()
+    frozen_hashes={k:digest(v) for k,v in saved.items()}
     runtime = QwenJudgeModel(hardware_profile="paper-8gb")
     agent = TribunalMediatorAgent(runtime)
     for sample_id in args.sample_ids:
         raw, state = data[sample_id], deepcopy(saved[sample_id])
+        if guidance:
+            state["debate_details"]["tribunal_semantic_questions"] = {
+                "questions": [guidance_by_id[sample_id] if guidance_by_id else guidance], "role": "tribunal_only",
+                "is_new_visual_evidence": False,
+                "origin": "human_supplied_oracle_informed_diagnostic_interpretation"}
         seed_stage(config.get("seed", 42), sample_id, "tribunal_review", 1)
         kwargs = {k: state[k] for k in ("visual_output", "language_output", "comparison", "evidence_ledger", "debate_details", "pre_hearing")}
         if library:
@@ -104,7 +122,7 @@ def main():
             agent2_requirements_valid=debate.get("agent2_requirements_valid", True),
             agent1_critique=debate.get("agent1_critique", {}), agent2_critique=debate.get("agent2_critique", {}),
             semantic_bridge_mode="corroborated", language_output=state["language_output"], **gate_kwargs)
-        record = {"id": sample_id, "frozen_input_sha256": digest(saved[sample_id]),
+        record = {"id": sample_id, "frozen_input_sha256": frozen_hashes[sample_id],
                   "initial": state["decision"]["label"], "final": decision["label"],
                   "review": review, "resolution": resolution,
                   "accounting": sample_accounting(sample_id), "wall_seconds": time.perf_counter() - started}
