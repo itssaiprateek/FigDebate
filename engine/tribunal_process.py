@@ -25,6 +25,10 @@ def audit_inconsistency(call, relation):
     """Field incompatibilities only; agreeing labels never establish truth."""
     if not call or call.get('_format_valid') is False:
         return ''
+    if call.get('_focused_audit_protocol'):
+        from engine.semantic_protocol import audit_error
+        error = audit_error(call)
+        return error['message'] if error else ''
     status = call.get('alternative_status')
     alternative = str(call.get('alternative') or '').strip()
     direction = call.get('alternative_relation')

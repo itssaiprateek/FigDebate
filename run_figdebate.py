@@ -292,9 +292,11 @@ def parse_args():
         help="Opt-in V5 tribunal-only repair, independent of feedback; at most one semantic follow-up.",
     )
     parser.add_argument(
-        "--tribunal-audit-mode", choices=("baseline", "process-audit-1"), default="baseline",
-        help="Opt-in unqualified source-bound process audit; requires the explicit review5 profile.",
+        "--tribunal-audit-mode", choices=("baseline", "process-audit-1", "aligned-reading-1", "focused-audit-1"), default="baseline",
+        help="Experimental process/aligned/focused audit; baseline remains default. Requires the explicit review5 profile.",
     )
+    parser.add_argument("--reasoning-mode", choices=("baseline", "completion", "grounded"), default=None,
+                        help="Initial assessment mode: stagewise defaults to completion; sequential execution defaults to baseline. Grounded is experimental.")
     parser.add_argument(
         "--verified-feedback-file",
         help="Frozen JSON feedback library; required in verified and precedent modes.",
@@ -334,7 +336,10 @@ def parse_args():
             "debate router did not select them."
         ),
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.reasoning_mode is None:
+        args.reasoning_mode = "completion" if args.execution_mode == "stagewise" else "baseline"
+    return args
 
 
 def set_reproducibility(seed):
@@ -1444,6 +1449,8 @@ def main():
     from engine.runtime_profile import resolve_runtime_profile
     hardware_profile = resolve_runtime_profile(args.hardware_profile)
     from engine.tribunal_repair import validate_options
+    if args.reasoning_mode != "baseline" and args.execution_mode != "stagewise":
+        raise ValueError("Reasoning modes require stagewise execution")
     validate_options(args.tribunal_repair_mode, args.tribunal_audit_mode, args.judge_mode,
                      args.debate_mode, hardware_profile.tribunal_protocol, args.feedback_mode)
     if (args.tribunal_repair_mode != 'disabled' or args.tribunal_audit_mode != 'baseline') and args.execution_mode != 'stagewise':
@@ -1554,10 +1561,12 @@ def main():
             "control": args.control_mode,
             "tribunal_repair": args.tribunal_repair_mode,
             "tribunal_audit": args.tribunal_audit_mode,
+            "reasoning": args.reasoning_mode,
         },
         "feedback_enabled": args.feedback_mode != "disabled",
         "tribunal_repair_mode": args.tribunal_repair_mode,
         "tribunal_audit_mode": args.tribunal_audit_mode,
+        "reasoning_mode": args.reasoning_mode,
         "feedback_mode": args.feedback_mode,
         "verified_feedback_file": args.verified_feedback_file,
         "verified_feedback_sha256": file_checksum(args.verified_feedback_file),
@@ -1698,6 +1707,7 @@ def main():
                 batch_size=args.batch_size,
                 tribunal_repair_mode=args.tribunal_repair_mode,
                 tribunal_audit_mode=args.tribunal_audit_mode,
+                reasoning_mode=args.reasoning_mode,
                 feedback_mode=args.feedback_mode,
                 feedback_log_path=os.path.join(run_dir, "feedback_log.json"),
                 verified_feedback_path=args.verified_feedback_file,

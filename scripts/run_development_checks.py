@@ -32,7 +32,7 @@ def main():
         '--judge-mode', 'tribunal', '--judge-scope', 'all', '--feedback-mode', 'disabled',
         '--debate-mode', 'enabled', '--evidence-mode', 'enabled', '--candidate-mode', 'independent',
         '--semantic-bridge-mode', 'corroborated', '--tribunal-repair-mode', 'bounded',
-        '--tribunal-audit-mode', 'baseline', '--run-dir', str(output.resolve())]
+        '--tribunal-audit-mode', 'baseline', '--reasoning-mode', 'completion', '--run-dir', str(output.resolve())]
     if args.selection_only:
         sys.argv.append('--selection-only')
     runpy.run_path(sys.argv[0], run_name='__main__')

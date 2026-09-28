@@ -35,6 +35,8 @@ def final_artifact(caption, result):
               "baseline_retained_after_review" if judge.get("requested") else
               "base_pipeline")
     reason = str(decision.get("explanation") or "")
+    from engine.reasoning_contract import final_explanation_status
+    explanation_status = final_explanation_status(reason, decision)
     artifact = {
         "schema_version": "3.0", "source_caption": caption,
         "claim_graph": deepcopy((result.get("language_output") or {}).get("claim_graph")),
@@ -56,6 +58,8 @@ def final_artifact(caption, result):
         "citation_semantics_status": "model_checked_not_human_validated" if changed else "not_established_by_tribunal",
         "final_label": decision.get("label"), "decision_origin": origin,
         "confidence": decision.get("confidence"), "confidence_is_calibrated": False,
+        "explanation_completeness": explanation_status,
+        "semantic_relation_status": relation if changed or resolution.get("confirmation_valid") else decision.get("_semantic_relation_status", decision.get("_relation_status", "UNKNOWN")),
         "accepted_reason": reason, "cited_evidence": cited,
         "supporting_ancestors": ancestors,
         "directional_evidence_ids": directional,

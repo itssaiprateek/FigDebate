@@ -448,6 +448,14 @@ def apply_tribunal_resolution(
         if metadata["confirmation_valid"]:
             metadata['terminal_outcome'] = 'VERIFIED_CONCLUSION'
             current_decision = deepcopy(current_decision)
+            current_decision["_semantic_relation_status"] = RELATION_FOR_LABEL[proposed_label]
+            current_decision["_binary_label_is_unverified"] = False
+            if current_decision.get("_explanation_generation_failed"):
+                current_decision["_previous_incomplete_explanation"] = current_decision.get("explanation", "")
+                current_decision.update(explanation=review.get("reason", ""),
+                    _explanation_generation_failed=False, _reasoning_execution_status="SUCCEEDED",
+                    _explanation_repaired_by="tribunal_confirmation")
+                metadata["explanation_replaced"] = True
             current_decision["_model_cited_evidence_ids"] = cited_ids
             current_decision = attach_evidence_audit(current_decision, verified_ledger)
             current_decision = attach_final_review(current_decision, verified_ledger, contract)
@@ -547,6 +555,10 @@ def apply_tribunal_resolution(
         "label": proposed_label,
         "confidence": min(review_confidence, 0.85),
         "decision_method": "bounded_multimodal_tribunal",
+        "_semantic_relation_status": relation,
+        "_binary_label_is_unverified": False,
+        "_explanation_generation_failed": False,
+        "_reasoning_execution_status": "SUCCEEDED",
         "explanation": review.get("reason", ""),
         "_model_cited_evidence_ids": verified_ids,
         "_final_decision_valid": True,

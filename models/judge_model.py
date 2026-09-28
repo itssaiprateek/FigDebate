@@ -36,7 +36,8 @@ def default_judge_model_path():
 class QwenJudgeModel:
     """Load the independent multimodal judge locally in deterministic 4-bit mode."""
 
-    def __init__(self, model_path=None, hardware_profile="8gb"):
+    def __init__(self, model_path=None, hardware_profile="8gb", *, grounded_interpretation=False):
+        self.grounded_interpretation = grounded_interpretation
         try:
             import torch
             from transformers import (

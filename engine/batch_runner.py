@@ -66,6 +66,7 @@ class StagewiseRunner:
         batch_size=32,
         tribunal_repair_mode="disabled",
         tribunal_audit_mode="baseline",
+        reasoning_mode="baseline",
     ):
         if feedback_mode not in {"disabled", "collect", "calibrate", "verified", "precedent", "integrated"}:
             raise ValueError(f"Unknown feedback mode: {feedback_mode}")
@@ -101,6 +102,9 @@ class StagewiseRunner:
                          debate_mode, self.hardware_profile.tribunal_protocol, feedback_mode)
         self.tribunal_repair_mode = tribunal_repair_mode
         self.tribunal_audit_mode = tribunal_audit_mode
+        if reasoning_mode not in {"baseline", "completion", "grounded"}:
+            raise ValueError("Unknown reasoning mode")
+        self.reasoning_mode = reasoning_mode
         if feedback_mode == 'integrated' and (judge_mode != 'tribunal' or debate_mode == 'disabled'):
             raise ValueError('Integrated repair requires tribunal mode and enabled hearings')
         if feedback_mode == 'integrated' and self.hardware_profile.tribunal_protocol != 'evidence-review-5.0':
@@ -800,6 +804,8 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     nli_verifier=(
                         evidence_verifier.nli if evidence_verifier else None
                     ),
+                    completion_checks=getattr(self, "reasoning_mode", "baseline") != "baseline",
+                    grounded_interpretation=getattr(self, "reasoning_mode", "baseline") == "grounded",
                 )
                 for sample in batch:
                     cached = self.stage_checkpoints.load("initial_reasoning", sample)

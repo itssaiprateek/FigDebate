@@ -32,7 +32,7 @@ python scripts/run_development_checks.py --run-dir outputs/development_check
 
 The directory must be new. This runs ten selected training examples with seed
 42, stagewise execution, `paper-8gb-review5`, tribunal scope `all`, independent
-candidates, corroborated bridges, bounded repair, baseline audit and feedback
+candidates, corroborated bridges, bounded repair, baseline audit, completion-checked initial reasoning and feedback
 disabled. It does not prove held-out accuracy. A full dataset run is a separate
 team decision, not part of the cleanup checks.
 
@@ -40,6 +40,22 @@ For other cohorts, use `run_figdebate.py --help` and state all relevant modes.
 Use the same manifest, images, captions, seed, model revisions and budgets for a
 paired comparison, and always include `--feedback-mode disabled`. A code change
 requires a new run; do not resume a pre-OCR run with the changed source.
+
+## Reasoning and audit modes
+
+Normal stagewise runs default to `--reasoning-mode completion`: complete the
+initial explanation within a bounded allowance and report failure explicitly.
+Use `--reasoning-mode baseline` for a controlled comparison with the earlier
+112-token initial assessment. Sequential execution retains baseline behavior.
+This improves delivery reliability; it does not certify the explanation's meaning.
+
+`--reasoning-mode grounded`, `--tribunal-audit-mode aligned-reading-1`, and
+`--tribunal-audit-mode focused-audit-1` are implemented experiments. Their selected
+case results were mixed, so the audit default remains `baseline`. Experimental
+audit modes require `paper-8gb-review5`, tribunal judging, enabled debate and
+`--feedback-mode disabled`. They add no judge model. See the
+[implementation and qualification report](semantic_protocol_implementation_20260928.md)
+for the actual code adaptations, results, source snapshots and limits.
 
 ## Results and reasoning evaluation
 

@@ -29,7 +29,13 @@ image faithfulness and human-reference reasoning coverage separately. Review
 participants, polarity, modality, comparisons and the figurative connection.
 The metric must never be used alone as a semantic acceptance criterion.
 
-For this qualification, the local launcher in
-`research/adoption_20260924/score_run.py` uses the restored runtime and installed
-optional dependencies. See the qualification report for the tested environment
-and the limits of the bounded sample.
+The historical `research/adoption_20260924/score_run.py` launcher is not shipped
+in the current checkout. Use the public module command above. Optional scoring
+weights must be available locally; pipeline setup does not imply that the
+optional explanation metric has been installed or run.
+
+The 2026-09-28 initial-stage qualification exports one
+`similarity_input_<variant>.jsonl` per variant for this evaluator. Keep the same
+metric configuration across variants. Its separate `reference_reasoning_review.json`
+records an assistant's post-inference comparison with the images and references;
+it is not BERTScore and is not an independent human study.

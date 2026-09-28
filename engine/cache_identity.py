@@ -56,6 +56,7 @@ def stage_fingerprints(root, config):
     base = hashlib.sha256(json.dumps(dict(common,
         pipeline=config.get("pipeline_source_sha256"),
         evidence=config.get("evidence_mode"), feedback=config.get("feedback_mode"),
+        reasoning=config.get("reasoning_mode", "baseline"),
         feedback_file=config.get("verified_feedback_sha256")), sort_keys=True).encode()).hexdigest()
     full = hashlib.sha256(json.dumps(dict(common, base=base,
         ablation=config.get("ablation_signature")), sort_keys=True).encode()).hexdigest()

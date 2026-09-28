@@ -38,12 +38,14 @@ Reasoning: one sentence citing [VISUAL], [CAPTION], or [COMPARATOR].
     FALLBACK_CONFIDENCE_CAP = 0.49
 
 
-    def __init__(self, mistral_model, tokenizer, nli_verifier=None):
+    def __init__(self, mistral_model, tokenizer, nli_verifier=None, *, completion_checks=False, grounded_interpretation=False):
         if torch is None:
             raise RuntimeError(
                 "The Arbiter requires PyTorch. Run check_environment.py."
             )
 
+        self.completion_checks = completion_checks
+        self.grounded_interpretation = grounded_interpretation
         self.model = mistral_model
         self.tokenizer = tokenizer
         self._nli_verifier = nli_verifier
@@ -718,19 +720,31 @@ Confidence:
 """
 
     @record_generation("Mistral-7B-arbiter")
-    def _generate_response(self, prompt, max_new_tokens):
+    def _generate_response(self, prompt, max_new_tokens, output_schema=None):
         """Generate one response and return its text with generation time."""
         inputs = self.tokenizer(
             prompt,
             return_tensors="pt",
             max_length=2048,
-            truncation=True,
+            truncation=not getattr(self, "completion_checks", False),
         ).to(self.model.device)
+        if getattr(self, "completion_checks", False) and inputs["input_ids"].shape[1] > 2048:
+            self._last_generation_diagnostics = {"input_truncated": True, "finish_reason": "input_budget_exceeded"}
+            raise RuntimeError("Complete initial assessment inputs exceed the supported context budget")
 
+        generation_options = {}
+        if output_schema is not None:
+            from engine.structured_decoder import prefix_constraint
+            generation_options["prefix_allowed_tokens_fn"] = prefix_constraint(self.tokenizer, output_schema, compact=True)
+            from transformers import StoppingCriteriaList
+            from engine.output_contracts import complete_json_stopper
+            generation_options["stopping_criteria"] = StoppingCriteriaList([
+                complete_json_stopper(self.tokenizer, int(inputs["input_ids"].shape[1]), output_schema)])
         start = time.time()
         with torch.inference_mode():
             output = self.model.generate(
                 **inputs,
+                **generation_options,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,
                 repetition_penalty=1.05,
@@ -743,6 +757,12 @@ Confidence:
         self._last_generation_diagnostics = {
             "input_tokens": int(inputs["input_ids"].shape[1]),
             "generated_tokens": int(generated.shape[-1]),
+            "max_new_tokens": max_new_tokens,
+            "decoder": "llguidance" if output_schema is not None else "unconstrained",
+            "ended_with_eos": bool(generated.shape[-1] and generated[0, -1].item() == self.tokenizer.eos_token_id),
+            "hit_token_limit": bool(generated.shape[-1] >= max_new_tokens and generated[0, -1].item() != self.tokenizer.eos_token_id),
+            "finish_reason": "eos" if generated.shape[-1] and generated[0, -1].item() == self.tokenizer.eos_token_id else "length_or_other",
+
         }
         response = self.tokenizer.decode(
             generated[0],
@@ -987,6 +1007,9 @@ Reason:
             else:
                 visual_summary = f"{targeted_review}\n{visual_summary}"
         language_summary = self._summarize_language(language_understanding)
+        if getattr(self, "grounded_interpretation", False):
+            from engine.reasoning_contract import grounded_language_summary
+            language_summary = grounded_language_summary(language_understanding)
         comparison_summary = self._summarize_comparison(comparison)
         feedback_section = (
             "Calibrated error-avoidance guidance:\n"
@@ -1146,15 +1169,57 @@ Binary completion rule before writing the answer:
         citation_retry_response = ""
         citation_retry_seconds = 0.0
         citation_retry_used = False
-        try:
-            assessment, assessment_seconds = self._generate_response(
-                assessment_prompt, max_new_tokens=112
-            )
-        except RuntimeError as error:
-            print(f"[Arbiter WARNING] Evidence assessment failed: {error}")
+        from engine.reasoning_contract import RULES, completion_status, assessment_schema, render_assessment
+        import json
+        grounded = getattr(self, "grounded_interpretation", False)
+        check_completion = getattr(self, "completion_checks", False)
+        output_schema = None
+        if grounded:
+            catalog = comparison.get("grounded_evidence_catalog", []) or []
+            from engine.semantic_protocol import RULES as ALIGNED_RULES
+            output_schema = assessment_schema({x["id"] for x in catalog if x.get("id")})
+            assessment_prompt = assessment_prompt.replace("Compare the observed image evidence with the caption's intended meaning.", "Compare the observed image evidence with the original source assertion.")
+            assessment_prompt = assessment_prompt[:assessment_prompt.index("Return exactly four concise lines.")] + ALIGNED_RULES + (
+                "\nReturn compact JSON. The source expression and cited observation text are copied by software; "
+                "do not repeat them. Give referent and property as short phrases, meaning and reason as one short "
+                "complete sentence each. In reason test the stated property against the observations, not the literal "
+                "physical identity of a metaphor source. If the property or referent cannot be identified, use "
+                "UNRESOLVED. Schema: " + json.dumps(output_schema) + " [/INST]")
+        attempts = []
+        assessment_completion = {"complete": False, "issues": ["generation_failed"], "fields": {}}
+        for attempt in range(2 if check_completion else 1):
+            attempt_prompt = assessment_prompt
+            if attempt:
+                attempt_prompt = assessment_prompt.replace("[/INST]", "The previous response failed these requirements: " + "; ".join(assessment_completion["issues"]) + ". Rewrite from the same evidence, at most 120 words total. Use short field values and finish the relation explanation. [/INST]")
+            try:
+                wire_text, seconds = self._generate_response(attempt_prompt, max_new_tokens=256 if check_completion else 112,
+                                                              **({"output_schema": output_schema} if output_schema else {}))
+                assessment = wire_text
+                parse_error = ""
+                if grounded:
+                    try:
+                        assessment = render_assessment(wire_text, caption, catalog)
+                    except (ValueError, TypeError, KeyError) as error:
+                        parse_error = str(error)
+                assessment_seconds += seconds
+                diagnostics = dict(getattr(self, "_last_generation_diagnostics", {}))
+                assessment_completion = completion_status(assessment, diagnostics, grounded=grounded, source=caption)
+                if parse_error:
+                    assessment_completion["complete"] = False
+                    assessment_completion["issues"].append("invalid_structured_assessment")
+                attempts.append({"text": assessment, "wire_text": wire_text, "parse_error": parse_error,
+                                 "diagnostics": diagnostics, "completion": assessment_completion})
+            except RuntimeError as error:
+                attempts.append({"error": str(error)})
+            if not check_completion or assessment_completion["complete"]:
+                break
+        if check_completion and not assessment_completion["complete"]:
+            # Never score a cut-off argument or conceal it by appending punctuation.
+            assessment = "The evidence assessment could not be completed within the bounded generation budget. The semantic relation remains unresolved."
         cited_evidence_ids = self._resolve_evidence_ids(assessment, comparison)
         if (
             not cited_evidence_ids
+            and (not check_completion or assessment_completion["complete"])
             and comparison.get("grounded_evidence_catalog")
         ):
             citation_retry_used = True
@@ -1205,9 +1270,20 @@ Binary completion rule before writing the answer:
                 cited_evidence_ids = list(verified_ids)
                 confidence = max(confidence, 0.72)
                 decision_method = "verified_relation_arbitration"
+            elif grounded and assessment_completion["complete"]:
+                canonical = assessment_completion.get("fields", {}).get("Relation Status")
+                if canonical in {"SUPPORT", "CONFLICT"}:
+                    label = {"SUPPORT": "ENTAILS", "CONFLICT": "CONTRADICTS"}[canonical]
+                    decision_method = "structured_relation"
+                    if label != semantic_scored_label:
+                        confidence = min(confidence, 0.35)
             relation_status, deficiencies = self._relation_status(
                 label, assessment, comparison, cited_evidence_ids
             )
+            assessment_relation = assessment_completion.get("fields", {}).get("Relation Status")
+            if (check_completion and not assessment_completion["complete"]) or (grounded and assessment_relation == "UNRESOLVED"):
+                relation_status = "INSUFFICIENT"
+                deficiencies = list(dict.fromkeys(list(deficiencies) + ["UNRESOLVED_ASSESSMENT"]))
             unconstrained_label = semantic_scored_label
             revision_status = "DIRECTIONAL_PROPOSAL"
             if relation_status == "INSUFFICIENT":
@@ -1231,6 +1307,14 @@ Binary completion rule before writing the answer:
                 "confidence": confidence,
                 "debate_needed": confidence < self.CONFIDENCE_THRESHOLD,
                 "decision_method": decision_method,
+                "_assessment_attempts": attempts,
+                "_assessment_completion": assessment_completion,
+                "_interpretation_hypothesis": assessment_completion.get("fields", {}) if grounded else {},
+                "_semantic_relation_status": assessment_relation or "UNRESOLVED",
+                "_binary_label_is_unverified": relation_status == "INSUFFICIENT",
+                "_explanation_generation_failed": bool(check_completion and not assessment_completion["complete"]),
+                "_reasoning_execution_status": ("INCOMPLETE" if check_completion and not assessment_completion["complete"] else "SUCCEEDED"),
+
                 "evidence_sources": {
                     "visual_support": "visual_grounding_or_comparator",
                     "contradictions": "visual_grounding_or_comparator",
@@ -1277,7 +1361,8 @@ Binary completion rule before writing the answer:
             )
             return spec_output
 
-        response, elapsed = self._generate_response(prompt, max_new_tokens=112)
+        response, elapsed = self._generate_response(prompt, max_new_tokens=256 if check_completion else 112)
+        fallback_diagnostics = dict(getattr(self, "_last_generation_diagnostics", {}))
 
         print(f"Generation Time : {elapsed:.2f} sec")
 
@@ -1287,6 +1372,10 @@ Binary completion rule before writing the answer:
 
         parsed = parse_arbiter_response(response)
         primary_output = self._to_spec_schema(parsed, response)
+        from engine.reasoning_contract import final_explanation_status
+        fallback_complete = final_explanation_status(primary_output.get("explanation", ""), {})
+        if check_completion and (fallback_diagnostics.get("hit_token_limit") or not fallback_complete["complete"]):
+            primary_output["_final_decision_valid"] = False
         primary_output["_retry_attempted"] = False
         primary_output["_retry_failed"] = False
         primary_output["_raw_primary_response"] = response
@@ -1310,10 +1399,13 @@ Binary completion rule before writing the answer:
                 comparison_summary,
                 debate_section,
             )
+            if check_completion:
+                retry_prompt = prompt.replace("[/INST]", "Write the required label and one complete grounded reasoning sentence. [/INST]")
             retry_response, retry_elapsed = self._generate_response(
                 retry_prompt,
-                max_new_tokens=32,
+                max_new_tokens=256 if check_completion else 32,
             )
+            fallback_diagnostics = dict(getattr(self, "_last_generation_diagnostics", {}))
             retry_parsed = parse_arbiter_response(retry_response)
             retry_output = self._to_spec_schema(retry_parsed, retry_response)
             retry_output["_retry_attempted"] = True
@@ -1394,5 +1486,14 @@ Binary completion rule before writing the answer:
                     f"CONTRADICTS={scores['CONTRADICTS']:.3f}."
                 )
 
+        if check_completion:
+            status = final_explanation_status(spec_output.get("explanation", ""), {})
+            if fallback_diagnostics.get("hit_token_limit") or not status["complete"]:
+                spec_output["_incomplete_fallback_explanation"] = spec_output.get("explanation", "")
+                spec_output["explanation"] = "A complete grounded explanation could not be generated. The binary answer remains unverified."
+                spec_output["confidence"] = min(spec_output.get("confidence", 0.0), 0.35)
+                spec_output["_semantic_relation_status"] = "UNRESOLVED"
+                spec_output["_binary_label_is_unverified"] = True
+                spec_output["_explanation_generation_failed"] = True
         spec_output["_primary_decision"] = primary_snapshot
         return spec_output

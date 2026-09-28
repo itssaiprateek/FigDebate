@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 
 from engine.evidence_ledger import is_admissible_evidence
 from engine.reasoning_schema import normalize_structural_type
@@ -148,6 +149,10 @@ def build_semantic_bridge(review, ledger, claim_contract, language_output=None):
         "verification_task": review.get('_verification_task', {}),
         "process_audit_version": review.get('_process_audit_version', ''),
         "independent_verification": review.get("_independent_verification", {}),
+        "grounded_reading_protocol": review.get("_grounded_reading_protocol"),
+        "semantic_alignment_protocol": review.get("_semantic_alignment_protocol"),
+        "reading": deepcopy((review.get("_compact_value") or {}).get("reading")),
+        "focused_audit_required": review.get("_focused_audit_required", False),
         "visual_premise": visual_premise,
         "visual_evidence_ids": visual_ids,
         "caption_premise": caption_premise,

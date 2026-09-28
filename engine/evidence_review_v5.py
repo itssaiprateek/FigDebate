@@ -116,6 +116,11 @@ def complete_audit_response(call):
     not invalid JSON, and must not be mistaken for execution failure. Never use
     this function to certify the audit's meaning or to authorize acceptance.
     """
+    if call.get('_focused_audit_protocol'):
+        from engine.semantic_protocol import audit_wire_complete
+        ids = set(call.get('evidence_ids') or [])
+        ids.update(i for objection in (call.get('objections') or []) for i in objection.get('evidence_ids', []))
+        return audit_wire_complete(call, ids)
     from engine.tribunal_process import challenge_schema
     schema = challenge_schema(CHALLENGE) if call.get('_process_audit_version') else CHALLENGE
     try:
@@ -170,6 +175,10 @@ def binding(proposal, ledger):
                     proposal.get('bridge_statement'), proposal.get('counter_interpretation'),
                     proposal.get('verification_task', {}), provenance,
                     proposal.get('interpreted_assertion', '')]
+    if proposal.get('semantic_alignment_protocol'):
+        data.extend([proposal['semantic_alignment_protocol'], proposal.get('reading'), proposal.get('focused_audit_required', False)])
+    if proposal.get('grounded_reading_protocol'):
+        data.append(proposal['grounded_reading_protocol'])
     if proposal.get('process_audit_version'):
         data.append(proposal['process_audit_version'])
     return _digest(data)
@@ -205,6 +214,9 @@ def selection_valid(value, records):
 
 
 def challenge_valid(value, known, relation):
+    if value.get('_focused_audit_protocol'):
+        from engine.semantic_protocol import audit_accepts
+        return audit_accepts(value, known)
     # Even NONE must identify the factual basis for dismissing alternatives.
     from engine.tribunal_process import audit_inconsistency
     return bool(core.challenge_valid(value, known, relation, CHALLENGE)
@@ -215,7 +227,12 @@ def challenge_valid(value, known, relation):
 
 def decision_valid(value, known, source):
     """Validate the exact generated judgment, including non-indexed transports."""
-    if value.get('_semantic_contract_valid') is False or not core.decision_valid(value, known, source, DECISION):
+    from engine import semantic_protocol as semantics
+    aligned = value.get("_semantic_alignment_protocol")
+    schema = semantics.reading_schema(DECISION) if aligned else DECISION
+    if aligned and (aligned != semantics.ALIGNMENT_VERSION or semantics.reading_error(value)):
+        return False
+    if value.get('_semantic_contract_valid') is False or not core.decision_valid(value, known, source, schema):
         return False
     # Indexed responses were already reconstructed and compared by the core
     # validator. Plain JSON must satisfy the same raw-to-record identity rule.
@@ -225,8 +242,8 @@ def decision_valid(value, known, source):
         raw = json.loads(value.get('_raw_output', ''))
     except (TypeError, ValueError):
         return False
-    return bool(validate_shape(raw, DECISION)
-                and all(raw[k] == value.get(k) for k in DECISION['required']))
+    return bool(validate_shape(raw, schema)
+                and all(raw[k] == value.get(k) for k in schema['required']))
 
 
 def citation_schema(schema, known):
@@ -294,9 +311,25 @@ def mapping_valid(call, known, source):
                 and call['bindings'] and not call['unmatched_roles'])
 
 
+def reading_valid(value, known, source):
+    from engine.reasoning_contract import VERSION as READING_VERSION, READING_SCHEMA, reading_error
+    schema = citation_schema(READING_SCHEMA, known)
+    if not core.payload_valid(value, schema):
+        return False
+    try:
+        raw = json.loads(value.get('_raw_output', ''))
+    except (TypeError, ValueError):
+        return False
+    return bool(validate_shape(raw, schema) and all(raw[k] == value.get(k) for k in schema['required'])
+                and not reading_error(value, source, known) and value['reading'] != 'UNRESOLVED')
+
+
 def verify(runtime, image, proposal, ledger):
     from engine.independent_review import image_subject_hash
     from engine import tribunal_process as process
+    from engine import semantic_protocol as semantics
+    aligned = proposal.get('semantic_alignment_protocol') == semantics.ALIGNMENT_VERSION
+    focused = aligned and proposal.get('focused_audit_required', False)
     process_mode = proposal.get('process_audit_version') == process.VERSION
     source = proposal.get('source_caption', '')
     records = catalog(ledger)
@@ -307,6 +340,10 @@ def verify(runtime, image, proposal, ledger):
         'model_error_independence_established': False}
     if process_mode:
         record['process_audit_version'] = process.VERSION
+
+    if aligned:
+        record['semantic_alignment_protocol'] = semantics.ALIGNMENT_VERSION
+        record['focused_audit_required'] = focused
 
     def finish(reason=None):
         if reason:
@@ -328,6 +365,8 @@ def verify(runtime, image, proposal, ledger):
     generate = core.obligation_runner(runtime, image, source, records, available, VERSION)
     task = proposal.get('verification_task') or {}
     def ask(name, instructions, payload, *args, **kwargs):
+        if aligned and name in {'mapping', 'relation', 'challenge'}:
+            instructions = semantics.RULES + instructions
         if process_mode:
             payload = dict(payload, task=process.task_record(source))
         stages = {'role_scope_mapping': {'mapping', 'relation', 'challenge'},
@@ -365,6 +404,20 @@ def verify(runtime, image, proposal, ledger):
     known = {x['evidence_id'] for x in visual['observations']}
     record['selected_evidence_ids'] = sorted(known)
     observations = [{k: v for k, v in x.items() if k != 'supported'} for x in visual['observations']]
+    reading = None
+    if proposal.get('grounded_reading_protocol'):
+        from engine.reasoning_contract import RULES, READING_SCHEMA, reading_error
+        reading = ask('grounded_reading', RULES +
+            ' Identify the source expression, observed referent, and asserted/transferred property. '
+            'Explain which selected observations license this reading. Do not give an entailment label. '
+            'A property can be asserted without being established: preserve it for the subsequent relation check. '
+            'UNRESOLVED means the intended comparison cannot be identified, not that the assertion is false.',
+            {'source_caption': source, 'observations': observations}, citation_schema(READING_SCHEMA, known), 256,
+            validator=lambda v: reading_error(v, source, known))
+        record['grounded_reading_protocol'] = proposal['grounded_reading_protocol']
+        record['obligations']['grounded_reading'] = reading
+        if not reading_valid(reading, known, source):
+            return finish('grounded_reading')
     mapping = ask('mapping',
         'Bind the caption participants to the observed participants. Give one concise binding per necessary '
         'role/scope, citing selected IDs. Quote the source caption exactly. Match subject, object, speaker, '
@@ -385,6 +438,10 @@ def verify(runtime, image, proposal, ledger):
     # The enclosing expression is immutable context, not a model-generated
     # quotation or an inferred premise. All modes need it, including baseline.
     case['complete_source_expression'] = source
+    if reading is not None:
+        from engine.reasoning_contract import READING_SCHEMA
+        case['reading_hypothesis'] = {k: reading[k] for k in READING_SCHEMA['required']}
+        case['reading_authority'] = 'fallible_mapping_not_observed_fact_or_relation_proof'
     if process_mode:
         # Carry a complete enclosing expression; never silently expand a model quote.
         case['complete_source_expressions'] = [
@@ -392,6 +449,10 @@ def verify(runtime, image, proposal, ledger):
              'role_scope': item['role_scope']} for item in mapping['bindings']]
 
     def decision_contract(value):
+        if aligned:
+            error = semantics.reading_error(value)
+            if error:
+                return {'kind': 'SEMANTIC_INCONSISTENCY', 'message': error}
         quotes = [x['caption_quote'] for x in value['condition_checks']] + value['unestablished_conditions']
         for quote in quotes:
             if not core.quotation(quote, source):
@@ -409,6 +470,7 @@ def verify(runtime, image, proposal, ledger):
             return {'kind': 'SEMANTIC_INCONSISTENCY', 'message': 'CONFLICT requires a positively incompatible condition'}
 
     decision = ask('relation',
+        (semantics.READING_INSTRUCTIONS if aligned else '') +
         'Decide the source-caption relation afresh from these observations and the full image. '
         'Compare the same subject, property and scope. In condition_checks quote necessary source '
         'conditions and give the actual image state. Evaluate both sides of comparisons and actual '
@@ -420,9 +482,16 @@ def verify(runtime, image, proposal, ledger):
         ' Failure to observe a property does not prove its opposite. Do not turn unknown intentions '
         'into observed facts. State which positive observation is incompatible with a CONFLICT condition. '
         'Grounded figurative inference is allowed; literal depiction of an idiom is not required.'
+        + (' If a reading_hypothesis is supplied, independently test its property and all qualifiers against pixels. '
+           'Reject unsupported mappings; accepting the referent does not establish the claimed property.' if reading is not None else '')
         + (' Check the complete_source_expressions, not only focused quotes. Retain negation, comparisons, '
-           'time and modality. Do not add historical requirements unless the decision depends on them.' if process_mode else ''),
-        case, citation_schema(DECISION, known), 384, validator=decision_contract)
+           'time and modality. Do not add historical requirements unless the decision depends on them.' if process_mode else '')
+        + (' Identify reading.kind, reading.referent and reading.property from the sources before assessing the relation. '
+           'The property is what the source asserts, not automatically what the image establishes.' if aligned else ''),
+        case, citation_schema(semantics.reading_schema(DECISION) if aligned else DECISION, known),
+        384, validator=decision_contract)
+    if aligned:
+        decision['_semantic_alignment_protocol'] = semantics.ALIGNMENT_VERSION
     if decision.get('condition_checks'):
         decisive = next((x for x in decision['condition_checks'] if x['relation'] == decision.get('relation')),
                         decision['condition_checks'][0])
@@ -430,6 +499,18 @@ def verify(runtime, image, proposal, ledger):
     record['calls'].append(decision)
     if not decision_valid(decision, known, source) or decision.get('relation') not in {'SUPPORT', 'CONFLICT'}:
         return finish('relation_direction')
+    if focused:
+        audit_case = dict(case,
+            decision={k: decision[k] for k in semantics.reading_schema(DECISION)['required']},
+            candidate={'assertion': proposal.get('interpreted_assertion', ''),
+                       'reading': proposal.get('reading'), 'relation': proposal.get('proposed_relation'),
+                       'reason': proposal.get('bridge_statement', '')})
+        challenge = ask('challenge', semantics.AUDIT_INSTRUCTIONS, audit_case,
+                        semantics.audit_schema(known), 384, validator=semantics.audit_error)
+        if all(k in challenge for k in semantics.audit_schema(known)['required']):
+            semantics.project_audit(challenge)
+        record['obligations']['arguments'] = challenge
+        return finish()
     challenge = ask('challenge',
         CHALLENGE_INSTRUCTIONS
         + (process.AUDIT_INSTRUCTIONS if process_mode else ''),
@@ -464,19 +545,34 @@ def audit(proposal, ledger):
     decision = calls[0] if len(calls) == 1 else {}
     decision_ok = decision_valid(decision, known, source) and condition_assessments_consistent(decision)
     agrees = decision_ok and relation in {'SUPPORT', 'CONFLICT'} and decision.get('relation') == relation
+    if proposal.get('semantic_alignment_protocol') or record.get('semantic_alignment_protocol'):
+        from engine import semantic_protocol as semantics
+        agrees = bool(agrees and proposal.get('semantic_alignment_protocol') == record.get('semantic_alignment_protocol')
+                      == decision.get('_semantic_alignment_protocol') == semantics.ALIGNMENT_VERSION
+                      and not semantics.reading_error({'reading': proposal.get('reading'), 'relation': relation})
+                      and proposal.get('focused_audit_required', False) == record.get('focused_audit_required', False))
     args = obligations.get('arguments', {})
     counter = challenge_valid(args, known, relation)
+    if proposal.get('focused_audit_required'):
+        from engine.semantic_protocol import AUDIT_VERSION
+        counter = bool(counter and args.get('_focused_audit_protocol') == AUDIT_VERSION)
     if proposal.get('process_audit_version') or record.get('process_audit_version') or args.get('process_checks'):
         from engine import tribunal_process as process
         counter = bool(counter and proposal.get('process_audit_version') == record.get('process_audit_version') == process.VERSION
                        and process.process_valid(args, CHALLENGE, known))
+    reading_ok = True
+    if proposal.get('grounded_reading_protocol') or record.get('grounded_reading_protocol'):
+        from engine.reasoning_contract import VERSION as READING_VERSION
+        reading_ok = (proposal.get('grounded_reading_protocol') == record.get('grounded_reading_protocol') == READING_VERSION
+                      and reading_valid(obligations.get('grounded_reading', {}), known, source))
     roots = [name for name, passed in (('case_binding', bound), ('caption_preservation', caption),
-        ('visual_grounding', visual_ok), ('entity_scope_mapping', mapping_ok),
+        ('visual_grounding', visual_ok), ('grounded_reading', reading_ok), ('entity_scope_mapping', mapping_ok),
         ('relation_direction', agrees), ('material_counterargument', counter)) if not passed]
     return {'valid': not roots, 'bound_to_current_case': bound, 'executed': decision_ok,
         'caption_verified': caption, 'visual_verified': visual_ok, 'entity_scope_verified': mapping_ok,
         'mapping_response_valid': mapping_response_valid(mapping_call, known, source),
-        'premises_verified': bool(bound and caption and visual_ok and mapping_ok),
+        'grounded_reading_verified': reading_ok,
+        'premises_verified': bool(bound and caption and visual_ok and mapping_ok and reading_ok),
         'relation_agreement': bool(agrees), 'arguments_verified': bool(counter and agrees),
         'counter_resolved': counter, 'actual_order_swap': False,
         'verification_control': 'independent_selection_and_discriminating_challenge',

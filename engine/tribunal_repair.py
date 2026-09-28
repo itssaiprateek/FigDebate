@@ -8,7 +8,8 @@ FROZEN_REPAIR_ISSUES = frozenset({'contradictory_audit', 'audit_objection',
 
 
 def validate_options(mode, audit_mode, judge_mode, debate_mode, protocol, feedback_mode):
-    if mode not in {'disabled', 'bounded'} or audit_mode not in {'baseline', 'process-audit-1'}:
+    from engine.semantic_protocol import MODES
+    if mode not in {'disabled', 'bounded'} or audit_mode not in MODES:
         raise ValueError('Unknown tribunal repair/audit option')
     if mode != 'disabled' or audit_mode != 'baseline':
         if judge_mode != 'tribunal' or debate_mode != 'enabled' or protocol != 'evidence-review-5.0':
@@ -153,6 +154,14 @@ def plan_repair(review, debate=None, enabled=True):
     if role == 'blocked' or not new_semantic_questions([question], _previous_questions(debate or {})):
         review['_follow_up_question_status'] = 'NO_NEW_AVAILABLE_CHECK'
         return {}
+    from engine.semantic_protocol import dispute_key
+    key = dispute_key(review, issue, diagnostic)
+    history = (debate or {}).get('_checked_disputes', [])
+    if key in history:
+        review['_follow_up_question_status'] = 'NO_NEW_AVAILABLE_CHECK'
+        return {}
+    if debate is not None:
+        debate.setdefault('_checked_disputes', []).append(key)
     # One failed obligation -> one route. The diagnostic is fallible, not truth.
     plan = {'status': 'MEDIATE', 'provisional_verdict': 'ABSTAIN', 'confidence': 0.0,
         'agent1_questions': [question] if role == 'visual' else [],
@@ -162,7 +171,9 @@ def plan_repair(review, debate=None, enabled=True):
         '_valid_evidence_ids': list(review.get('_valid_evidence_ids') or []),
         'repair_reasons': [issue], 'origin': 'integrated_diagnostic_repair_v1',
         'repair_context': {'failed_requirement': issue, 'disputed_detail': diagnostic,
+            'dispute_id': key, 'available_sources': ['source_caption', 'image', 'observation_catalogue'],
             'question': question, 'route': role,
+            'progress_requirement': 'new_deciding_observation_or_reconciled_specific_inference',
                 'instruction': 'Perform this specific check using the sources and any new testimony. The criticism may be wrong. Preserve valid observations and source meaning. Do not repeat an unavailable request or force a binary answer. If revising an objection, explain in the audit reason which original objection was mistaken and why; never erase an objection merely to obtain acceptance.'
                     + (' Test whether plausible alternatives for the missing condition could change the relation while known evidence stays fixed. '
                        'If yes or unclear, retain uncertainty. Unavailable information can be essential; hypothetical alternatives are not observations.' if relevance_check else ''),

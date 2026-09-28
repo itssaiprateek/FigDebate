@@ -49,6 +49,8 @@ def record_generation(model_family):
                         "execution_status": "FAILED" if error else "SUCCEEDED", "error": error,
                         "input_tokens": diagnostics.get("input_tokens"),
                         "output_tokens": diagnostics.get("generated_tokens"),
+                        "finish_reason": diagnostics.get("finish_reason"),
+                        "hit_token_limit": diagnostics.get("hit_token_limit"),
                         "failed_attempts": deepcopy(diagnostics.get("failed_attempts", [])),
                         "peak_allocated_gb": diagnostics.get("peak_allocated_gb"),
                     })
