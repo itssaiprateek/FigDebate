@@ -1,4 +1,6 @@
 .venv/
+.tools/
+.runtime/
 .venv*/
 __pycache__/
 *.py[cod]
@@ -32,3 +34,5 @@ dataset/data/processed/*.pkl
 models/judge/
 
 models/vision/
+
+dataset/data/provenance/prepared/

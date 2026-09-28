@@ -4,19 +4,15 @@
     {
       "label": "FigDebate: prepare environment",
       "type": "shell",
-      "command": "python3.11",
+      "command": "python3",
       "args": [
-        "${workspaceFolder}/setup_environment.py"
+        "${workspaceFolder}/bootstrap.py"
       ],
       "windows": {
-        "command": "py",
+        "command": "python",
         "args": [
-          "-3.11",
-          "${workspaceFolder}/setup_environment.py"
+          "${workspaceFolder}/bootstrap.py"
         ]
-      },
-      "runOptions": {
-        "runOn": "folderOpen"
       },
       "presentation": {
         "reveal": "always",

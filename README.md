@@ -8,6 +8,13 @@ review it through independent checks and a deterministic acceptance gate.
 **Team handoff:** start with [HANDOFF](docs/HANDOFF.md), then follow the
 [RUNBOOK](docs/RUNBOOK.md). [ARCHITECTURE](docs/ARCHITECTURE.md) maps the code.
 
+## Reproducible setup after cloning
+
+Run `python bootstrap.py` from the cloned repository. This creates the local
+Python environment and downloads all pinned models and dataset assets. Then use
+`python run.py` with the pipeline arguments. See [SETUP](docs/SETUP.md) for
+hardware requirements and a complete random-ten command.
+
 ## Current status
 
 The approved OCR retention fix is enabled. Completed crop readings up to 360

@@ -8,6 +8,9 @@ import os
 import platform
 import sys
 
+from project_environment import configure
+configure()
+
 from models.vision_model import (
     VISION_MODEL_ARCHITECTURE,
     VISION_MODEL_DIRECTORY,
@@ -55,6 +58,7 @@ EXPECTED_VERSIONS = {
     "pydantic": "2.13.5",
 }
 REQUIRED_DATA = (
+    "dataset/data/processed/vflute_train.pkl",
     "dataset/data/processed/vflute_train_dev50.pkl",
     "dataset/data/processed/vflute_val.pkl",
     "dataset/data/processed/vflute_test.pkl",
@@ -234,6 +238,36 @@ def main():
 
     check_vision_files(root, failures)
     check_control_plane(failures)
+
+    # Resolve the auxiliary models without network access or GPU allocation.
+    try:
+        from huggingface_hub import snapshot_download
+        from transformers import AutoConfig, AutoTokenizer
+        for model_id, revision in (
+            ('mistralai/Mistral-7B-Instruct-v0.2', '63a8b081895390a26e140280378bc85ec8bce07a'),
+            ('cross-encoder/nli-MiniLM2-L6-H768', 'b95119ce93d3e065de6214e38cd4a97b0f2f2c6d'),
+        ):
+            snapshot = snapshot_download(model_id, revision=revision, local_files_only=True,
+                                         allow_patterns=['*.json', '*.safetensors', '*.model', '*.txt', '*.jinja'])
+            from pathlib import Path
+            weights = list(Path(snapshot).glob('*.safetensors'))
+            if not weights:
+                raise ValueError(f'Missing weights for {model_id}')
+            from safetensors import safe_open
+            for weight in weights:
+                with safe_open(str(weight), framework='pt', device='cpu') as handle:
+                    if not list(handle.keys()):
+                        raise ValueError(f'Empty weights: {weight.name}')
+            index = Path(snapshot) / 'model.safetensors.index.json'
+            if index.exists():
+                shards = set(json.loads(index.read_text())['weight_map'].values())
+                if any(not (Path(snapshot) / name).is_file() for name in shards):
+                    raise ValueError(f'Missing weight shards for {model_id}')
+            AutoConfig.from_pretrained(snapshot, local_files_only=True)
+            AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
+            print(f'[OK]   pinned auxiliary model: {model_id}')
+    except Exception as error:
+        failures.append(f'Auxiliary model readiness: {error}')
 
     if args.check_judge:
         check_judge_files(root, failures)

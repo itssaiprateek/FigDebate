@@ -14,23 +14,13 @@ import sys
 import time
 import venv
 
+from project_environment import configure
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_DIR = PROJECT_ROOT / ".venv"
 STATE_FILE = ENV_DIR / ".figdebate-environment.json"
-SETUP_SCHEMA_VERSION = 3
-REQUIRED_DATA = (
-    PROJECT_ROOT / "dataset" / "data" / "processed" / "vflute_train_dev50.pkl",
-    PROJECT_ROOT / "dataset" / "data" / "processed" / "vflute_val.pkl",
-    PROJECT_ROOT / "dataset" / "data" / "processed" / "vflute_test.pkl",
-)
-REQUIRED_VISION_MODEL = (
-    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "config.json",
-    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "model.safetensors.index.json",
-    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "model-00001-of-00002.safetensors",
-    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "model-00002-of-00002.safetensors",
-    PROJECT_ROOT / "models" / "vision" / "Qwen3-VL-4B-Instruct" / "tokenizer.json",
-)
+SETUP_SCHEMA_VERSION = 4
 
 
 def environment_python() -> Path:
@@ -50,7 +40,7 @@ def environment_is_usable() -> bool:
         return False
     try:
         completed = subprocess.run(
-            [str(python), "--version"],
+            [str(python), "-c", "import sys; raise SystemExit(sys.version_info[:2] != (3, 11))"],
             cwd=PROJECT_ROOT,
             check=False,
             capture_output=True,
@@ -63,27 +53,10 @@ def environment_is_usable() -> bool:
 
 def requirements_checksum() -> str:
     digest = hashlib.sha256()
-    with (PROJECT_ROOT / "requirements.txt").open("rb") as handle:
+    with (PROJECT_ROOT / "requirements.lock").open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def environment_is_current() -> bool:
-    if not environment_is_usable() or not STATE_FILE.exists():
-        return False
-    if not all(path.exists() for path in (*REQUIRED_DATA, *REQUIRED_VISION_MODEL)):
-        return False
-    try:
-        with STATE_FILE.open("r", encoding="utf-8") as handle:
-            state = json.load(handle)
-    except (OSError, ValueError, TypeError):
-        return False
-    return (
-        state.get("setup_schema_version") == SETUP_SCHEMA_VERSION
-        and state.get("python") == "3.11"
-        and state.get("requirements_sha256") == requirements_checksum()
-    )
 
 
 def write_environment_state() -> None:
@@ -144,9 +117,10 @@ def main() -> int:
     parser.add_argument(
         "--skip-data",
         action="store_true",
-        help="Do not download and prepare the required V-FLUTE splits.",
+        help="Install dependencies only; skip all assets and do not mark setup ready.",
     )
     args = parser.parse_args()
+    configure()
 
     if sys.version_info[:2] != (3, 11):
         print(
@@ -155,24 +129,6 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-
-    if not args.recreate and environment_is_current():
-        print("FigDebate environment is already current.")
-        print(f"Python: {environment_python()}")
-        python = str(environment_python())
-        run([python, "check_environment.py"])
-        if not args.skip_tests:
-            run([
-                python,
-                "-m",
-                "unittest",
-                "discover",
-                "-s",
-                "tests",
-                "-p",
-                "test_*.py",
-            ])
-        return 0
 
     if args.recreate:
         remove_environment()
@@ -186,11 +142,18 @@ def main() -> int:
 
     python = str(environment_python())
     run([python, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
-    run([python, "-m", "pip", "install", "-r", "requirements.txt"])
-    if not args.skip_data:
-        run([python, "-m", "dataset.prepare_vflute"])
-    run([python, "-m", "models.prepare_vision_model"])
-    run([python, "check_environment.py"])
+    run([python, "-m", "pip", "install", "-r", "requirements.lock"])
+    if args.skip_data:
+        print("Dependencies installed; asset download skipped. Setup is incomplete.")
+        return 0
+    run([python, '-c',
+         "import torch; "
+         "assert torch.cuda.is_available(), 'An NVIDIA GPU with a compatible driver is required'; "
+         "assert torch.cuda.get_device_properties(0).total_memory >= 7 * 1024**3, 'Use an NVIDIA GPU with at least 8 GB VRAM'; "
+         "x = torch.ones(1, device='cuda'); print('CUDA execution verified:', (x + 1).item())"])
+    run([python, "scripts/prepare_assets.py"])
+    run([python, "check_environment.py", "--check-judge"])
+    run([python, "-m", "pip", "check"])
     if not args.skip_tests:
         run([
             python,

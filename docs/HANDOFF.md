@@ -1,5 +1,8 @@
 # Team handoff
 
+Fresh clone: follow [SETUP](SETUP.md) and use `python bootstrap.py`.
+The supported pipeline launcher is `python run.py`; no old project folder is required.
+
 September 25 evaluation addition: [offline qualification diagnostics](QUALIFICATION_DIAGNOSTICS.md)
 now reports explanation delivery, recorded error origins, and correction outcomes.
 It is separate from inference and does not change any arbiter, tribunal, OCR, or

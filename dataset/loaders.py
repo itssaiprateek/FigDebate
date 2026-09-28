@@ -33,6 +33,9 @@ PROCESSED_DIR = os.path.join(BASE, "data", "processed")
 def attach_provenance(records, split_name, path):
     """Recover source metadata only when both the corpus and sidecar hashes match."""
     directory = Path(BASE) / "data" / "provenance" / "vflute_d920d848"
+    prepared = directory.parent / "prepared" / directory.name
+    if (prepared / "verification.json").exists():
+        directory = prepared
     summary_path = directory / "verification.json"
     if not summary_path.exists():
         return records

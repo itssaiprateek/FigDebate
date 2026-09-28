@@ -123,7 +123,7 @@ def validate_pickle(name: str, path: Path) -> None:
     validate_records(name, records)
 
 
-def prepare(force: bool = False, output_dir=None) -> None:
+def prepare(force: bool = False, output_dir=None, upstream_dir=None) -> None:
     if force:
         raise ValueError("In-place replacement is disabled. Use a new --output-dir for a versioned rebuild.")
     destination = Path(output_dir).resolve() if output_dir else PROCESSED_DIR
@@ -150,10 +150,18 @@ def prepare(force: bool = False, output_dir=None) -> None:
 
     from datasets import load_dataset, Image as DatasetImage
 
+    def load_split(split):
+        if upstream_dir is None:
+            return load_dataset(DATASET_ID, revision=DATASET_REVISION, split=split)
+        shards = sorted((Path(upstream_dir) / 'data').glob(split + '-*.parquet'))
+        if not shards:
+            raise FileNotFoundError(f'Missing original {split} parquet shards')
+        return load_dataset('parquet', data_files={'train': [str(p) for p in shards]}, split='train')
+
     print(f"Downloading {DATASET_ID} for: {', '.join(sorted(pending))}")
 
     if "vflute_train_dev50" in pending:
-        train = load_dataset(DATASET_ID, revision=DATASET_REVISION, split="train")
+        train = load_split("train")
         train = train.cast_column("image", DatasetImage(decode=False))
         label_feature = train.features.get("label")
         with DEV_MANIFEST.open("r", encoding="utf-8") as handle:
@@ -178,7 +186,7 @@ def prepare(force: bool = False, output_dir=None) -> None:
     ):
         if output_name not in pending:
             continue
-        dataset = load_dataset(DATASET_ID, revision=DATASET_REVISION, split=source_split)
+        dataset = load_split(source_split)
         dataset = dataset.cast_column("image", DatasetImage(decode=False))
         label_feature = dataset.features.get("label")
         records = [
@@ -197,8 +205,9 @@ def main() -> int:
         "--force", action="store_true", help="Deprecated: in-place replacement is refused."
     )
     parser.add_argument("--output-dir", help="New versioned destination; never overwrites legacy splits")
+    parser.add_argument("--upstream-dir", help="Previously downloaded original parquet directory; verify lineage after preparation")
     args = parser.parse_args()
-    prepare(force=args.force, output_dir=args.output_dir)
+    prepare(force=args.force, output_dir=args.output_dir, upstream_dir=args.upstream_dir)
     return 0
 
 
