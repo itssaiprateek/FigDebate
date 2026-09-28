@@ -20,6 +20,34 @@
         "clear": true
       },
       "problemMatcher": []
+    },
+    {
+      "label": "FigDebate: check environment",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "windows": {
+        "command": "${workspaceFolder}/.venv/Scripts/python.exe"
+      },
+      "args": [
+        "${workspaceFolder}/check_environment.py",
+        "--check-judge"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "HF_HUB_OFFLINE": "1",
+          "PYTHONDONTWRITEBYTECODE": "1"
+        }
+      },
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
     }
   ]
 }
