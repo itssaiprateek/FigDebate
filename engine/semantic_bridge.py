@@ -151,6 +151,7 @@ def build_semantic_bridge(review, ledger, claim_contract, language_output=None):
         "independent_verification": review.get("_independent_verification", {}),
         "grounded_reading_protocol": review.get("_grounded_reading_protocol"),
         "semantic_alignment_protocol": review.get("_semantic_alignment_protocol"),
+        "audit_only_protocol": review.get("_audit_only_protocol"),
         "reading": deepcopy((review.get("_compact_value") or {}).get("reading")),
         "focused_audit_required": review.get("_focused_audit_required", False),
         "visual_premise": visual_premise,

@@ -8,8 +8,9 @@ from importlib.metadata import version
 import json
 import numpy as np
 from llguidance import LLTokenizer, LLMatcher
+from engine import selection_grammar
 
-DECODER_ID = "llguidance-1.8.0-prefix-v2-bounded-whitespace-32"
+DECODER_ID = "llguidance-1.8.0-prefix-v3-distinct-selection-64"
 MAX_STRUCTURAL_WHITESPACE = 32
 
 
@@ -34,6 +35,8 @@ def prefix_constraint(tokenizer, schema, compact=False):
                                   "whitespace_pattern": rf"[\x20\x0A\x0D\x09]{{1,{whitespace_limit}}}"}
     padding = '/[ \\t\\r\\n]{0,' + str(whitespace_limit) + '}/'
     grammar = 'start: ' + padding + ' body ' + padding + '\nbody: %json ' + json.dumps(constrained)
+    if selection_grammar.eligible(schema):
+        grammar = selection_grammar.grammar(schema, whitespace_limit)
     matcher = LLMatcher(data, LLMatcher.grammar_from_lark(grammar))
     if matcher.is_error() or matcher.get_grammar_warnings():
         raise ValueError("Unsupported grammar: " + str(matcher.get_error() or matcher.get_grammar_warnings()))

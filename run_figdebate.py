@@ -292,8 +292,8 @@ def parse_args():
         help="Opt-in V5 tribunal-only repair, independent of feedback; at most one semantic follow-up.",
     )
     parser.add_argument(
-        "--tribunal-audit-mode", choices=("baseline", "process-audit-1", "aligned-reading-1", "focused-audit-1"), default="baseline",
-        help="Experimental process/aligned/focused audit; baseline remains default. Requires the explicit review5 profile.",
+        "--tribunal-audit-mode", choices=("baseline", "process-audit-1", "aligned-reading-1", "focused-audit-1", "audit-only-1"), default="baseline",
+        help="Experimental tribunal audits; audit-only-1 changes only the challenge audit. Baseline remains default; requires the explicit review5 profile.",
     )
     parser.add_argument("--reasoning-mode", choices=("baseline", "completion", "grounded"), default=None,
                         help="Initial assessment mode: stagewise defaults to completion; sequential execution defaults to baseline. Grounded is experimental.")

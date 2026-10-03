@@ -4,13 +4,15 @@ Adaptations of factored verification and collaborative debate; no extra agent.
 Legacy transports remain readable for controlled baseline comparisons.
 """
 from copy import deepcopy
+from itertools import permutations
 import json
 
 from engine.output_contracts import object_schema, validate_shape, incomplete_clause
 
 ALIGNMENT_VERSION = "aligned-reading-1"
 AUDIT_VERSION = "focused-audit-1"
-MODES = {"baseline", "process-audit-1", ALIGNMENT_VERSION, AUDIT_VERSION}
+AUDIT_ONLY_VERSION = "audit-only-1"
+MODES = {"baseline", "process-audit-1", ALIGNMENT_VERSION, AUDIT_VERSION, AUDIT_ONLY_VERSION}
 RULES = (
     "Evaluate the original assertion under the V-FLUTE visual-entailment task. "
     "Keep the asserted property, participants, polarity, modality and qualifiers. "
@@ -79,6 +81,23 @@ def audit_schema(known):
     })
 
 
+def audit_generation_schema(known):
+    """Match the wire's unique-citation requirement in the bounded decoder.
+
+    The grammar backend does not support uniqueItems. Enumerating the legal
+    ordered lists is small for the verifier's observation sets; larger sets
+    retain the ordinary schema and the same validator and final wire checks.
+    """
+    schema = audit_schema(known)
+    if 0 < len(known) <= 6:
+        ids = sorted(known)
+        choices = [list(items) for size in range(1, min(4, len(ids)) + 1)
+                   for items in permutations(ids, size)]
+        schema["properties"]["evidence_ids"]["enum"] = choices
+        schema["properties"]["objections"]["items"]["properties"]["evidence_ids"]["enum"] = choices
+    return schema
+
+
 AUDIT_INSTRUCTIONS = (
     "Audit the candidate after the independent source assessment. "
     "Check whether candidate and verifier address the SAME assertion, referent, property, "
@@ -95,6 +114,10 @@ AUDIT_INSTRUCTIONS = (
 
 
 def audit_error(value):
+    citations = [value["evidence_ids"]] + [item["evidence_ids"] for item in value["objections"]]
+    if any(len(ids) != len(set(ids)) for ids in citations):
+        return {"kind": "AUDIT_DUPLICATE_CITATION",
+                "message": "Cite each selected observation at most once within each evidence_ids list."}
     if value["alignment"] != "MATCH" and not value["objections"]:
         return {"kind": "AUDIT_INCOMPLETE",
                 "message": "Name the material mismatch or uncertainty in an objection."}

@@ -42,8 +42,8 @@ REQUIRED_MODULES = {
     "pydantic": "pydantic",
 }
 EXPECTED_VERSIONS = {
-    "torch": "2.5.1+cu121",
-    "torchvision": "0.20.1+cu121",
+    "torch": "2.7.1+cu128",
+    "torchvision": "0.22.1+cu128",
     "transformers": "5.15.0",
     "accelerate": "1.14.0",
     "bitsandbytes": "0.50.0",

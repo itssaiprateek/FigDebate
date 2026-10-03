@@ -177,6 +177,8 @@ def binding(proposal, ledger):
                     proposal.get('interpreted_assertion', '')]
     if proposal.get('semantic_alignment_protocol'):
         data.extend([proposal['semantic_alignment_protocol'], proposal.get('reading'), proposal.get('focused_audit_required', False)])
+    if proposal.get('audit_only_protocol'):
+        data.append(proposal['audit_only_protocol'])
     if proposal.get('grounded_reading_protocol'):
         data.append(proposal['grounded_reading_protocol'])
     if proposal.get('process_audit_version'):
@@ -329,7 +331,8 @@ def verify(runtime, image, proposal, ledger):
     from engine import tribunal_process as process
     from engine import semantic_protocol as semantics
     aligned = proposal.get('semantic_alignment_protocol') == semantics.ALIGNMENT_VERSION
-    focused = aligned and proposal.get('focused_audit_required', False)
+    audit_only = proposal.get('audit_only_protocol') == semantics.AUDIT_ONLY_VERSION
+    focused = audit_only or (aligned and proposal.get('focused_audit_required', False))
     process_mode = proposal.get('process_audit_version') == process.VERSION
     source = proposal.get('source_caption', '')
     records = catalog(ledger)
@@ -344,6 +347,8 @@ def verify(runtime, image, proposal, ledger):
     if aligned:
         record['semantic_alignment_protocol'] = semantics.ALIGNMENT_VERSION
         record['focused_audit_required'] = focused
+    if audit_only:
+        record['audit_only_protocol'] = semantics.AUDIT_ONLY_VERSION
 
     def finish(reason=None):
         if reason:
@@ -499,14 +504,20 @@ def verify(runtime, image, proposal, ledger):
     record['calls'].append(decision)
     if not decision_valid(decision, known, source) or decision.get('relation') not in {'SUPPORT', 'CONFLICT'}:
         return finish('relation_direction')
+    # Agreement is required by the existing acceptance gate. With repair disabled,
+    # an audit cannot salvage a directional disagreement or authorize a revision.
+    if (audit_only and getattr(runtime, 'tribunal_repair_mode', None) == 'disabled'
+            and decision.get('relation') != proposal.get('proposed_relation')):
+        record['audit_skipped_reason'] = 'direction_disagreement_cannot_pass_existing_gate'
+        return finish('relation_direction')
     if focused:
         audit_case = dict(case,
-            decision={k: decision[k] for k in semantics.reading_schema(DECISION)['required']},
+            decision={k: decision[k] for k in (semantics.reading_schema(DECISION) if aligned else DECISION)['required']},
             candidate={'assertion': proposal.get('interpreted_assertion', ''),
                        'reading': proposal.get('reading'), 'relation': proposal.get('proposed_relation'),
                        'reason': proposal.get('bridge_statement', '')})
         challenge = ask('challenge', semantics.AUDIT_INSTRUCTIONS, audit_case,
-                        semantics.audit_schema(known), 384, validator=semantics.audit_error)
+                        semantics.audit_generation_schema(known), 512 if audit_only else 384, validator=semantics.audit_error)
         if all(k in challenge for k in semantics.audit_schema(known)['required']):
             semantics.project_audit(challenge)
         record['obligations']['arguments'] = challenge
@@ -556,6 +567,10 @@ def audit(proposal, ledger):
     if proposal.get('focused_audit_required'):
         from engine.semantic_protocol import AUDIT_VERSION
         counter = bool(counter and args.get('_focused_audit_protocol') == AUDIT_VERSION)
+    if proposal.get('audit_only_protocol') or record.get('audit_only_protocol'):
+        from engine.semantic_protocol import AUDIT_ONLY_VERSION, AUDIT_VERSION
+        counter = bool(counter and proposal.get('audit_only_protocol') == record.get('audit_only_protocol') == AUDIT_ONLY_VERSION
+                       and args.get('_focused_audit_protocol') == AUDIT_VERSION)
     if proposal.get('process_audit_version') or record.get('process_audit_version') or args.get('process_checks'):
         from engine import tribunal_process as process
         counter = bool(counter and proposal.get('process_audit_version') == record.get('process_audit_version') == process.VERSION

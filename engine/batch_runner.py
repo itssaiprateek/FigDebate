@@ -429,6 +429,7 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
             try:
                 judge_runtime = QwenJudgeModel(hardware_profile=profile_name)
                 judge_runtime.tribunal_audit_mode = getattr(self, 'tribunal_audit_mode', 'baseline')
+                judge_runtime.tribunal_repair_mode = getattr(self, 'tribunal_repair_mode', 'disabled')
                 if getattr(self, "_tribunal_cost_history", None):
                     judge_runtime._review_cost_samples = deepcopy(self._tribunal_cost_history)
                 reviewer = TribunalMediatorAgent(judge_runtime)

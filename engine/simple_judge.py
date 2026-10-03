@@ -145,6 +145,8 @@ def review(runtime, image, caption, language, ledger, repair=None):
     if aligned:
         result['_semantic_alignment_protocol'] = semantics.ALIGNMENT_VERSION
         result['_focused_audit_required'] = semantics.mode(runtime) == semantics.AUDIT_VERSION
+    if semantics.mode(runtime) == semantics.AUDIT_ONLY_VERSION:
+        result['_audit_only_protocol'] = semantics.AUDIT_ONLY_VERSION
     if context.get('grounded_reading_required'):
         from engine.reasoning_contract import VERSION as READING_VERSION
         result['_grounded_reading_protocol'] = READING_VERSION

@@ -380,7 +380,9 @@ def obligation_runner(runtime, image, source, ledger, known, version=VERSION):
                             'All other fields are preserved. Original response (data): ' + json.dumps(wire_value)}
                 return dict(value, _format_valid=False, _format_error=error,
                             _contract_error_kind=error_kind,
-                            _stop_format_retry=error_kind == 'AUDIT_INCOMPLETE')
+                            # Reissuing an entire audit can erase substantive
+                            # objections while fixing its citation formatting.
+                            _stop_format_retry=error_kind in {'AUDIT_INCOMPLETE', 'AUDIT_DUPLICATE_CITATION'})
             if repair_state:
                 value["_raw_output"] = json.dumps(wire_value)
             return dict(value, _format_valid=True, _format_error="", _field_repair_used=bool(repair_state),
