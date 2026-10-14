@@ -37,10 +37,21 @@ def fields(text):
         rf"(?m)^({names}):\s*([\s\S]*?)(?=^(?:{names}):|\Z)", str(text))}
 
 
-def completion_status(text, diagnostics=None, *, grounded=False, source=None):
+def completion_status(text, diagnostics=None, *, grounded=False, source=None, known=None):
     diagnostics = diagnostics or {}
     parsed = fields(text)
     problems = []
+    inline = set(re.findall(r"\[([A-Z][A-Z0-9]*\d+)\]", parsed.get("Visual Evidence", "")))
+    declared = set(re.findall(r"\b[A-Z][A-Z0-9]*\d+\b", parsed.get("Evidence IDs", "")))
+    recovered = False
+    if known is not None:
+        if (inline | declared) - set(known):
+            problems.append("unknown_evidence_ids")
+        if inline and parsed.get("Evidence IDs") and not inline <= declared:
+            problems.append("conflicting_evidence_ids")
+        if not parsed.get("Evidence IDs") and inline and inline <= set(known):
+            parsed["Evidence IDs"] = ", ".join(sorted(inline))
+            recovered = True
     if diagnostics.get("input_truncated"):
         problems.append("input_truncated")
     if diagnostics.get("hit_token_limit"):
@@ -63,7 +74,7 @@ def completion_status(text, diagnostics=None, *, grounded=False, source=None):
             parsed.get(key, "").strip().lower() in {"none", "unknown", "unresolved", ""} for key in ("Referent", "Property")):
         problems.append("direction_requires_resolved_referent_and_property")
     return {"complete": not problems, "issues": problems, "fields": parsed,
-            "semantic_correctness": "NOT_ESTABLISHED_BY_COMPLETENESS"}
+            "semantic_correctness": "NOT_ESTABLISHED_BY_COMPLETENESS", "inline_ids_recovered": recovered}
 
 
 def reading_error(value, source, known):
@@ -130,3 +141,62 @@ def render_assessment(raw, source, catalog):
             f"Expression: {source}\nReferent: {value['referent']}\nProperty: {value['property']}\n"
             f"Caption Meaning: {value['meaning']}\nRelation Status: {value['relation']}\n"
             f"Relation Analysis: {value['reason']}")
+
+
+def assessment_payload(source, catalog):
+    """Lossless grouping of duplicate observations; keep every ID and attachment."""
+    groups = {}
+    for item in catalog:
+        if not item.get("id"):
+            continue
+        key = (item.get("text", ""), str(item.get("panel", "")),
+               str(item.get("region", "")), str(item.get("speaker", "")))
+        if key not in groups:
+            groups[key] = {k: item[k] for k in ("text", "panel", "region", "speaker") if k in item}
+            groups[key]["ids"] = []
+        groups[key]["ids"].append(item["id"])
+    return {"source_caption": source, "observations": list(groups.values())}
+
+
+def compact_assessment_schema(known):
+    schema = assessment_schema(known)
+    for key in ("referent", "property"):
+        del schema["properties"][key]
+        schema["required"].remove(key)
+    return schema
+
+
+def render_compact_assessment(raw, source, catalog):
+    import json
+    from engine.output_contracts import validate_shape
+    value = json.loads(raw)
+    known = {x['id'] for x in catalog if x.get('id')}
+    if not validate_shape(value, compact_assessment_schema(known)):
+        raise ValueError("Invalid compact assessment")
+    value.update(referent="Not separately elicited", property="See contextual meaning and reason")
+    return render_assessment(json.dumps(value), source, catalog)
+
+
+def explanation_alignment(decision, *, verified=False):
+    """Structural compatibility, not an automated semantic adequacy score."""
+    text = str(decision.get('explanation') or '')
+    parsed = fields(text)
+    stated = parsed.get('Relation Status')
+    if stated is None and not verified:
+        stated = decision.get('_semantic_relation_status')
+    expected = {'ENTAILS': 'SUPPORT', 'CONTRADICTS': 'CONFLICT'}.get(decision.get('label'))
+    if decision.get('_explanation_generation_failed') or not text.strip():
+        status = 'INCOMPLETE'
+    elif stated in {'UNRESOLVED', 'INSUFFICIENT'}:
+        status = 'UNRESOLVED_JUSTIFICATION'
+    elif stated in {'SUPPORT', 'CONFLICT'} and stated != expected:
+        status = 'LABEL_EXPLANATION_MISMATCH'
+    elif expected is not None and stated == expected:
+        status = 'STRUCTURALLY_ALIGNED'
+    else:
+        status = 'NOT_ASSESSED'
+    return {'status': status, 'asserted_relation': stated, 'expected_relation': expected,
+            'binary_prediction': decision.get('label'),
+            'verification_status': 'MODEL_VERIFIED' if verified and status not in
+                {'INCOMPLETE', 'UNRESOLVED_JUSTIFICATION', 'LABEL_EXPLANATION_MISMATCH'} else 'UNVERIFIED',
+            'semantic_correctness': 'REQUIRES_SEPARATE_EVALUATION'}

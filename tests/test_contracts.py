@@ -628,6 +628,7 @@ class DebateContractTests(unittest.TestCase):
             {"visible_text": ["left phrase", "right phrase"]},
             {"label": "ENTAILS", "explanation": "Draft relation."},
             {
+                "claim_contract": {"safe_for_tribunal_reasoning": True},
                 "relation_binding_required": True,
                 "relation_binding_observed": False,
             },

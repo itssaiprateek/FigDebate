@@ -16,8 +16,6 @@ def observable_followup(question):
     if re.search(r'\b(visible text|readable text|signage)\b', text, re.I):
         if re.search(r'\b(support\w*|refut\w*|confirm\w*|claim\w*)\b', text, re.I):
             question = 'Transcribe readable text with its panel, speaker or attached object.'
-            if re.search(r'\b(facial|emotional|expression)\b', text, re.I):
-                question += ' Describe visible facial expression and posture.'
             return question
     return ''
 
@@ -48,27 +46,29 @@ def route_question(question, requested=""):
     # examine that relation; the witness prohibition must not suppress its job.
     if re.search(r'\b(entail\w*|contradict\w*)\b', text, re.I):
         return 'tribunal', 'semantic_relation_requires_tribunal'
-    visual = bool(re.search(r"\b(image|pictured|visible|photo|picture|panel|shirt|scene|ocr)\b", text, re.I))
+    visual = bool(re.search(r"\b(image|pictured|visible|photo|picture|panel|shirt|scene|ocr|transcribe|readable|displayed)\b", text, re.I))
     # A facial expression is an observable configuration, not a language idiom.
     routing_text = re.sub(r'\bfacial expressions?\b', 'facial cues', text, flags=re.I)
-    caption = bool(re.search(r"\b(caption|idiom|phrase|wording|expression)\b", routing_text, re.I))
+    routing_text = re.sub(r"\b(?:without interpreting(?: what it represents)?|do not (?:interpret|infer) [^.?!;]*)", "", routing_text, flags=re.I)
     semantic = bool(re.search(r"\b(imply|implies|mean|means|meaning|interpret\w*|intend\w*|intent|metaphor\w*|sarcas\w*|"
                               r"ironic|joke|symboli[sz]\w*|represent\w*|express\w*|suggest\w*|infer\w*|"
                               r"convey\w*|prove\w*|support\w*|motives?|useful|useless)\b", routing_text, re.I))
+    caption = bool(re.search(r"\b(caption|idiom)\b", routing_text, re.I) or
+        (semantic and not visual and re.search(r"\b(phrase|wording|expression)\b", routing_text, re.I)))
     valid, reason = AtomicVisualQuestionController.validate_question(
         text, AtomicVisualQuestionController.infer_question_type(text))
     if requested == "CAPTION_PREMISE" and not visual:
         return "language", "caption_only"
-    if caption and semantic and not visual:
+    if caption and not visual:
         return "language", "caption_interpretation"
+    if not valid and not semantic and reason != "question_requires_semantic_inference":
+        return "blocked", reason
     if semantic or not valid or (caption and visual):
         return "tribunal", reason or "cross_modal_interpretation"
     if requested == "COUNTER_INTERPRETATION" and not re.search(
             r"\b(transcribe|visible|readable|where|is there|are there|exact text)\b", text, re.I):
         return "tribunal", "counter_interpretation_requires_tribunal"
-    if valid:
-        return "visual", "observable_question"
-    return "blocked", reason
+    return "visual", "observable_question"
 
 
 def route_followup(review):

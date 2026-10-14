@@ -213,6 +213,7 @@ FIELDNAMES = [
 
 
 def parse_args():
+    from engine.semantic_protocol import MODES
     parser = argparse.ArgumentParser(
         description="Run the unified FigDebate pipeline on a named dataset split."
     )
@@ -292,11 +293,11 @@ def parse_args():
         help="Opt-in V5 tribunal-only repair, independent of feedback; at most one semantic follow-up.",
     )
     parser.add_argument(
-        "--tribunal-audit-mode", choices=("baseline", "process-audit-1", "aligned-reading-1", "focused-audit-1"), default="baseline",
-        help="Experimental process/aligned/focused audit; baseline remains default. Requires the explicit review5 profile.",
+        "--tribunal-audit-mode", choices=tuple(sorted(MODES)), default=None,
+        help="Defaults to focused audit for stagewise review5 tribunal runs with debate enabled and feedback disabled; baseline otherwise.",
     )
-    parser.add_argument("--reasoning-mode", choices=("baseline", "completion", "grounded"), default=None,
-                        help="Initial assessment mode: stagewise defaults to completion; sequential execution defaults to baseline. Grounded is experimental.")
+    parser.add_argument("--reasoning-mode", choices=("baseline", "completion", "grounded", "compact"), default=None,
+                        help="Initial assessment mode: stagewise defaults to grounded for the performance trial; sequential execution defaults to baseline.")
     parser.add_argument(
         "--verified-feedback-file",
         help="Frozen JSON feedback library; required in verified and precedent modes.",
@@ -337,8 +338,11 @@ def parse_args():
         ),
     )
     args = parser.parse_args()
-    if args.reasoning_mode is None:
-        args.reasoning_mode = "completion" if args.execution_mode == "stagewise" else "baseline"
+    from engine.runtime_profile import resolve_reasoning_modes
+    args.reasoning_mode, args.tribunal_audit_mode = resolve_reasoning_modes(
+        execution_mode=args.execution_mode, judge_mode=args.judge_mode, hardware_profile=args.hardware_profile,
+        debate_mode=args.debate_mode, feedback_mode=args.feedback_mode,
+        reasoning_mode=args.reasoning_mode, tribunal_audit_mode=args.tribunal_audit_mode)
     return args
 
 

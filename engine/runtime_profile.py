@@ -87,3 +87,21 @@ def resolve_runtime_profile(name="auto", total_vram_gb=None):
     if measured is not None and measured >= PROFILES["12gb"].minimum_total_vram_gb:
         return PROFILES["12gb"]
     return PROFILES["8gb"]
+
+
+def resolve_reasoning_modes(*, execution_mode="stagewise", judge_mode="disabled",
+        hardware_profile="auto", debate_mode="enabled", feedback_mode="disabled",
+        reasoning_mode=None, tribunal_audit_mode=None):
+    """Resolve absent settings once; explicit controls never get overwritten."""
+    from engine.semantic_protocol import MODES
+    if reasoning_mode is None:
+        reasoning_mode = "grounded" if execution_mode == "stagewise" else "baseline"
+    if tribunal_audit_mode is None:
+        profile_name = getattr(hardware_profile, "name", hardware_profile)
+        focused = (execution_mode == "stagewise" and judge_mode == "tribunal"
+                   and profile_name == "paper-8gb-review5" and debate_mode == "enabled"
+                   and feedback_mode == "disabled")
+        tribunal_audit_mode = "focused-audit-1" if focused else "baseline"
+    if reasoning_mode not in {"baseline", "completion", "grounded", "compact"} or tribunal_audit_mode not in MODES:
+        raise ValueError("Unknown reasoning or tribunal audit mode")
+    return reasoning_mode, tribunal_audit_mode

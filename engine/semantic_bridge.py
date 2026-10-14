@@ -153,6 +153,7 @@ def build_semantic_bridge(review, ledger, claim_contract, language_output=None):
         "semantic_alignment_protocol": review.get("_semantic_alignment_protocol"),
         "reading": deepcopy((review.get("_compact_value") or {}).get("reading")),
         "focused_audit_required": review.get("_focused_audit_required", False),
+        "semantic_experiment": review.get("_semantic_experiment", ""),
         "visual_premise": visual_premise,
         "visual_evidence_ids": visual_ids,
         "caption_premise": caption_premise,

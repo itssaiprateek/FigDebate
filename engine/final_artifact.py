@@ -37,6 +37,8 @@ def final_artifact(caption, result):
     reason = str(decision.get("explanation") or "")
     from engine.reasoning_contract import final_explanation_status
     explanation_status = final_explanation_status(reason, decision)
+    from engine.reasoning_contract import explanation_alignment
+    alignment = explanation_alignment(decision, verified=bool(changed or resolution.get("confirmation_valid")))
     artifact = {
         "schema_version": "3.0", "source_caption": caption,
         "claim_graph": deepcopy((result.get("language_output") or {}).get("claim_graph")),
@@ -59,6 +61,7 @@ def final_artifact(caption, result):
         "final_label": decision.get("label"), "decision_origin": origin,
         "confidence": decision.get("confidence"), "confidence_is_calibrated": False,
         "explanation_completeness": explanation_status,
+        "explanation_label_alignment": alignment,
         "semantic_relation_status": relation if changed or resolution.get("confirmation_valid") else decision.get("_semantic_relation_status", decision.get("_relation_status", "UNKNOWN")),
         "accepted_reason": reason, "cited_evidence": cited,
         "supporting_ancestors": ancestors,
@@ -77,6 +80,25 @@ def final_artifact(caption, result):
                         for index, item in enumerate(judge.get("tribunal_reviews", []))],
         "human_faithfulness_evaluated": False,
     }
+    bridge = resolution.get('semantic_bridge') or {}
+    proof = bridge.get('independent_verification') or {}
+    if proof.get('semantic_experiment') in {'condition-audit-1', 'condition-repair-1'}:
+        import hashlib
+        from engine.evidence_review_v5 import audit
+        verified = bool((changed or resolution.get('confirmation_valid'))
+                        and caption == bridge.get('source_caption') and audit(bridge, ledger)['valid'])
+        exact_reason = reason == bridge.get('bridge_statement')
+        artifact['audited_explanation'] = {
+            'claim_target': deepcopy((proof.get('calls') or [{}])[0].get('_claim_target')),
+            'condition_assessment': deepcopy((proof.get('calls') or [{}])[0].get('_condition_value')),
+            'source_sha256': hashlib.sha256(caption.encode()).hexdigest(),
+            'explanation_sha256': hashlib.sha256(reason.encode()).hexdigest(),
+            'image_sha256': proof.get('observed_image_sha256'),
+            'binary_label': decision.get('label'),
+            'label_verified': verified and relation == bridge.get('proposed_relation'),
+            'exact_audited_explanation': verified and exact_reason and explanation_status['complete'],
+            'human_reasoning_adequacy': 'NOT_YET_EVALUATED',
+        }
     # The delivered trace is rendered from the record, not another free-form
     # explanation. Original model prose remains in accepted_reason for audit.
     evidence_text = " ".join(f"[{item['id']}] {item.get('text', '')}" for item in cited

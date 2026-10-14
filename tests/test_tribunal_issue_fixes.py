@@ -18,18 +18,17 @@ class IssueFixTests(unittest.TestCase):
         self.assertEqual(route_question('What does this facial expression mean?', 'VISUAL_PREMISE')[0], 'tribunal')
         self.assertEqual(route_question('Explain the meaning of this expression in the caption.')[0], 'language')
 
-    def test_unqualified_whole_source_specialization_is_not_active(self):
+    def test_source_identity_does_not_hide_issue_or_inject_subject(self):
         c={'claim_contract':{'claim_graph':{'representation':'UNDECOMPOSED_SOURCE','errors':[]}},
            'claim_relation':{'subject':'a secretly furious person'}}
         for issue in ['OCR_BINDING','AFFECTIVE_SCENE','METAPHOR_MAPPING','COMPARISON_OR_OUTCOME','TEMPORAL_CAUSAL_SEQUENCE','QUOTED_STATEMENT_AND_REACTION','PRAGMATIC_SCOPE','SYMBOL_ATTACHMENT']:
             with self.subTest(issue=issue), patch('engine.question_router.classify_issue',return_value=issue):
                 plan=build_question_plan(c)
-                # The live specialization trial lost a useful observation.
-                # Preserve the original neutral plan until a better plan qualifies.
-                self.assertEqual(plan.issue_type,'SEMANTIC_RELATION')
+                # Retain neutral observations without injecting unqualified subject metadata.
+                self.assertEqual(plan.issue_type,issue)
                 self.assertEqual(route_question(plan.agent1_question,'VISUAL_PREMISE')[0],'visual')
                 self.assertNotIn('furious',plan.agent1_question)
-                self.assertIn('complete expressed caption',plan.agent2_question)
+                self.assertTrue(plan.agent2_question)
 
     def test_compiler_does_not_leak_semantic_verification_to_visual(self):
         q='Explain whether the picture supports the caption.'

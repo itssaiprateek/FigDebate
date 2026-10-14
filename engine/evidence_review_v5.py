@@ -181,6 +181,8 @@ def binding(proposal, ledger):
         data.append(proposal['grounded_reading_protocol'])
     if proposal.get('process_audit_version'):
         data.append(proposal['process_audit_version'])
+    if proposal.get('semantic_experiment'):
+        data.append(proposal['semantic_experiment'])
     return _digest(data)
 
 
@@ -203,6 +205,10 @@ def selection_valid(value, records):
         schema = SELECTION_WIRE
         for observation in projected['observations']:
             observation['image_location'] = observation.pop('attachment')
+    if value.get('_open_deciding_check'):
+        from engine.semantic_protocol import open_selection_schema
+        schema = open_selection_schema(schema, by_id)
+        projected['deciding_check'] = value.get('deciding_check')
     return bool(core.executed(value) and validate_shape(wire, schema) and wire == projected
                 and not core.capped_generated_clause(wire, schema)
                 and not core.unfinished_generated_field(projected) and selected
@@ -228,6 +234,9 @@ def challenge_valid(value, known, relation):
 def decision_valid(value, known, source):
     """Validate the exact generated judgment, including non-indexed transports."""
     from engine import semantic_protocol as semantics
+    if value.get("_condition_protocol"):
+        from engine.condition_review import valid
+        return valid(value, known, source)
     aligned = value.get("_semantic_alignment_protocol")
     schema = semantics.reading_schema(DECISION) if aligned else DECISION
     if aligned and (aligned != semantics.ALIGNMENT_VERSION or semantics.reading_error(value)):
@@ -330,6 +339,8 @@ def verify(runtime, image, proposal, ledger):
     from engine import semantic_protocol as semantics
     aligned = proposal.get('semantic_alignment_protocol') == semantics.ALIGNMENT_VERSION
     focused = aligned and proposal.get('focused_audit_required', False)
+    experiment = proposal.get('semantic_experiment', '')
+    features = semantics.features(experiment)
     process_mode = proposal.get('process_audit_version') == process.VERSION
     source = proposal.get('source_caption', '')
     records = catalog(ledger)
@@ -337,7 +348,7 @@ def verify(runtime, image, proposal, ledger):
     record = {'schema_version': VERSION, 'provenance_sha256': binding(proposal, ledger),
         'observed_image_sha256': image_subject_hash(image), 'calls': [], 'obligations': {},
         'method': 'independent_evidence_selection_blind_relation_discriminating_challenge',
-        'model_error_independence_established': False}
+        'model_error_independence_established': False, 'semantic_experiment': experiment}
     if process_mode:
         record['process_audit_version'] = process.VERSION
 
@@ -365,8 +376,13 @@ def verify(runtime, image, proposal, ledger):
     generate = core.obligation_runner(runtime, image, source, records, available, VERSION)
     task = proposal.get('verification_task') or {}
     def ask(name, instructions, payload, *args, **kwargs):
+        if 'conditions' in features:
+            from engine.condition_review import task as claim_task
+            payload = dict(payload, immutable_claim=claim_task(source))
         if aligned and name in {'mapping', 'relation', 'challenge'}:
             instructions = semantics.RULES + instructions
+            if 'examples' in features and name == 'relation':
+                instructions += semantics.SEMANTIC_EXAMPLES
         if process_mode:
             payload = dict(payload, task=process.task_record(source))
         stages = {'role_scope_mapping': {'mapping', 'relation', 'challenge'},
@@ -383,7 +399,9 @@ def verify(runtime, image, proposal, ledger):
     schema = deepcopy(SELECTION_WIRE)
     schema['properties']['observations']['items']['properties']['evidence_id'] = {
         'type': 'string', 'enum': sorted(available)}
-    visual = ask('visual', VISUAL_SELECTION_INSTRUCTIONS,
+    if 'questions' in features:
+        schema = semantics.open_selection_schema(schema, available)
+    visual = ask('visual', (semantics.OPEN_CHECK_INSTRUCTIONS if 'questions' in features else '') + VISUAL_SELECTION_INSTRUCTIONS,
         {'source_caption': source, 'observations': [{'id': x['id'], 'text': x.get('text', '')} for x in records]},
         schema, 256,
         validator=lambda v: None if len({x['evidence_id'] for x in v['observations']}) == len(v['observations'])
@@ -398,6 +416,7 @@ def verify(runtime, image, proposal, ledger):
         observation['observed'] = next((x.get('text', '') for x in records if x['id'] == observation['evidence_id']), '')
     visual['_location_wire_protocol'] = LOCATION_PROTOCOL
     visual['_observation_text_binding'] = 'exact_catalogue_record_by_id_v1'
+    visual['_open_deciding_check'] = 'questions' in features
     visual['verified'] = selection_valid(visual, records)
     if not visual['verified']:
         return finish('visual_grounding')
@@ -418,7 +437,14 @@ def verify(runtime, image, proposal, ledger):
         record['obligations']['grounded_reading'] = reading
         if not reading_valid(reading, known, source):
             return finish('grounded_reading')
+    mapping_instructions = (
+        'In role_scope retain the actor and recipient, quoted speaker versus author, panel/time, '
+        'and desired versus actual state when relevant. Bind both subjects of a comparison. '
+        'In reason give the observable basis and licensed connection; this remains a hypothesis. '
+        if 'conditions' in features else '')
     mapping = ask('mapping',
+        mapping_instructions +
+        (semantics.MAPPING_INSTRUCTIONS if 'mapping' in features else '') +
         'Bind the caption participants to the observed participants. Give one concise binding per necessary '
         'role/scope, citing selected IDs. Quote the source caption exactly. Match subject, object, speaker, '
         'One binding may cite multiple observations. Do not create a binding for each observation or incidental object. '
@@ -438,6 +464,11 @@ def verify(runtime, image, proposal, ledger):
     # The enclosing expression is immutable context, not a model-generated
     # quotation or an inferred premise. All modes need it, including baseline.
     case['complete_source_expression'] = source
+    if 'questions' in features:
+        case['fallible_deciding_check'] = visual.get('deciding_check')
+    if 'mapping' in features:
+        case['mapping_hypothesis'] = mapping.get('reason', '')
+        case['mapping_authority'] = 'fallible_interpretation_not_observation_or_proof'
     if reading is not None:
         from engine.reasoning_contract import READING_SCHEMA
         case['reading_hypothesis'] = {k: reading[k] for k in READING_SCHEMA['required']}
@@ -469,27 +500,37 @@ def verify(runtime, image, proposal, ledger):
         if value['relation'] == 'CONFLICT' and 'CONFLICT' not in relations:
             return {'kind': 'SEMANTIC_INCONSISTENCY', 'message': 'CONFLICT requires a positively incompatible condition'}
 
-    decision = ask('relation',
-        (semantics.READING_INSTRUCTIONS if aligned else '') +
-        'Decide the source-caption relation afresh from these observations and the full image. '
-        'Compare the same subject, property and scope. In condition_checks quote necessary source '
-        'conditions and give the actual image state. Evaluate both sides of comparisons and actual '
-        'outcomes separately from intentions. SUPPORT establishes the full claim including qualifiers. '
-        'CONFLICT requires a positive incompatibility. The absence of printed sentiment, a literal '
-        'idiom event or unavailable history is not a conflicting state. Missing necessary evidence '
-        'is UNRESOLVED. A depicted trigger can ground an evaluative reaction. Do not substitute a '
-        'different assertion, silently reverse sarcasm, or remove qualifiers to obtain an answer.'
-        ' Failure to observe a property does not prove its opposite. Do not turn unknown intentions '
-        'into observed facts. State which positive observation is incompatible with a CONFLICT condition. '
-        'Grounded figurative inference is allowed; literal depiction of an idiom is not required.'
-        + (' If a reading_hypothesis is supplied, independently test its property and all qualifiers against pixels. '
-           'Reject unsupported mappings; accepting the referent does not establish the claimed property.' if reading is not None else '')
-        + (' Check the complete_source_expressions, not only focused quotes. Retain negation, comparisons, '
-           'time and modality. Do not add historical requirements unless the decision depends on them.' if process_mode else '')
-        + (' Identify reading.kind, reading.referent and reading.property from the sources before assessing the relation. '
-           'The property is what the source asserts, not automatically what the image establishes.' if aligned else ''),
-        case, citation_schema(semantics.reading_schema(DECISION) if aligned else DECISION, known),
-        384, validator=decision_contract)
+    relation_schema = citation_schema(semantics.reading_schema(DECISION) if aligned else DECISION, known)
+    if 'reason_first' in features:
+        relation_schema = semantics.explanation_first_schema(relation_schema)
+    if 'conditions' in features:
+        from engine import condition_review
+        canonical = 'canonical' in features
+        decision = ask('relation', condition_review.CANONICAL_INSTRUCTIONS if canonical else condition_review.INSTRUCTIONS, case,
+                       condition_review.schema(known, canonical), 384, validator=condition_review.error)
+        condition_review.attach(decision, source, known, canonical)
+    else:
+        decision = ask('relation',
+            (semantics.reading_instructions('reason_first' in features) if aligned else '') +
+            'Decide the source-caption relation afresh from these observations and the full image. '
+            'Compare the same subject, property and scope. In condition_checks quote necessary source '
+            'conditions and give the actual image state. Evaluate both sides of comparisons and actual '
+            'outcomes separately from intentions. SUPPORT establishes the full claim including qualifiers. '
+            'CONFLICT requires a positive incompatibility. The absence of printed sentiment, a literal '
+            'idiom event or unavailable history is not a conflicting state. Missing necessary evidence '
+            'is UNRESOLVED. A depicted trigger can ground an evaluative reaction. Do not substitute a '
+            'different assertion, silently reverse sarcasm, or remove qualifiers to obtain an answer.'
+            ' Failure to observe a property does not prove its opposite. Do not turn unknown intentions '
+            'into observed facts. State which positive observation is incompatible with a CONFLICT condition. '
+            'Grounded figurative inference is allowed; literal depiction of an idiom is not required.'
+            + (' If a reading_hypothesis is supplied, independently test its property and all qualifiers against pixels. '
+               'Reject unsupported mappings; accepting the referent does not establish the claimed property.' if reading is not None else '')
+            + (' Check the complete_source_expressions, not only focused quotes. Retain negation, comparisons, '
+               'time and modality. Do not add historical requirements unless the decision depends on them.' if process_mode else '')
+            + (' Identify reading.kind, reading.referent and reading.property from the sources before assessing the relation. '
+               'The property is what the source asserts, not automatically what the image establishes.' if aligned else ''),
+            case, relation_schema,
+            384, validator=decision_contract)
     if aligned:
         decision['_semantic_alignment_protocol'] = semantics.ALIGNMENT_VERSION
     if decision.get('condition_checks'):
@@ -505,7 +546,9 @@ def verify(runtime, image, proposal, ledger):
             candidate={'assertion': proposal.get('interpreted_assertion', ''),
                        'reading': proposal.get('reading'), 'relation': proposal.get('proposed_relation'),
                        'reason': proposal.get('bridge_statement', '')})
-        challenge = ask('challenge', semantics.AUDIT_INSTRUCTIONS, audit_case,
+        if 'conditions' in features:
+            audit_case['condition_assessment'] = decision['_condition_value']
+        challenge = ask('challenge', semantics.AUDIT_INSTRUCTIONS + (semantics.COHERENT_AUDIT_INSTRUCTIONS if 'audit' in features else ''), audit_case,
                         semantics.audit_schema(known), 384, validator=semantics.audit_error)
         if all(k in challenge for k in semantics.audit_schema(known)['required']):
             semantics.project_audit(challenge)
@@ -536,14 +579,21 @@ def audit(proposal, ledger):
     source, relation = proposal.get('source_caption', ''), proposal.get('proposed_relation')
     bound = bool(record.get('schema_version') == VERSION and source and proposal.get('image_sha256')
         and record.get('observed_image_sha256') == proposal['image_sha256']
-        and record.get('provenance_sha256') == binding(proposal, ledger))
+        and record.get('provenance_sha256') == binding(proposal, ledger)
+        and record.get('semantic_experiment', '') == proposal.get('semantic_experiment', ''))
     caption = bool(source and core.norm(source) == core.norm(proposal.get('caption_premise')))
     visual_ok = selection_valid(visual, records) and known == {x['evidence_id'] for x in visual.get('observations', [])}
     mapping_call = obligations.get('mapping', {})
     mapping_ok = mapping_valid(mapping_call, known, source)
     calls = record.get('calls') or []
     decision = calls[0] if len(calls) == 1 else {}
-    decision_ok = decision_valid(decision, known, source) and condition_assessments_consistent(decision)
+    from engine.semantic_protocol import features as audit_features
+    features = audit_features(proposal.get('semantic_experiment', ''))
+    condition_required = 'conditions' in features
+    from engine.condition_review import VERSION as CONDITION_VERSION, CANONICAL_VERSION
+    expected_protocol = CANONICAL_VERSION if 'canonical' in features else CONDITION_VERSION
+    protocol_ok = (decision.get('_condition_protocol') == expected_protocol) if condition_required else not decision.get('_condition_protocol')
+    decision_ok = protocol_ok and decision_valid(decision, known, source) and condition_assessments_consistent(decision)
     agrees = decision_ok and relation in {'SUPPORT', 'CONFLICT'} and decision.get('relation') == relation
     if proposal.get('semantic_alignment_protocol') or record.get('semantic_alignment_protocol'):
         from engine import semantic_protocol as semantics

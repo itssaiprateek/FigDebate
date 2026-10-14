@@ -1,0 +1,85 @@
+{
+  "purpose": "selected development qualification, not held-out accuracy",
+  "feedback": "disabled",
+  "semantic_promotion": false,
+  "runtime_defaults": {
+    "audit": "focused-audit-1",
+    "reasoning": "grounded",
+    "new_semantic_variants": "evaluation_only"
+  },
+  "semantic_comparison": {
+    "focused": {
+      "cases": 4,
+      "correct_final_labels": 1,
+      "helpful_accepted_changes": 1,
+      "harmful_accepted_changes": 1,
+      "wrong_same_label_confirmations": 1,
+      "invalid_verification_outputs": [],
+      "mean_review_seconds": 60.389679800013255,
+      "clear_case_joint_label_and_adequate_reason": 1,
+      "reasoning_review": "assistant assessment against same source images and reference explanations; not independent human adjudication"
+    },
+    "canonical": {
+      "cases": 4,
+      "correct_final_labels": 1,
+      "helpful_accepted_changes": 0,
+      "harmful_accepted_changes": 0,
+      "wrong_same_label_confirmations": 0,
+      "invalid_verification_outputs": [
+        [
+          "vflute_train_1595",
+          "relation"
+        ],
+        [
+          "vflute_train_3351",
+          "relation"
+        ],
+        [
+          "vflute_train_4547",
+          "relation"
+        ]
+      ],
+      "mean_review_seconds": 111.60335055000178,
+      "clear_case_joint_label_and_adequate_reason": 0,
+      "reasoning_review": "assistant assessment against same source images and reference explanations; not independent human adjudication"
+    },
+    "examples": {
+      "cases": 4,
+      "correct_final_labels": 1,
+      "helpful_accepted_changes": 0,
+      "harmful_accepted_changes": 0,
+      "wrong_same_label_confirmations": 0,
+      "invalid_verification_outputs": [],
+      "mean_review_seconds": 55.57059795000532,
+      "clear_case_joint_label_and_adequate_reason": 0,
+      "reasoning_review": "assistant assessment against same source images and reference explanations; not independent human adjudication"
+    }
+  },
+  "transport": {
+    "requests": 15,
+    "valid_observations": 15,
+    "binding_mismatches": 0,
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "initial_cohort_order": "forward/reverse/forward",
+    "final_native_handoff_smoke_cases": 1
+  },
+  "arithmetic": {
+    "cases": 4,
+    "valid_extractions": 4,
+    "supported_computations": 0,
+    "deployment": "evaluation_only"
+  },
+  "tests": {
+    "total": 763,
+    "passed": 762,
+    "preexisting_expected_failures": 1,
+    "unexpected_failures": 0,
+    "git_diff_check": "passed",
+    "cli_selection_smoke": "passed"
+  },
+  "qualification_correction_20261004": "The experimental canonical audit protocol identifier mismatch was corrected on 2026-10-04. Historical counts remain unchanged; consult CLAIM_DIAGNOSIS_RESULTS_20261004.html before attributing all historical failures to semantic reasoning."
+}

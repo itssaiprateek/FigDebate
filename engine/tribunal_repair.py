@@ -133,6 +133,28 @@ def plan_repair(review, debate=None, enabled=True):
             question = 'Is the unresolved source condition necessary for this image-to-caption relation, or can the relation be established without it?'
             target = 'COUNTER_INTERPRETATION'
         issue = 'unresolved_condition'
+    from engine.semantic_protocol import features
+    if 'reinspect' in features(proof.get('semantic_experiment', '')):
+        # An explicit visible-property objection supplies a disputed record, not a verdict.
+        for objection in challenge.get('objections', []):
+            if objection.get('type') not in {'COUNTEREVIDENCE', 'UNSUPPORTED_INFERENCE'}:
+                continue
+            ids = set(objection.get('evidence_ids', []))
+            observed = [x for x in visual.get('observations', []) if x.get('evidence_id') in ids]
+            if not observed:
+                continue
+            locations = ', '.join(dict.fromkeys(x.get('attachment', '') for x in observed))
+            candidate_question = ('Inspect ' + locations + ' in the full image. Describe its visible objects, '
+                                  'properties, text and speaker/panel attachments; report unclear details.')
+            if len(candidate_question) <= 320:
+                target, question, issue = 'VISUAL_PREMISE', candidate_question, 'missing_or_disputed_observation'
+                diagnostic = objection.get('basis', '')
+                break
+    material_repair = 'material_repair' in features(proof.get('semantic_experiment', ''))
+    if material_repair and stop == 'visual_grounding' and not visual.get('missing_observation', '').strip():
+        # An inaccurate incidental record alone is not a material claim dispute.
+        review['_follow_up_question_status'] = 'NO_MATERIAL_OBSERVATION_REQUEST'
+        return {}
     if not question:
         return {}
     # Witness routes cap questions at 320 characters. A semantic repair carries
@@ -146,6 +168,9 @@ def plan_repair(review, debate=None, enabled=True):
     role, reason = route_question(question, target)
     freeze_candidate = (role == 'tribunal' and issue in FROZEN_REPAIR_ISSUES
                         and review.get('_compact_eligible'))
+    if material_repair and issue == 'audit_objection':
+        # The audit targets the candidate inference; a frozen faulty argument cannot improve.
+        freeze_candidate = False
     required = reserve + (0.0 if freeze_candidate else 45.0)
     if budget.get('remaining_seconds') is not None and budget['remaining_seconds'] < required:
         review['_follow_up_budget_status'] = 'SKIPPED_INSUFFICIENT_REMAINING_BUDGET'
@@ -179,6 +204,16 @@ def plan_repair(review, debate=None, enabled=True):
                        'If yes or unclear, retain uncertainty. Unavailable information can be essential; hypothetical alternatives are not observations.' if relevance_check else ''),
                 'uncertainty_relevance_check': relevance_check},
         'routing_audit': {'target': target, 'role': role, 'reason': reason}}
+    if material_repair:
+        from engine.condition_review import task
+        source = (review.get('_judge_packet') or {}).get('source_caption', '')
+        if not source:
+            return {}
+        plan['repair_context']['immutable_claim'] = task(source)
+        plan['repair_context']['candidate_policy'] = 'RECHECK_FROZEN' if freeze_candidate else 'REGENERATE_ONCE_REVERIFY'
+        plan['repair_context']['instruction'] += (' Evaluate the complete immutable C1 claim. '
+            'The question cannot replace it. Retain every qualifier and distinguish actual states from wishes. '
+            'A changed candidate must pass a fresh candidate-dependent audit; no prior acceptance transfers.')
     if freeze_candidate:
         from copy import deepcopy
         plan['repair_context']['frozen_candidate'] = {

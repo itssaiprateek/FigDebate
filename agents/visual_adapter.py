@@ -86,6 +86,19 @@ class VisualQuestion:
     text: str
     max_new_tokens: int
     required: bool = False
+    source: str = "image"
+
+    @classmethod
+    def witness(cls, text, identifier):
+        """Construct the image-owned contract once at the dispatch boundary."""
+        from engine.review_routing import route_question
+        text = " ".join(str(text or "").split())
+        role, reason = route_question(text, "VISUAL_PREMISE")
+        if role != "visual":
+            raise ValueError("witness_scope:" + reason)
+        kind = AtomicVisualQuestionController.infer_question_type(text)
+        budget = {"count": 12, "yes_no": 18, "ocr": 120, "relation": 80}.get(kind, 70)
+        return cls(identifier, kind, text, budget)
 
 
 @dataclass
@@ -207,13 +220,15 @@ class AtomicVisualQuestionController:
         text = normalized(question)
         if re.search(r"\bhow many\b|\bcount\b", text):
             return "count"
-        if re.search(r"\b(?:exact text|exact word|transcribe|readable text)\b", text):
+        if re.search(r"\b(?:exact text|exact words?|printed words?|transcribe|readable text)\b", text):
             return "ocr"
         if re.search(
             r"\b(?:left|right|above|below|between|attached|belongs|region|panel|relation)\b",
             text,
         ):
             return "relation"
+        if re.search(r"\b(?:or|versus|rather than)\b", text):
+            return "open"
         if re.match(r"^(?:is|are|does|do|has|have|can)\b", text):
             return "yes_no"
         return "open"
@@ -227,7 +242,9 @@ class AtomicVisualQuestionController:
             return False, "empty_question"
         if len(text) > 320:
             return False, "question_too_long"
-        if text.count("?") > 1:
+        if (text.count("?") > 1 or re.search(
+                r"\b(?:and|then|also)\s+(?:describe|explain|count|transcribe|identify|list|report|decide)\b",
+                text, re.I)):
             return False, "compound_question"
         if question_type == "yes_no" and re.search(
             r"\b(?:mean|means|refer(?:s)?\s+to|denote(?:s)?)\b"

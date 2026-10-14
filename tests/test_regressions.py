@@ -343,7 +343,7 @@ class SemanticDebateRegressionTests(unittest.TestCase):
         )
         engine = DebateEngine.__new__(DebateEngine)
         prompt = engine.build_agent1_challenge_prompt(
-            {}, {"label": "ENTAILS"}, comparison
+            {}, {"label": "ENTAILS"}, dict(comparison, claim_contract={"safe_for_tribunal_reasoning": True})
         )
         self.assertIn("FIGURATIVE_SYMBOL_REINSPECTION", prompt)
 

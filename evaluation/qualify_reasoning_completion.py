@@ -1,7 +1,7 @@
 """Bounded paired replay of initial reasoning on frozen upstream outputs.
 
 Development diagnostics only. Does not rerun upstream witnesses or expose gold
-labels/references to inference. Four variants differ only in the named mechanisms.
+labels/references to inference. Variants differ in the named mechanisms; all use the current reliability fixes.
 """
 import argparse
 from copy import deepcopy
@@ -24,7 +24,7 @@ def main():
     parser.add_argument("--source-runs", nargs="+", required=True, type=Path)
     parser.add_argument("--sample-ids", nargs="+", required=True)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--variants", nargs="+", choices=["baseline","completion","grounding","combined"], default=["baseline","completion","grounding","combined"])
+    parser.add_argument("--variants", nargs="+", choices=["baseline","completion","grounding","combined","compact"], default=["baseline","completion","grounding","combined","compact"])
     args = parser.parse_args()
     if len(args.sample_ids) > 20 or len(set(args.sample_ids)) != len(args.sample_ids):
         raise ValueError("Choose at most 20 unique development cases")
@@ -53,11 +53,11 @@ def main():
     runtime = MistralModel()
     begin_accounting()
     variants = [(n, c, g) for n, c, g in [("baseline",False,False),("completion",True,False),
-                 ("grounding",False,True),("combined",True,True)] if n in args.variants]
+                 ("grounding",False,True),("combined",True,True),("compact",True,True)] if n in args.variants]
     for index, identifier in enumerate(args.sample_ids):
         offset = index % len(variants)
         for name, completion, grounding in variants[offset:] + variants[:offset]:
-            arbiter = Arbiter(runtime.model, runtime.tokenizer, completion_checks=completion, grounded_interpretation=grounding)
+            arbiter = Arbiter(runtime.model, runtime.tokenizer, completion_checks=completion, grounded_interpretation=grounding, compact_reasoning=name=="compact")
             row = rows[identifier]
             trace = row["trace"]
             seed_stage(42, identifier, "initial_reasoning")

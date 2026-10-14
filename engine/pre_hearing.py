@@ -39,7 +39,7 @@ def build_pre_hearing_audit(decision, comparison, debate_assessment=None):
         reasons.extend(assessment.get("signals", []) or [])
     reasons = list(dict.fromkeys(reason for reason in reasons if reason))
     plan = build_question_plan(comparison).to_dict()
-    requires_live_hearing = bool(reasons) and bool(plan.get("agent1_question"))
+    requires_live_hearing = bool(reasons) and bool(plan.get("agent1_question") or plan.get("agent2_question"))
     return {
         "schema_version": "1.0",
         "stage": "PRE_HEARING_AUDIT",

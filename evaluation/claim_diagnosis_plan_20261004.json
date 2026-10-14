@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-04",
+  "purpose": "selected diagnostic first-review ablation, not full pipeline or held-out benchmark",
+  "feedback": "disabled",
+  "source_runs": [
+    "random50_20261003_112437",
+    "random150_20261003_142215"
+  ],
+  "pilot": [
+    "vflute_train_2567",
+    "vflute_train_4326",
+    "vflute_train_4201",
+    "vflute_train_3299",
+    "vflute_train_1895",
+    "vflute_train_2338"
+  ],
+  "reserve": [
+    "vflute_train_2041",
+    "vflute_train_4414",
+    "vflute_train_4374",
+    "vflute_train_2644"
+  ],
+  "variants": [
+    "focused",
+    "canonical",
+    "paired"
+  ],
+  "controls": "Same frozen image/catalogue/initial answer, pinned judge, seed42, unchanged budgets and gate; rotate arms. No extra review rounds. Labels/references post-prediction only.",
+  "hypotheses": [
+    "Source byte preservation does not guarantee semantic scope preservation.",
+    "Duplicate status fields cause model inconsistencies.",
+    "Protocol identifier mismatch blocks canonical decisions independently of semantics.",
+    "Concise claimed-versus-observed comparison may reduce direction and scope errors."
+  ],
+  "promotion": "Require more joint correct-label/adequate-explanation results without added harmful flips or lost sound baseline corrections; then pass reserve. Otherwise retain defaults.",
+  "limits": "Paired changes both prompt wording and field order; effects cannot be attributed separately. Provisional prior semantic screening is not independent human annotation."
+}

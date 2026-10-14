@@ -1276,6 +1276,7 @@ Text Binding: exact visible phrase -> attached visible entity, or None
 
     @staticmethod
     def _critique_review_method(critique_prompt):
+        critique_prompt = str(critique_prompt)
         if "FIGURATIVE_SYMBOL_REINSPECTION" in critique_prompt:
             return "symbolic_visual_reinspection"
         if "UNRESOLVED_TEXT_RELATION_SEMANTICS" in critique_prompt:
@@ -1369,6 +1370,8 @@ Text Binding: exact visible phrase -> attached visible entity, or None
 
     @staticmethod
     def _extract_atomic_question(critique_prompt):
+        if isinstance(critique_prompt, VisualQuestion):
+            return critique_prompt.text
         match = re.search(
             r"(?im)^Review question\s*:\s*(.+)$", str(critique_prompt or "")
         )
@@ -1380,10 +1383,12 @@ Text Binding: exact visible phrase -> attached visible entity, or None
         )
         if match:
             return " ".join(match.group(1).split()).strip()
-        return "What exact visible state or relation is shown for the claim subject?"
+        raise ValueError("Missing explicit visual question; generic substitution is prohibited")
 
     @staticmethod
     def _question_id(critique_prompt):
+        if isinstance(critique_prompt, VisualQuestion):
+            return critique_prompt.question_id
         match = re.search(
             r"(?im)^Question ID\s*:\s*([A-Za-z0-9_.-]+)",
             str(critique_prompt or ""),
@@ -1507,14 +1512,6 @@ Text Binding: exact visible phrase -> attached visible entity, or None
         return "VALID_DIRECTIONAL_ANSWER"
 
     @staticmethod
-    def _critique_quality(parsed):
-        return sum(bool(parsed.get(field)) for field in (
-            "observed_entity", "observed_state", "image_region", "reason"
-        )) + 4 * int(bool(parsed.get("_format_valid"))) + 2 * int(
-            bool(parsed.get("specific_evidence"))
-        )
-
-    @staticmethod
     def _prompt_field(prompt, name):
         match = re.search(
             rf"(?im)^\s*{re.escape(name)}\s*:\s*(.+)$", str(prompt or "")
@@ -1524,20 +1521,20 @@ Text Binding: exact visible phrase -> attached visible entity, or None
     def _atomic_critique(self, image, critique_prompt):
         question = self._extract_atomic_question(critique_prompt)
         question_id = self._question_id(critique_prompt)
-        question_type = self.question_controller.infer_question_type(question)
-        answer = self.answer_visual_question(
-            image,
-            question,
-            question_type=question_type,
-            question_id=question_id,
-        )
+        question_type = (critique_prompt.question_type if isinstance(critique_prompt, VisualQuestion)
+                         else self.question_controller.infer_question_type(question))
+        if isinstance(critique_prompt, VisualQuestion):
+            answer = self._run_atomic_question(image, critique_prompt).to_dict()
+        else:
+            answer = self.answer_visual_question(image, question,
+                question_type=question_type, question_id=question_id)
         answer_status = answer.get("status")
         observation_status = (
             "OBSERVED" if answer_status == "OBSERVED"
             else "ABSENT" if answer_status == "ABSENT"
             else "UNCLEAR"
         )
-        witness_only = "TRIBUNAL_VISUAL_WITNESS_ONLY" in str(critique_prompt)
+        witness_only = isinstance(critique_prompt, VisualQuestion) or "TRIBUNAL_VISUAL_WITNESS_ONLY" in str(critique_prompt)
         # A caption subject (for example "I") is not an observed visual entity.
         # The atomic answer has no separate entity field; retain an honest
         # generic scope instead of attributing model-unobserved role bindings.
@@ -1698,7 +1695,9 @@ UNRESOLVED means neither direction is directly established.
         }
 
     def critique(self, image, critique_prompt):
-        if getattr(self, "uses_atomic_adapter", False):
+        if isinstance(critique_prompt, VisualQuestion) or getattr(self, "uses_atomic_adapter", False):
+            if isinstance(critique_prompt, VisualQuestion) and critique_prompt.source != "image":
+                raise ValueError("Visual witness requires image-owned question")
             return self._atomic_critique(image, critique_prompt)
 
         if "UNRESOLVED_TEXT_LAYOUT_BINDING" in critique_prompt:

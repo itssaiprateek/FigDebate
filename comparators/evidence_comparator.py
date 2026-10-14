@@ -144,7 +144,7 @@ def directional_intent(*texts):
     return None
 
 
-def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Dict:
+def compare(visual_output: Dict, language_output: Dict, caption: str = "", *, preserve_assertion: bool = False) -> Dict:
     """Describe evidence available for cross-modal semantic review.
 
     This component deliberately makes a deterministic recommendation only for
@@ -389,7 +389,9 @@ def compare(visual_output: Dict, language_output: Dict, caption: str = "") -> Di
         )
     if figurative_type in {"sarcasm", "metaphor", "humor"}:
         review_questions.append(
-            "Compare the intended meaning, not only the caption's literal wording."
+            ("Resolve figurative correspondence while preserving the full asserted property, roles, polarity and qualifiers; "
+             "keep the speaker's implied intent as a separate hypothesis." if preserve_assertion else
+             "Compare the intended meaning, not only the caption's literal wording.")
         )
     else:
         review_questions.append(

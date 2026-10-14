@@ -5,3 +5,7 @@
 - Use bounded targeted checks that exercise the real review and acceptance paths. Leave full dataset runs to the user unless they explicitly request one.
 - Separate execution reliability, correction quality, harmful changes, feedback contribution and runtime. Selected development regressions cannot establish held-out accuracy or a guaranteed gain above ten percentage points.
 - Current evaluation focus is the tribunal alone. Keep feedback disabled in all future suggested commands and runs (`--feedback-mode disabled`) until the user explicitly asks to re-enable it. Do not reuse the older integrated-feedback command or resume an integrated-feedback run for a tribunal-only comparison.
+
+- Prefer replacing or removing faulty structure over adding recovery paths, reviewers, or generic retries. Every retained runtime branch must have an identified caller and purpose; preserve replay compatibility explicitly.
+- Question selection must preserve the complete source and available evidence. Unqualified upstream issue tags are hypotheses, not proof that a narrow or literal question is appropriate. Never silently replace a rejected question with an unrelated generic request.
+- Before promoting changes, inspect actual model-bound prompts and response consumers, accidental default routes, call/budget ownership, and joint label/explanation quality. Structural validity and stable wrong outputs do not establish semantic improvement.

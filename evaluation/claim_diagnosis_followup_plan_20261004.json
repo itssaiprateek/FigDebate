@@ -1,0 +1,15 @@
+{
+  "purpose": "adaptive_contract_definition_followup_not_promotion",
+  "reason": "Short paired prompt removed required reading-kind definitions and generated UNCERTAIN plus directional relation. Restore the existing field definitions before interpreting those failures as reasoning limits.",
+  "ids": [
+    "vflute_train_2567",
+    "vflute_train_2041",
+    "vflute_train_1895"
+  ],
+  "variants": [
+    "focused",
+    "paired_defined"
+  ],
+  "controls": "Frozen original images/catalogues, first review, same seed/model/budgets/gate, no extra repair hearing, definitions added only to evaluation proposer/relation prompts.",
+  "qualification": "Three selected cases diagnose this omission; they cannot qualify promotion or establish a general accuracy gain. Keep failed first pilot records."
+}

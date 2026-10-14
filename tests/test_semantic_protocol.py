@@ -23,7 +23,7 @@ class SemanticProtocolTests(unittest.TestCase):
     def setUp(self):
         begin_accounting()
 
-    def run_case(self, relation="CONFLICT", objections=None, alignment="MATCH"):
+    def run_case(self, relation="CONFLICT", objections=None, alignment="MATCH", experiment=None):
         image, p, ledger, answers = v5_fixture()
         reading = dict(kind="LITERAL", referent="meeting participants", property="calmness")
         proposal = dict(interpreted_assertion=p["source_caption"],
@@ -33,9 +33,18 @@ class SemanticProtocolTests(unittest.TestCase):
         answers[2]["reading"] = deepcopy(reading)
         answers[3] = dict(alignment=alignment, objections=objections or [],
                           evidence_ids=["VF1"], reason="The same meeting and property are compared using the visible expressions.")
+        if 'questions' in protocol.features(experiment):
+            answers[0]['deciding_check'] = {'question': 'What expressions are visible?',
+                'answer': 'The participants look alarmed.', 'evidence_ids': ['VF1']}
+        if 'conditions' in protocol.features(experiment):
+            answers[2] = dict(reading=deepcopy(reading), conditions=[dict(claim_id='C1',
+                evidence_ids=['VF1'], state_pairs=[dict(scope='Meeting participants',
+                    actual='Alarmed expressions', asserted='Calm expressions')],
+                connection='Their expressions oppose the attributed calmness.', coverage='COMPLETE',
+                assessment=relation)], reason=answers[2]['reason'])
         runtime = Runtime([proposal] + answers)
         runtime.hardware_profile = SimpleNamespace(tribunal_protocol="evidence-review-5.0")
-        runtime.tribunal_audit_mode = protocol.AUDIT_VERSION
+        runtime.tribunal_audit_mode = experiment or protocol.AUDIT_VERSION
         language = {"claim_contract": dict(contract(), source_caption=p["source_caption"],
                                             caption_proposition=p["source_caption"])}
         ledger.append(dict(id="LC1", source="agent2", type="caption_proposition",
@@ -81,10 +90,22 @@ class SemanticProtocolTests(unittest.TestCase):
         import sys
         from unittest.mock import patch
         from run_figdebate import parse_args
-        for argv, expected in [([], "completion"), (["--reasoning-mode", "baseline"], "baseline"),
+        for argv, expected in [([], "grounded"), (["--reasoning-mode", "baseline"], "baseline"),
                                (["--execution-mode", "sequential"], "baseline")]:
             with patch.object(sys, "argv", ["run_figdebate.py"] + argv):
                 self.assertEqual(parse_args().reasoning_mode, expected)
+
+    def test_cli_trial_audit_default_and_explicit_control(self):
+        import sys
+        from unittest.mock import patch
+        from run_figdebate import parse_args
+        trial = ["--judge-mode", "tribunal", "--hardware-profile", "paper-8gb-review5"]
+        for argv, expected in [(trial, "focused-audit-1"),
+                               (trial + ["--tribunal-audit-mode", "baseline"], "baseline"),
+                               (trial + ["--debate-mode", "disabled"], "baseline"),
+                               ([], "baseline")]:
+            with patch.object(sys, "argv", ["run_figdebate.py"] + argv):
+                self.assertEqual(parse_args().tribunal_audit_mode, expected)
 
     def test_real_objection_blocks_matching_labels(self):
         objection=dict(type="UNSUPPORTED_INFERENCE",disputed_step="The meeting is calm.",

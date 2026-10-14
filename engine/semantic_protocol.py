@@ -10,7 +10,11 @@ from engine.output_contracts import object_schema, validate_shape, incomplete_cl
 
 ALIGNMENT_VERSION = "aligned-reading-1"
 AUDIT_VERSION = "focused-audit-1"
-MODES = {"baseline", "process-audit-1", ALIGNMENT_VERSION, AUDIT_VERSION}
+EXPERIMENTS = {'reason-first-audit-1': {'reason_first'}, 'condition-audit-1': {'conditions'},
+               'condition-repair-1': {'conditions', 'material_repair'}, 'questions-audit-1': {'questions'}, 'mapping-audit-1': {'mapping'},
+               'reinspect-audit-1': {'reinspect'}, 'coherent-audit-1': {'audit'},
+               'combined-audit-1': {'questions', 'mapping', 'reinspect', 'audit'}}
+MODES = {"baseline", "process-audit-1", ALIGNMENT_VERSION, AUDIT_VERSION} | set(EXPERIMENTS)
 RULES = (
     "Evaluate the original assertion under the V-FLUTE visual-entailment task. "
     "Keep the asserted property, participants, polarity, modality and qualifiers. "
@@ -41,11 +45,14 @@ READING_INSTRUCTIONS = (
 
 
 def mode(runtime):
-    return getattr(runtime, "tribunal_audit_mode", "baseline")
+    value = getattr(runtime, "tribunal_audit_mode", "baseline")
+    if value not in MODES:
+        raise ValueError(f"Unknown tribunal audit mode: {value}")
+    return value
 
 
 def aligned(runtime):
-    return mode(runtime) in {ALIGNMENT_VERSION, AUDIT_VERSION}
+    return mode(runtime) in {ALIGNMENT_VERSION, AUDIT_VERSION} | set(EXPERIMENTS)
 
 
 def reading_schema(base):
@@ -168,3 +175,63 @@ def dispute_key(review, issue, diagnostic):
     data = [issue, diagnostic, packet.get("source_sha256"),
             packet.get("observations"), proof.get("selected_evidence_ids")]
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+OPEN_CHECK_INSTRUCTIONS = (
+    "Before selecting evidence, formulate ONE open factual question about the deciding visible property "
+    "or relationship, and answer it from pixels. Do not embed a preferred answer, an entailment label "
+    "or a figurative interpretation in the question. For comparisons identify who says what about whom; "
+    "for ordering identify each panel/time; for quantity describe the visible distribution. "
+    "If not visible say UNCLEAR. Cite IDs only when their full wording supports the answer. "
+    "The question/answer is fallible testimony, not proof or a new catalogue fact. "
+)
+MAPPING_INSTRUCTIONS = (
+    "In your mapping reason explain: pictured situation -> conventional connection -> attributed property. "
+    "Distinguish the property ASSERTED by the caption from what is OBSERVED. "
+    "Mark this as an interpretation hypothesis, never an observation. Establish the contextual link "
+    "before requiring literal participants. Material-to-product relations, visualized idioms, wordplay, "
+    "and contextual workarounds can license a joke; topic overlap or a generic emotional association cannot. "
+    "For literal claims do not invent a figurative link. Preserve all material qualifiers. "
+)
+COHERENT_AUDIT_INSTRUCTIONS = (
+    "Explicitly compare candidate and independent assessment for the same participant, attributed property, "
+    "polarity, speaker, time, and contextual reading. Inspect the candidate REASON as well as its relation. "
+    "A correct-looking relation with a reason asserting the opposite is a material error. "
+    "Every objection must name the exact disputed inference, its cited counterevidence or necessary missing "
+    "premise, and why this changes or prevents the conclusion. Distinguish no evidence from positive "
+    "incompatibility. If the verifier changes the caption's property or demands a literal metaphor source, "
+    "report that disagreement instead of certifying its substituted claim. A critique that itself fails "
+    "does not automatically validate the candidate. Do not equate missing history with contradiction. "
+)
+
+
+def features(name):
+    return EXPERIMENTS.get(name, set())
+
+
+def open_selection_schema(base, known):
+    result = deepcopy(base)
+    result['properties']['deciding_check'] = object_schema({
+        'question': TEXT, 'answer': TEXT,
+        'evidence_ids': {'type': 'array', 'maxItems': 4,
+                         'items': {'type': 'string', 'enum': sorted(known)}}})
+    result['required'].append('deciding_check')
+    return result
+
+
+def explanation_first_schema(schema, field='reason'):
+    """Change generation order only; retain every property and constraint."""
+    result = deepcopy(schema)
+    if field not in result.get('properties', {}):
+        raise ValueError('Missing explanation field')
+    result['properties'] = {field: result['properties'][field],
+        **{k:v for k,v in result['properties'].items() if k != field}}
+    result['required'] = [k for k in result['properties'] if k in result['required']]
+    return result
+
+
+def reading_instructions(explanation_first=False):
+    if not explanation_first:
+        return READING_INSTRUCTIONS
+    # Keep the reading obligation; remove only the conflicting field-order instruction.
+    return READING_INSTRUCTIONS.replace('Generate reading first:', 'Describe reading:')

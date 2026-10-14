@@ -448,10 +448,17 @@ def apply_tribunal_resolution(
         if metadata["confirmation_valid"]:
             metadata['terminal_outcome'] = 'VERIFIED_CONCLUSION'
             current_decision = deepcopy(current_decision)
+            # Confirmation certifies its own argument, not an old unresolved rationale.
+            # Preserve an existing directional explanation; replace only failed or
+            # explicitly unresolved assessments after the unchanged proof gate passes.
+            replace_explanation = (current_decision.get("_explanation_generation_failed")
+                                   or current_decision.get("_semantic_relation_status") == "UNRESOLVED")
             current_decision["_semantic_relation_status"] = RELATION_FOR_LABEL[proposed_label]
             current_decision["_binary_label_is_unverified"] = False
-            if current_decision.get("_explanation_generation_failed"):
-                current_decision["_previous_incomplete_explanation"] = current_decision.get("explanation", "")
+            if replace_explanation:
+                current_decision["_previous_unverified_explanation"] = current_decision.get("explanation", "")
+                if current_decision.get("_explanation_generation_failed"):
+                    current_decision["_previous_incomplete_explanation"] = current_decision.get("explanation", "")
                 current_decision.update(explanation=review.get("reason", ""),
                     _explanation_generation_failed=False, _reasoning_execution_status="SUCCEEDED",
                     _explanation_repaired_by="tribunal_confirmation")

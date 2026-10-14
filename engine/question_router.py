@@ -2,7 +2,6 @@
 
 from dataclasses import asdict, dataclass
 
-from agents.visual_adapter import AtomicVisualQuestionController
 from engine.reasoning_schema import (
     normalize_figurative_mechanism,
     normalize_structural_type,
@@ -41,11 +40,6 @@ class TribunalQuestionPlan:
 
     def to_dict(self):
         return asdict(self)
-
-
-def _clean(value, fallback="the claim subject"):
-    text = " ".join(str(value or "").split()).strip()
-    return text or fallback
 
 
 def classify_issue(comparison):
@@ -108,209 +102,120 @@ def classify_issue(comparison):
     return "SEMANTIC_RELATION"
 
 
-def build_question_plan(comparison):
-    comparison = comparison or {}
-    relation = comparison.get("claim_relation", {}) or {}
-    contract = comparison.get("claim_contract", {}) or {}
-    issue_type = classify_issue(comparison)
-    subject = _clean(relation.get("subject"))
-    expected = _clean(relation.get("expected_visual_state"), "expected state")
-    opposite = _clean(relation.get("opposite_visual_state"), "opposite state")
+# Source identity is not a question-selection policy. These templates contain
+# no extracted subject/property guesses and cannot demand a literal idiom object.
+_PLANS = {
+    "CLAIM_CONTRACT_INVALID": (
+        "The source representation must be checked before directional reasoning.",
+        "", "Restate the complete original caption, preserving participants, negation and qualifiers.",
+        "Validate source preservation before assessing the image relation.", False),
+    "TEMPORAL_CAUSAL_SEQUENCE": (
+        "The claim depends on order or an attributed cause.",
+        "Describe the visible event sequence, keeping each actor, action and outcome attached to its panel.",
+        "Which event order or causal relationship does the complete caption assert?",
+        "Compare observed order with asserted order; do not infer causation from sequence alone.", True),
+    "QUOTED_STATEMENT_AND_REACTION": (
+        "A displayed statement and a reaction have different roles.",
+        "Describe the visible response to the displayed message, identifying its speaker and target.",
+        "Whose assertion or reaction does the caption express? Preserve any quotation scope.",
+        "Check the message, reaction and target without treating a quoted belief as fact.", True),
+    "AFFECTIVE_SCENE": (
+        "The claim depends on a depicted expression or evaluation.",
+        "Describe the visible facial expressions and posture of the pictured participants.",
+        "What emotional or evaluative property does the caption assert, including its degree and scope?",
+        "Check the contextual connection; appearance alone need not establish a hidden history.", True),
+    "METAPHOR_MAPPING": (
+        "A depicted situation may instantiate a figurative property.",
+        "Describe the visible actions and physical states of the pictured entities.",
+        "What property does the caption attribute under a conventional figurative reading? Preserve qualifiers.",
+        "Check the licensed connection between depicted and asserted properties; topic overlap is insufficient.", True),
+    "SARCASM_POLARITY": (
+        "The expressed evaluation and implied attitude may differ.",
+        "Describe the visible situation and the participants' actions.",
+        "What does the caption assert, and what wording permits a different speaker attitude?",
+        "Assess the expressed claim in context; sarcasm alone does not determine the relation.", True),
+    "OCR_BINDING": (
+        "Visible wording needs its speaker, object or panel attachment.",
+        "Transcribe readable text with its speaker, object or panel attachment.",
+        "Which caption roles need to be matched to the displayed wording?",
+        "Verify text-to-role attachment before combining the claims.", True),
+    "COMPARISON_OR_OUTCOME": (
+        "The claim depends on a comparison or displayed outcome.",
+        "Describe the visible action and displayed outcome for each pictured participant, retaining its panel and time wording.",
+        "What comparison does the complete caption assert, and between which participants?",
+        "Compare actual outcomes under the same scope; keep wishes and predictions separate.", True),
+    "DIRECTIONAL_RELATION": (
+        "A proposed relation needs a grounded comparison.",
+        "Describe the directly visible actions and states of the pictured participants.",
+        "What complete proposition does the caption assert? Preserve its polarity and qualifiers.",
+        "Compare the assertion with observations; lack of evidence is not contrary evidence.", True),
+    "SYMBOL_ATTACHMENT": (
+        "A depicted symbol needs a physical attachment.",
+        "Describe visible symbols with their location, attachment and physical condition.",
+        "What property does the caption assert without assuming a symbol is present?",
+        "Check the contextual association separately from the visible symbol.", True),
+    "NORMATIVE_REASONING": (
+        "The claim includes an evaluation.",
+        "Describe the visible action and its recipient.",
+        "What evaluation does the caption make and about which action?",
+        "Separate observed facts from the evaluative inference.", False),
+    "PRAGMATIC_SCOPE": (
+        "A conventional construction affects the claim's scope.",
+        "Transcribe readable wording with its speaker or object attachment.",
+        "What proposition does the construction express, preserving its subject and scope?",
+        "Check the contextual reading against the original assertion.", True),
+    "BACKGROUND_KNOWLEDGE": (
+        "A necessary premise may be unavailable in the image.",
+        "", "Which necessary background premise cannot be established from the caption alone?",
+        "Determine whether the unavailable premise is necessary; retain uncertainty if it is.", False),
+    "CONFLICTING_VERIFIED_EVIDENCE": (
+        "Opposing evidence needs a scope check.",
+        "Describe the visible states with their participant, panel and time attachments.",
+        "Which scope or qualifier distinguishes the competing interpretations of the caption?",
+        "Check whether the opposing records describe the same subject and state.", True),
+    "INSUFFICIENT_VISUAL_OBSERVATION": (
+        "No deciding observation has been established.",
+        "Describe the directly visible entities and their actions.",
+        "Which necessary part of the complete caption needs observable evidence?",
+        "Keep uncertainty unless an available observation resolves the necessary condition.", True),
+    "SEMANTIC_RELATION": (
+        "The image-to-caption relationship remains unresolved.",
+        "Describe the directly visible relationships among the pictured entities.",
+        "Explain the complete expressed caption, preserving roles, negation and qualifiers.",
+        "Assess a context-licensed interpretation of the complete source; do not invent a literal referent.", True),
+}
 
-    graph = contract.get("claim_graph")
-    if graph and graph.get("representation") == "UNDECOMPOSED_SOURCE" and not graph.get("errors"):
-        return TribunalQuestionPlan(
-            "SEMANTIC_RELATION", "Resolve the complete source claim without assuming a literal pictured referent.",
+
+def build_question_plan(comparison):
+    issue = classify_issue(comparison or {})
+    if issue not in _PLANS:
+        raise ValueError(f"Unknown question issue: {issue}")
+    plan = TribunalQuestionPlan(issue, *_PLANS[issue])
+    graph = ((comparison or {}).get("claim_contract") or {}).get("claim_graph") or {}
+    if graph.get("representation") == "UNDECOMPOSED_SOURCE" and issue != "CLAIM_CONTRACT_INVALID":
+        # Preserve coverage when the upstream issue tag is only a hypothesis.
+        # Specific missing-fact requests from a hearing still take precedence.
+        plan = TribunalQuestionPlan(issue, plan.issue,
             "Report visible text with its object or panel bindings, and visible actions, states and relationships. "
             "Distinguish observations from unclear details.",
-            "Explain the complete expressed caption, preserving roles, comparisons, negation and qualifiers. "
-            "Separate conventional idiom meaning and possible sarcasm from source assertions.",
-            "Bind observations to source claim C1; assess the justified reading without inventing a literal referent.", True)
-    if graph is not None and not graph.get("errors") and issue_type not in {
-        "CLAIM_CONTRACT_INVALID", "BACKGROUND_KNOWLEDGE", "NORMATIVE_REASONING"
-    }:
-        questions = [f"[{node['id']}] For {node['subject']}, report the visible state or relation relevant to "
-                     f"{node['interpreted_proposition']}, retaining qualifiers {node['qualifiers']}. "
-                     "Distinguish observed facts from unavailable information."
-                     for node in graph.get("nodes", [])]
-        return TribunalQuestionPlan(
-            "SEMANTIC_RELATION", "Resolve the source-anchored claim obligations separately.",
-            "\n".join(questions),
-            "Check each claim node's reading and scope against the original caption; do not invent image facts.",
-            "Bind each observation and its region to its claim-node ID; preserve dependencies.", True)
-
-    if issue_type == "CLAIM_CONTRACT_INVALID":
-        return TribunalQuestionPlan(
-            issue_type,
-            "The caption claim frame is incomplete or changed.",
-            f"What directly visible state or action involves {subject}?",
-            "Restate the exact caption proposition, preserving entities, polarity, comparisons, and outcomes.",
-            "Validate the repaired claim contract before directional reasoning.",
-            False,
-        )
-    if issue_type == "TEMPORAL_CAUSAL_SEQUENCE":
-        return TribunalQuestionPlan(
-            issue_type,
-            "The claim depends on event order, actual cause, or attributed cause.",
-            "For each relevant panel in order, what actor, action, object, immediate effect, and later outcome are directly visible?",
-            "State the caption's claimed actor, cause, outcome, and any blamed target separately.",
-            "Build and verify the ordered event chain before assigning a relation.",
-            True,
-        )
-    if issue_type == "QUOTED_STATEMENT_AND_REACTION":
-        return TribunalQuestionPlan(
-            issue_type,
-            "A displayed statement and a reaction to it have different semantic roles.",
-            "What exact statement is shown, what exact reaction is shown, and what visible item is the reaction directed toward?",
-            "Separate the quoted proposition from the speaker's evaluation or reaction to it.",
-            "Verify statement-to-reaction target binding and reaction polarity.",
-            True,
-        )
-    if issue_type == "AFFECTIVE_SCENE":
-        return TribunalQuestionPlan(
-            issue_type,
-            "The claim depends on an emotional or evaluative scene state.",
-            f"Describe the directly visible facial, posture, interaction, motion, and environmental cues involving {subject}.",
-            f"State which observable cues would instantiate '{expected}' versus '{opposite}' without imagining the image.",
-            "Aggregate only mutually consistent observable affective cues.",
-            True,
-        )
-    if issue_type == "METAPHOR_MAPPING":
-        return TribunalQuestionPlan(
-            issue_type,
-            "A literal source entity may represent a different caption target.",
-            f"Describe the directly visible behavior and state of the source entity associated with {subject}, without interpreting what it represents.",
-            "State the caption target and the exact property that a source image would need to share with it.",
-            "Verify source property, target property, and their shared mapping separately.",
-            True,
-        )
-    if issue_type == "SARCASM_POLARITY":
-        return TribunalQuestionPlan(
-            issue_type,
-            "The caption's literal and intended polarity may differ.",
-            f"What directly visible subject and state corresponding to {subject} are shown?",
-            "State the literal polarity, intended polarity, and exact linguistic reversal cues separately.",
-            "Verify visual referent grounding separately from linguistic polarity reversal.",
-            True,
-        )
-    if issue_type == "OCR_BINDING":
-        return TribunalQuestionPlan(
-            issue_type,
-            "Visible text is not reliably bound to its object or region.",
-            "Which exact text belongs to each relevant visible object, person, panel, or region?",
-            "Which caption entities and comparison roles must the visible labels instantiate?",
-            "Verify each object-to-text binding from targeted image regions.",
-            True,
-        )
-    if issue_type == "COMPARISON_OR_OUTCOME":
-        return TribunalQuestionPlan(
-            issue_type,
-            "The disputed claim depends on a comparison, action, or displayed outcome.",
-            f"What separate visible action and resulting outcome are shown for each instance of {subject}?",
-            "Which actions, outcomes, and comparison direction does the caption actually assert?",
-            "Verify participant-to-action and participant-to-outcome bindings separately.",
-            True,
-        )
-    if issue_type == "DIRECTIONAL_RELATION":
-        return TribunalQuestionPlan(
-            issue_type,
-            "A lexical relation candidate has not been visually verified.",
-            f"What exact visible state is shown for {subject}?",
-            f"Explain why '{expected}' and '{opposite}' are mutually opposing conditions for the caption.",
-            "Independently verify entity identity and directional state.",
-            True,
-        )
-    if issue_type == "SYMBOL_ATTACHMENT":
-        return TribunalQuestionPlan(
-            issue_type,
-            "A possible symbol must be identified and bound to the correct subject.",
-            f"What symbol is visibly attached to {subject}, and what is its observable condition?",
-            "What property does the caption assert, without assuming a particular visible symbol?",
-            "Verify symbol identity, attachment, condition, and claimed association independently.",
-            True,
-        )
-    if issue_type == "NORMATIVE_REASONING":
-        return TribunalQuestionPlan(
-            issue_type,
-            "The caption makes an evaluative or normative claim.",
-            "What exact visible action, wording, target, and treatment are shown?",
-            "State the evaluative claim and the behavior that would instantiate it, without imagining the image.",
-            "Keep visual facts separate from the normative inference and verify both premises.",
-            False,
-        )
-    if issue_type == "PRAGMATIC_SCOPE":
-        return TribunalQuestionPlan(
-            issue_type,
-            "A conventional English construction changes the literal scope.",
-            "Report the exact displayed wording, speaker or target, and associated visible object.",
-            "State the literal proposition and intended pragmatic proposition separately, preserving the target.",
-            "Verify which property the construction attributes to which target before assigning direction.",
-            True,
-        )
-    if issue_type == "BACKGROUND_KNOWLEDGE":
-        return TribunalQuestionPlan(
-            issue_type,
-            "The relation cannot be resolved from pixels alone.",
-            f"What exact visible entity, action, text, or relationship involving {subject} is shown?",
-            "State the minimum general background fact required to interpret the caption.",
-            "Verify visual and background premises independently before combining them.",
-            False,
-        )
-    if issue_type == "CONFLICTING_VERIFIED_EVIDENCE":
-        return TribunalQuestionPlan(
-            issue_type,
-            "Verified evidence exists in opposing directions.",
-            f"Which current visible state of {subject} resolves the conflicting records?",
-            "Which exact caption condition distinguishes support from conflict?",
-            "Reconfirm the disputed evidence using an independent method.",
-            True,
-        )
-    if issue_type == "INSUFFICIENT_VISUAL_OBSERVATION":
-        return TribunalQuestionPlan(
-            issue_type,
-            "The initial visual record is incomplete.",
-            f"What directly visible entity and state correspond to {subject}?",
-            "Identify the minimum observable condition needed to test the caption.",
-            "Recover only the missing observation using a targeted inspection.",
-            True,
-        )
-    return TribunalQuestionPlan(
-        issue_type,
-        "The cross-modal semantic relation is unresolved.",
-        f"What exact visible state or relation is shown for {subject}?",
-        "What exact proposition and polarity must the image support or conflict with?",
-        "Verify the subject-bound relation without using missing evidence as conflict.",
-        True,
-    )
+            plan.agent2_question, plan.verification_request, plan.visually_resolvable)
+    return plan
 
 
 def compile_visual_question(comparison, mediation=None):
-    """Return one validated visual-only question with a safe fallback.
+    """Select a visual request, never replace a rejected request with another task.
 
-    Mediator text is advisory.  It is never sent to Agent 1 until the same
-    controller that validates direct visual questions has accepted it.
+    Legacy text callers retain this adapter; every origin uses the same route.
+    Empty means no valid visual work and must not cause a model call.
     """
+    from engine.review_routing import route_question
     mediation = mediation or {}
-    candidates = list(mediation.get("agent1_questions", []) or [])
-    candidates += list(mediation.get("verification_requests", []) or [])
-    for candidate in candidates:
-        question = " ".join(str(candidate or "").split()).strip()
-        question_type = AtomicVisualQuestionController.infer_question_type(
-            question
-        )
-        valid, _ = AtomicVisualQuestionController.validate_question(
-            question, question_type
-        )
-        from engine.review_routing import route_question
-        role, _ = route_question(question, 'VISUAL_PREMISE')
-        if valid and role == 'visual':
-            return question
-
-    fallback = build_question_plan(comparison or {}).agent1_question
-    fallback_type = AtomicVisualQuestionController.infer_question_type(fallback)
-    valid, _ = AtomicVisualQuestionController.validate_question(
-        fallback, fallback_type
-    )
-    if valid:
-        return fallback
-    return "What directly visible state or action involves the main subject?"
+    candidates = [(q, "VISUAL_PREMISE") for q in mediation.get("agent1_questions", []) or []]
+    candidates += [(q, "COUNTER_INTERPRETATION") for q in mediation.get("verification_requests", []) or []]
+    if not candidates:
+        candidates = [(build_question_plan(comparison or {}).agent1_question, "VISUAL_PREMISE")]
+    for candidate, target in candidates:
+        text = " ".join(str(candidate or "").split())
+        if route_question(text, target)[0] == "visual":
+            return text
+    return ""

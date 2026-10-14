@@ -65,8 +65,8 @@ class StagewiseRunner:
         control_mode="none",
         batch_size=32,
         tribunal_repair_mode="disabled",
-        tribunal_audit_mode="baseline",
-        reasoning_mode="baseline",
+        tribunal_audit_mode=None,
+        reasoning_mode=None,
     ):
         if feedback_mode not in {"disabled", "collect", "calibrate", "verified", "precedent", "integrated"}:
             raise ValueError(f"Unknown feedback mode: {feedback_mode}")
@@ -97,12 +97,16 @@ class StagewiseRunner:
         self.judge_mode = judge_mode
         self.judge_scope = judge_scope
         self.hardware_profile = resolve_runtime_profile(hardware_profile)
+        from engine.runtime_profile import resolve_reasoning_modes
+        reasoning_mode, tribunal_audit_mode = resolve_reasoning_modes(
+            judge_mode=judge_mode, hardware_profile=self.hardware_profile, debate_mode=debate_mode,
+            feedback_mode=feedback_mode, reasoning_mode=reasoning_mode, tribunal_audit_mode=tribunal_audit_mode)
         from engine.tribunal_repair import validate_options
         validate_options(tribunal_repair_mode, tribunal_audit_mode, judge_mode,
                          debate_mode, self.hardware_profile.tribunal_protocol, feedback_mode)
         self.tribunal_repair_mode = tribunal_repair_mode
         self.tribunal_audit_mode = tribunal_audit_mode
-        if reasoning_mode not in {"baseline", "completion", "grounded"}:
+        if reasoning_mode not in {"baseline", "completion", "grounded", "compact"}:
             raise ValueError("Unknown reasoning mode")
         self.reasoning_mode = reasoning_mode
         if feedback_mode == 'integrated' and (judge_mode != 'tribunal' or debate_mode == 'disabled'):
@@ -805,7 +809,8 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                         evidence_verifier.nli if evidence_verifier else None
                     ),
                     completion_checks=getattr(self, "reasoning_mode", "baseline") != "baseline",
-                    grounded_interpretation=getattr(self, "reasoning_mode", "baseline") == "grounded",
+                    grounded_interpretation=getattr(self, "reasoning_mode", "baseline") in {"grounded", "compact"},
+                    compact_reasoning=getattr(self, "reasoning_mode", "baseline") == "compact",
                 )
                 for sample in batch:
                     cached = self.stage_checkpoints.load("initial_reasoning", sample)
@@ -833,7 +838,9 @@ Do not treat missing support as contradiction or broad thematic similarity as pr
                     )
                     comparison_started = time.time()
                     comparison = compare(
-                        visual_output, language_output, caption=sample["caption"]
+                        visual_output, language_output, caption=sample["caption"],
+                        preserve_assertion=getattr(self, 'tribunal_audit_mode', 'baseline') in
+                            {'condition-audit-1', 'condition-repair-1'}
                     )
                     comparison_seconds = time.time() - comparison_started
                     evidence_ledger = build_evidence_ledger(

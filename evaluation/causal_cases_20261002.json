@@ -1,0 +1,114 @@
+{
+  "vflute_train_1595": {
+    "source_sha256": "373a25042b5fa970c93eab494fd26be8befb3b84965b062e61839fedbe9afeca",
+    "image_sha256": "90166fed52c9d589895d797e7dcd2111484c30e5bbab83b9fcf6c6d60a09a824",
+    "checked_observations": [
+      {
+        "id": "EV1",
+        "text": "A man has tightly closed eyes, a furrowed forehead, an open mouth, and a visibly distressed expression."
+      },
+      {
+        "id": "EV2",
+        "text": "One hand presses against his forehead and eye; the other hand is near his ear. No text is visible."
+      }
+    ],
+    "primary_semantic_case": true,
+    "expected_for_diagnostic": "ENTAILS",
+    "reviewer": "Codex image inspection; not independent human annotation",
+    "qualification": "Assess decisive connection, not lexical similarity."
+  },
+  "vflute_train_3351": {
+    "source_sha256": "0fc829df5912bf8cb5190e0f6b6fe085552c932bde595bab4dbe45e6f2cd1926",
+    "image_sha256": "c4f74aa7e3fa42e82850e004e2f8dbe6a130c064acdf1a565c14832b6ca64e78",
+    "checked_observations": [
+      {
+        "id": "EV1",
+        "text": "The white bottle reads: PRODUCT YOU HATE AND YOU'RE TRYING TO USE IT ALL UP QUICKLY TO THROW IT AWAY. The text beneath that bottle reads: LASTS FOR MONTHS."
+      },
+      {
+        "id": "EV2",
+        "text": "The red bottle reads: PRODUCT YOU LOVE AND YOU'RE TRYING TO RATION SO THAT IT LASTS A LONG TIME. The text beneath that bottle reads: GONE IN A WEEK."
+      }
+    ],
+    "primary_semantic_case": true,
+    "expected_for_diagnostic": "CONTRADICTS",
+    "reviewer": "Codex image inspection; not independent human annotation",
+    "qualification": "Assess decisive connection, not lexical similarity."
+  },
+  "vflute_train_4255": {
+    "source_sha256": "510d4b69950b6186fef66067df2c9586eb66a427dcf1422964b5292ed72b50d0",
+    "image_sha256": "c84f0b813cc9b67bb43c6e473164ea858c446828493021b3feca0d8d4e77ef7c",
+    "checked_observations": [
+      {
+        "id": "EV1",
+        "text": "The top headline reads: New Bubble Wrap Will No Longer Pop When You Squeeze It. A hand squeezing bubble wrap is pictured beneath it."
+      },
+      {
+        "id": "EV2",
+        "text": "The bottom panel shows Thomas the Tank Engine with a frowning expression and the text: Thomas had never seen such bullshit before."
+      }
+    ],
+    "primary_semantic_case": true,
+    "expected_for_diagnostic": "CONTRADICTS",
+    "reviewer": "Codex image inspection; not independent human annotation",
+    "qualification": "Assess decisive connection, not lexical similarity."
+  },
+  "vflute_train_3255": {
+    "source_sha256": "46406372057e2344fbe5dccac6426a114d80d0831a11f6c3c001acc2ae678c0c",
+    "image_sha256": "d580d44f1d2bc02060ae18c558575ebfcf70f0b17aa4110ff29525a3b87cd706",
+    "checked_observations": [
+      {
+        "id": "EV1",
+        "text": "A cartoon depicts a man at one end of a long table facing a group of people seated on wheeled chairs. A blank screen is on the wall."
+      },
+      {
+        "id": "EV2",
+        "text": "The table and floor/wall boundary run steeply diagonally downward toward the group; the group and chairs appear tilted along that slope."
+      },
+      {
+        "id": "EV3",
+        "text": "An artist signature appears at lower left. There is no dialogue printed within the image."
+      }
+    ],
+    "primary_semantic_case": true,
+    "expected_for_diagnostic": "ENTAILS",
+    "reviewer": "Codex image inspection; not independent human annotation",
+    "qualification": "Assess decisive connection, not lexical similarity."
+  },
+  "vflute_train_4315": {
+    "source_sha256": "24d8d2d070d6894893a5d6f3b6377fc19dd811ac369a8f752bc6732e9534268d",
+    "image_sha256": "5eac547cf13006fe4fcb6b083e47bed806bb25a36b820195dbda8ee5a866bb95",
+    "checked_observations": [
+      {
+        "id": "EV1",
+        "text": "Five people sit around a rectangular meeting table in a dark room. The central person has a wide-open mouth and raised eyebrows."
+      },
+      {
+        "id": "EV2",
+        "text": "Several black bat-shaped figures appear over the table and at the ceiling light. Other people look toward the table or each other."
+      }
+    ],
+    "primary_semantic_case": true,
+    "expected_for_diagnostic": "CONTRADICTS",
+    "reviewer": "Codex image inspection; not independent human annotation",
+    "qualification": "Assess decisive connection, not lexical similarity."
+  },
+  "vflute_train_4547": {
+    "source_sha256": "1d70e6a508a97372bf2852303cd458495e07f6061f735edead8d8823aa3f560b",
+    "image_sha256": "d9168288f69c13bd6b819a286d80ebea138d1a1551fa229675f84022078012dd",
+    "checked_observations": [
+      {
+        "id": "EV1",
+        "text": "A dark purple football jersey is shown with a subtle geometric pattern, yellow shoulder and sleeve trim, a yellow Nike swoosh and a Tottenham crest."
+      },
+      {
+        "id": "EV2",
+        "text": "Large yellow AIA lettering appears across the front. There are no earlier jerseys or comparison designs in the image."
+      }
+    ],
+    "primary_semantic_case": false,
+    "expected_for_diagnostic": "UNRESOLVED",
+    "reviewer": "Codex image inspection; not independent human annotation",
+    "qualification": "Jersey originality is unobservable without comparison context."
+  }
+}

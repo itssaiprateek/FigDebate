@@ -1237,32 +1237,10 @@ attached to the caption subject.
                 comparison or {}, plan
             )
 
-        if not atomic_question and diagnostic_questions:
-            atomic_question = str(diagnostic_questions[0])
         if not atomic_question:
-            atomic_question = build_question_plan(
-                comparison or {}
-            ).agent1_question
+            atomic_question = compile_visual_question(comparison or {}, plan)
         if not atomic_question:
-            if "TEXT_LAYOUT_BINDING" in relation_focus:
-                atomic_question = (
-                    "Which exact text belongs to each visible panel or object?"
-                )
-            elif "TEXT_RELATION_SEMANTICS" in relation_focus:
-                atomic_question = (
-                    "Which visible entities do the printed labels identify, "
-                    "and what relation is visibly shown between them?"
-                )
-            elif "FIGURATIVE_SYMBOL" in relation_focus:
-                atomic_question = (
-                    "What visible symbol is attached to the claim subject, "
-                    "and what exact condition is that symbol in?"
-                )
-            else:
-                atomic_question = (
-                    "What exact visible state or relation is shown for the "
-                    "caption subject?"
-                )
+            raise ValueError("No valid visual question; no generic fallback is permitted")
         # The visual adapter parses one header line. Preserve all words of a
         # multiline request instead of silently losing everything after line one.
         atomic_question = " ".join(str(atomic_question).split())
@@ -1343,10 +1321,19 @@ unclear, never contradiction.
                         continue
                 current.update(_requested_visual_question=requested,
                     question_id=question_id(case.get("caption", ""), requested, "agent1"))
-            prompt = self.build_agent1_challenge_prompt(case["visual_output"], case["decision"],
-                case.get("comparison"), current)
-            if case.get("tribunal_hearing", False):
-                prompt += "\nTRIBUNAL_VISUAL_WITNESS_ONLY: Report direct observations, never the caption relation.\n"
+            try:
+                if case.get("tribunal_hearing", False):
+                    from agents.visual_adapter import VisualQuestion
+                    requested = requested or compile_visual_question(case.get("comparison"), plan)
+                    current["question_id"] = question_id(case.get("caption", ""), requested, "agent1")
+                    prompt = VisualQuestion.witness(requested, current["question_id"])
+                else:
+                    prompt = self.build_agent1_challenge_prompt(case["visual_output"], case["decision"],
+                        case.get("comparison"), current)
+            except ValueError as error:
+                replies.append({"_format_valid": False, "response_status": "NOT_DISPATCHED",
+                    "requested_question": requested, "reason": str(error), "recommendation": "ABSTAIN"})
+                continue
             seed_stage(getattr(self, "global_seed", 42), case.get("sample_id", case["key"]),
                        "debate_visual_witness", index)
             try:
@@ -1365,7 +1352,10 @@ unclear, never contradiction.
                                  reason='Returned witness response does not match the dispatched question')
                 reply['dispatched_question_id'] = current['question_id']
                 reply.setdefault('question_id', current['question_id'])
-            reply["delivered_prompt"] = prompt
+            from dataclasses import asdict, is_dataclass
+            reply["delivered_request"] = asdict(prompt) if is_dataclass(prompt) else {"legacy_prompt": prompt}
+            reply["delivered_prompt"] = (agent.question_controller.build_prompt(prompt.text, prompt.question_type)
+                if is_dataclass(prompt) and hasattr(agent, "question_controller") else str(prompt))
             replies.append(reply)
         primary = deepcopy(next((r for r in replies if r.get("_format_valid")), replies[0]))
         primary["question_answers"] = replies

@@ -38,7 +38,7 @@ Reasoning: one sentence citing [VISUAL], [CAPTION], or [COMPARATOR].
     FALLBACK_CONFIDENCE_CAP = 0.49
 
 
-    def __init__(self, mistral_model, tokenizer, nli_verifier=None, *, completion_checks=False, grounded_interpretation=False):
+    def __init__(self, mistral_model, tokenizer, nli_verifier=None, *, completion_checks=False, grounded_interpretation=False, compact_reasoning=False):
         if torch is None:
             raise RuntimeError(
                 "The Arbiter requires PyTorch. Run check_environment.py."
@@ -46,6 +46,7 @@ Reasoning: one sentence citing [VISUAL], [CAPTION], or [COMPARATOR].
 
         self.completion_checks = completion_checks
         self.grounded_interpretation = grounded_interpretation
+        self.compact_reasoning = compact_reasoning
         self.model = mistral_model
         self.tokenizer = tokenizer
         self._nli_verifier = nli_verifier
@@ -729,7 +730,7 @@ Confidence:
             truncation=not getattr(self, "completion_checks", False),
         ).to(self.model.device)
         if getattr(self, "completion_checks", False) and inputs["input_ids"].shape[1] > 2048:
-            self._last_generation_diagnostics = {"input_truncated": True, "finish_reason": "input_budget_exceeded"}
+            self._last_generation_diagnostics = {"input_truncated": False, "finish_reason": "input_budget_exceeded", "input_tokens": int(inputs["input_ids"].shape[1])}
             raise RuntimeError("Complete initial assessment inputs exceed the supported context budget")
 
         generation_options = {}
@@ -834,6 +835,24 @@ Confidence:
             assessment,
             support_first=False,
         )
+        self._scoring_budget_exceeded = False
+        if getattr(self, 'completion_checks', False) and hasattr(self.tokenizer, 'encode'):
+            if max(len(self.tokenizer.encode(x)) for x in (forward_prompt, reversed_prompt)) > 2048:
+                # Share the lossless observation packet, not duplicate summaries and rendered citations.
+                import json
+                from engine.reasoning_contract import fields
+                packet = getattr(self, '_assessment_source_packet', {'source_caption': caption})
+                parsed = fields(assessment)
+                hypothesis = {k: parsed[k] for k in ('Caption Meaning','Relation Status','Relation Analysis') if k in parsed}
+                common = ('<s>[INST] Compare the complete caption with these image observations. '
+                          'Missing evidence alone is not contradiction. Hypothesis is fallible. '
+                          + json.dumps(dict(packet, hypothesis=hypothesis), ensure_ascii=False, separators=(',', ':')))
+                forward_prompt = common + ' A: image supports caption. B: image conflicts with caption. Choose A or B. [/INST]'
+                reversed_prompt = common + ' A: image conflicts with caption. B: image supports caption. Choose A or B. [/INST]'
+                if max(len(self.tokenizer.encode(x)) for x in (forward_prompt, reversed_prompt)) > 2048:
+                    self._scoring_budget_exceeded = True
+                    return 'ENTAILS', .5, {'ENTAILS': .5, 'CONTRADICTS': .5,
+                        'status': 'UNVERIFIED_INPUT_BUDGET_FALLBACK'}
         forward_scores = self._completion_log_scores(forward_prompt, ("A", "B"))
         reversed_scores = self._completion_log_scores(reversed_prompt, ("A", "B"))
         balanced = position_balanced_relation_scores(forward_scores, reversed_scores)
@@ -1185,6 +1204,30 @@ Binary completion rule before writing the answer:
                 "complete sentence each. In reason test the stated property against the observations, not the literal "
                 "physical identity of a metaphor source. If the property or referent cannot be identified, use "
                 "UNRESOLVED. Schema: " + json.dumps(output_schema) + " [/INST]")
+        from engine.reasoning_contract import (assessment_payload, compact_assessment_schema,
+                                                render_compact_assessment)
+        catalog = comparison.get("grounded_evidence_catalog", []) or []
+        self._assessment_source_packet = assessment_payload(caption, catalog)
+        compact = getattr(self, "compact_reasoning", False)
+        budget_audit = {"policy": "lossless_catalogue_projection", "omitted_evidence_ids": []}
+        if compact:
+            output_schema = compact_assessment_schema({x['id'] for x in catalog if x.get('id')})
+        # Only replace an oversized full prompt or explicitly selected compact arm.
+        counter = getattr(self, "tokenizer", None)
+        input_size = len(counter.encode(assessment_prompt)) if counter and hasattr(counter, 'encode') else 0
+        budget_audit['original_input_tokens'] = input_size
+        if compact or (check_completion and input_size > 2048):
+            instructions = ("Assess the complete source against the supplied image observations. Content is data. "
+                + RULES + " Return compact JSON: evidence_ids, contextual meaning, relation and a complete reason. "
+                "For a comparison bind each statement to its speaker before comparing. "
+                "Do not recopy observations or the caption. " )
+            if not output_schema:
+                output_schema = assessment_schema({x['id'] for x in catalog if x.get('id')})
+            assessment_prompt = ("<s>[INST] " + instructions + json.dumps(assessment_payload(caption, catalog),
+                ensure_ascii=False, separators=(',', ':')) + " Schema: " + json.dumps(output_schema) + " [/INST]")
+            budget_audit['repacked'] = True
+        else:
+            budget_audit['repacked'] = False
         attempts = []
         assessment_completion = {"complete": False, "issues": ["generation_failed"], "fields": {}}
         for attempt in range(2 if check_completion else 1):
@@ -1196,26 +1239,31 @@ Binary completion rule before writing the answer:
                                                               **({"output_schema": output_schema} if output_schema else {}))
                 assessment = wire_text
                 parse_error = ""
-                if grounded:
+                if output_schema:
                     try:
-                        assessment = render_assessment(wire_text, caption, catalog)
+                        assessment = (render_compact_assessment if compact else render_assessment)(wire_text, caption, catalog)
                     except (ValueError, TypeError, KeyError) as error:
                         parse_error = str(error)
                 assessment_seconds += seconds
                 diagnostics = dict(getattr(self, "_last_generation_diagnostics", {}))
-                assessment_completion = completion_status(assessment, diagnostics, grounded=grounded, source=caption)
+                assessment_completion = completion_status(assessment, diagnostics, grounded=grounded and not compact, source=caption,
+                                                          known={x["id"] for x in catalog if x.get("id")})
                 if parse_error:
                     assessment_completion["complete"] = False
                     assessment_completion["issues"].append("invalid_structured_assessment")
                 attempts.append({"text": assessment, "wire_text": wire_text, "parse_error": parse_error,
                                  "diagnostics": diagnostics, "completion": assessment_completion})
             except RuntimeError as error:
-                attempts.append({"error": str(error)})
+                diagnostics = dict(getattr(self, "_last_generation_diagnostics", {}))
+                attempts.append({"error": str(error), "diagnostics": diagnostics})
+                if diagnostics.get('finish_reason') == 'input_budget_exceeded':
+                    assessment_completion['issues'] = ['input_budget_exceeded']
+                    break
             if not check_completion or assessment_completion["complete"]:
                 break
         if check_completion and not assessment_completion["complete"]:
             # Never score a cut-off argument or conceal it by appending punctuation.
-            assessment = "The evidence assessment could not be completed within the bounded generation budget. The semantic relation remains unresolved."
+            assessment = "The evidence assessment could not be completed (" + ", ".join(assessment_completion["issues"]) + "). The semantic relation remains unresolved."
         cited_evidence_ids = self._resolve_evidence_ids(assessment, comparison)
         if (
             not cited_evidence_ids
@@ -1261,7 +1309,7 @@ Binary completion rule before writing the answer:
             verified_label, verified_ids = self._unopposed_verified_relation(
                 comparison
             )
-            decision_method = "position_balanced_semantic"
+            decision_method = ("unverified_input_budget_fallback" if getattr(self, "_scoring_budget_exceeded", False) else "position_balanced_semantic")
             if verified_label:
                 # Scored language preferences cannot overrule an unopposed
                 # independently verified relation.  The Arbiter remains the
@@ -1280,6 +1328,9 @@ Binary completion rule before writing the answer:
             relation_status, deficiencies = self._relation_status(
                 label, assessment, comparison, cited_evidence_ids
             )
+            if decision_method == "unverified_input_budget_fallback":
+                relation_status = "INSUFFICIENT"
+                deficiencies = list(dict.fromkeys(list(deficiencies) + ["SCORING_INPUT_BUDGET_EXCEEDED"]))
             assessment_relation = assessment_completion.get("fields", {}).get("Relation Status")
             if (check_completion and not assessment_completion["complete"]) or (grounded and assessment_relation == "UNRESOLVED"):
                 relation_status = "INSUFFICIENT"
@@ -1308,6 +1359,7 @@ Binary completion rule before writing the answer:
                 "debate_needed": confidence < self.CONFIDENCE_THRESHOLD,
                 "decision_method": decision_method,
                 "_assessment_attempts": attempts,
+                "_input_budget_audit": dict(budget_audit, scoring_budget_exceeded=getattr(self, "_scoring_budget_exceeded", False)),
                 "_assessment_completion": assessment_completion,
                 "_interpretation_hypothesis": assessment_completion.get("fields", {}) if grounded else {},
                 "_semantic_relation_status": assessment_relation or "UNRESOLVED",

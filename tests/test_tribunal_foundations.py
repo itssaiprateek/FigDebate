@@ -461,7 +461,7 @@ class QuestionRoutingTests(unittest.TestCase):
             },
         })
         self.assertEqual(plan.issue_type, "SARCASM_POLARITY")
-        self.assertIn("polarity", plan.agent2_question.casefold())
+        self.assertIn("assert", plan.agent2_question.casefold())
 
     def test_metaphor_route_keeps_source_observation_literal(self):
         plan = build_question_plan({
@@ -475,7 +475,7 @@ class QuestionRoutingTests(unittest.TestCase):
             },
         })
         self.assertEqual(plan.issue_type, "METAPHOR_MAPPING")
-        self.assertIn("source entity", plan.agent1_question.casefold())
+        self.assertIn("pictured entities", plan.agent1_question.casefold())
 
     def test_outcome_claim_asks_about_actions_and_results(self):
         plan = build_question_plan({
@@ -503,7 +503,7 @@ class QuestionRoutingTests(unittest.TestCase):
         self.assertEqual(plan.issue_type, "NORMATIVE_REASONING")
         self.assertNotIn("symbol", plan.agent1_question.casefold())
 
-    def test_invalid_mediator_question_uses_neutral_typed_fallback(self):
+    def test_invalid_mediator_question_does_not_create_another_task(self):
         question = compile_visual_question(
             {
                 "claim_contract": {"safe_for_directional_reasoning": True},
@@ -517,7 +517,7 @@ class QuestionRoutingTests(unittest.TestCase):
         )
         self.assertNotIn("support", question.casefold())
         self.assertNotIn("verdict", question.casefold())
-        self.assertIn("plotted line", question.casefold())
+        self.assertEqual(question, "")
 
 
 class TribunalControllerTests(unittest.TestCase):
@@ -814,7 +814,7 @@ class TribunalBatchIntegrationTests(unittest.TestCase):
 
             @staticmethod
             def critique(_image, prompt):
-                self.assertIn("TRIBUNAL_VISUAL_WITNESS_ONLY", prompt)
+                self.assertEqual(prompt.source, "image")
                 return {
                     "_format_valid": True,
                     "response_status": "VALID_OBSERVATION",

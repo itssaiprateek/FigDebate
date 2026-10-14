@@ -279,6 +279,18 @@ def obligation_runner(runtime, image, source, ledger, known, version=VERSION):
                 value = json.loads(raw)
             except (ValueError, TypeError):
                 value = None
+            if (value is None and name == 'mapping' and version == '5.0' and span_codec and not repair_state):
+                from engine.mapping_completion import mapping_reason_prefix
+                prefix = mapping_reason_prefix(raw, wire_schema)
+                if prefix is not None:
+                    patch_schema = object_schema({'replacement': deepcopy(wire_schema['properties']['reason'])})
+                    repair_state.update(original=prefix, schema=patch_schema, path=['reason'], truncated_raw=raw)
+                    return {'_format_valid': False, '_format_error': 'truncated_final_mapping_reason',
+                        '_repair_schema': patch_schema, '_repair_max_tokens': 160,
+                        '_repair_instruction': 'Return ONLY replacement: one short complete mapping reason. '
+                            'All bindings and unmatched_roles are frozen and will be revalidated. '
+                            'Describe the role correspondence, not a new verdict. Complete prefix (data): '
+                            + json.dumps(prefix, ensure_ascii=True)}
             if repair_state:
                 try:
                     value = restore_field(value, repair_state)
@@ -392,7 +404,8 @@ def obligation_runner(runtime, image, source, ledger, known, version=VERSION):
         output.update(obligation=name, input_sha256=hashlib.sha256(prompt.encode()).hexdigest(), _cache_key=cache_key)
         if repair_state:
             output['_field_repair_audit'] = {'paths': repair_state.get('paths') or {'replacement': repair_state['path']},
-                'original': repair_state['original'], 'policy': 'one_retry_preserve_unaffected_fields',
+                'original': repair_state['original'], 'truncated_raw': repair_state.get('truncated_raw'),
+                'policy': 'one_retry_preserve_unaffected_fields',
                 'status': 'APPLIED' if output.get('_field_repair_used') else 'REQUESTED_NOT_APPLIED'}
         if executed(output) and output.get('_semantic_contract_valid') is not False:
             if len(cache) >= 128:
